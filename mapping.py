@@ -12,6 +12,8 @@ from helpers import Line
 
 ORTHOPHOTO_WMS = "https://mapy.geoportal.gov.pl/wss/service/PZGIK/ORTO/WMS/HighResolution"
 
+MAX_ZOOM = 21  # about 5 cm per pixel, the detail of the best geoportal orthophotos
+
 COLOR_VALID = "#FF10F0"     # neon pink
 COLOR_OBSTACLE = "#FF8C00"  # orange: line passes too close to trees/buildings (NMPT)
 
@@ -376,11 +378,16 @@ def save_html_map(results: List[Dict], center_lat: float, center_lon: float,
             """)
 
     fmap = folium.Map(location=[center_lat, center_lon], tiles=None, control_scale=True)
-    folium.TileLayer(xyz.OpenTopoMap, name="OpenTopoMap").add_to(fmap)
-    folium.TileLayer("OpenStreetMap", name="OpenStreetMap", show=False).add_to(fmap)
-    # The geoportal WMS does not support Web Mercator, so tiles are requested in WGS84
+    # The map's maximum zoom comes from its layers.
+    # Beyond their native zoom, OpenTopoMap and OSM tiles are scaled up
+    folium.TileLayer(xyz.OpenTopoMap, name="OpenTopoMap", max_zoom=MAX_ZOOM,
+                     max_native_zoom=xyz.OpenTopoMap["max_zoom"]).add_to(fmap)
+    folium.TileLayer("OpenStreetMap", name="OpenStreetMap", show=False, max_zoom=MAX_ZOOM,
+                     max_native_zoom=xyz.OpenStreetMap.Mapnik["max_zoom"]).add_to(fmap)
+    # The geoportal WMS does not support Web Mercator, so tiles are requested in WGS84.
+    # WMS renders at any scale, so the orthophoto stays sharp up to MAX_ZOOM.
     Wgs84WmsTileLayer(ORTHOPHOTO_WMS, layers="Raster", fmt="image/jpeg", version="1.3.0",
-                      name="Orthophoto (geoportal.gov.pl)", attr="GUGiK",
+                      name="Orthophoto (geoportal.gov.pl)", attr="GUGiK", max_zoom=MAX_ZOOM,
                       overlay=False, show=False, crs=JsCode("L.CRS.EPSG4326")).add_to(fmap)
 
     folium.GeoJson(_search_area(center_lat, center_lon, radius).__geo_interface__,
