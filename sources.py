@@ -226,7 +226,9 @@ def _extract_multipart(content: bytes, content_type: str) -> bytes:
     boundary = re.search(r'boundary="?([^";]+)"?', content_type).group(1).encode()
     for part in content.split(b"--" + boundary):
         head, _, body = part.partition(b"\r\n\r\n")
-        if b"Content-Type: image/" in head:
+        kind = re.search(rb"Content-Type:\s*([^\r\n;]+)", head, re.I)
+        # The coverage itself (image/tiff, image/x-aaigrid, application/asc...), not its XML description
+        if kind and not re.search(rb"xml|gml|text/", kind.group(1), re.I):
             return body.rstrip(b"\r\n")
     raise RuntimeError("WCS response did not contain coverage data")
 
@@ -330,6 +332,13 @@ class Source:
     ortho: Optional[OrthoService] = None
     note: str = ""                  # licence or quality note printed at the start
     fallback: Optional[str] = "europe"  # source that fills gaps in the data on land
+    bbox: Optional[Tuple[float, float, float, float]] = None  # (south, north, west, east) for --source auto
+
+    def covers(self, lat: float, lon: float) -> bool:
+        if self.bbox is None:
+            return True
+        south, north, west, east = self.bbox
+        return south <= lat <= north and west <= lon <= east
 
     def working_crs(self, lat: float, lon: float) -> str:
         return self.crs or utm_crs(lat, lon)
@@ -337,6 +346,10 @@ class Source:
 
 GEOPORTAL = "https://mapy.geoportal.gov.pl/wss/service/PZGIK"
 MALTA = "https://malta.coverage.wetransform.eu"
+SPAIN_MDT = "https://servicios.idee.es/wcs-inspire/mdt"
+SPAIN_MDS = "https://wcs-mds.idee.es/mds"
+SPAIN_ORTHO = OrthoService("Orthophoto PNOA (IGN Spain)", "https://www.ign.es/wms-inspire/pnoa-ma",
+                           "OI.OrthoimageCoverage", "spain/ortho", "PNOA © IGN")
 FABDEM = "https://huggingface.co/buckets/links-ads/fabdem/resolve/tiles"
 COPERNICUS = "https://copernicus-dem-30m.s3.amazonaws.com"
 
@@ -360,6 +373,29 @@ def _copernicus_url(lat: int, lon: int, aux: Optional[str] = None) -> str:
 # true position: measured against Copernicus DEM and the 2018 survey at Dingli
 # (-56, -196 m), Valletta (-50, -190) and Gozo (-60, -190).
 MALTA_2012_SHIFT = (-56.0, -196.0)
+
+
+def _spain(canary: bool) -> Source:
+    """IGN Spain: MDT05 (terrain) and MDS05 (surface), 5 m from PNOA-LiDAR, via WCS.
+
+    The peninsula and the Balearic Islands are in ETRS89 / UTM 30N (extended zone),
+    the Canary Islands in REGCAN95 / UTM 28N; MDS05 covers both in UTM 30N. The ASCII
+    grid format keeps centimetres (the GeoTIFF output is rounded to whole metres).
+    """
+    crs, coverage = ("EPSG:4083", "Elevacion4083_5") if canary else ("EPSG:25830", "Elevacion25830_5")
+    where = "Canary Islands" if canary else "Spain"
+    return Source(
+        id="spain_canarias" if canary else "spain", name=f"IGN {where} (MDT05/MDS05)",
+        description=f"IGN Spain PNOA-LiDAR, MDT05 terrain and MDS05 surface, 5 m ({where})",
+        nmt=WcsTiles(f"MDT05 (terrain) {where}", SPAIN_MDT, coverage, crs,
+                     f"spain/mdt05{'_canarias' if canary else ''}", native_res=5.0, fetch_res=5.0,
+                     fmt="application/asc", bytes_per_px=8),
+        # MDS05's grid is 5.0045 m; tiles are resampled to 5 m on download
+        nmpt=WcsTiles(f"MDS05 (trees, buildings) {where}", SPAIN_MDS, "mds05", "EPSG:25830",
+                      "spain/mds05", native_res=5.0, fetch_res=5.0, fmt="application/asc", bytes_per_px=8),
+        countries=("es",), crs=crs, default_resolution=5, ortho=SPAIN_ORTHO,
+        bbox=(27.0, 29.6, -18.6, -13.0) if canary else None,
+        note="IGN Spain data is available at 5 m: lines shorter than about 30 m are not reliable.")
 
 
 def _malta(year: int, note: str = "") -> Source:
@@ -396,6 +432,8 @@ SOURCES: Dict[str, Source] = {s.id: s for s in [
                       "clearances coarser; --source malta2012 has centimetre precision but gaps "
                       "along the coast (filled from 2018)."),
     _malta(2012),
+    _spain(canary=True),
+    _spain(canary=False),
     Source(
         id="europe", name="FABDEM + Copernicus DEM",
         description="FABDEM V1-2 (terrain, trees and buildings removed) and Copernicus GLO-30 (surface), 30 m",
@@ -414,7 +452,8 @@ SOURCES: Dict[str, Source] = {s.id: s for s in [
 ]}
 
 # Rough boxes used when the country cannot be looked up (offline)
-OFFLINE_BOXES = {"mt": (35.78, 36.10, 14.15, 14.60), "pl": (49.0, 54.9, 14.1, 24.2)}
+OFFLINE_BOXES = {"mt": (35.78, 36.10, 14.15, 14.60), "pl": (49.0, 54.9, 14.1, 24.2),
+                 "es": (27.0, 43.9, -18.6, 4.4)}
 
 
 def country_code(lat: float, lon: float) -> Optional[str]:
@@ -454,7 +493,7 @@ def choose_source(name: str, lat: float, lon: float, elevation_file: Optional[st
         return SOURCES[name], f"--source {name}"
     code = country_code(lat, lon)
     for source in SOURCES.values():
-        if code and code in source.countries:
+        if code and code in source.countries and source.covers(lat, lon):
             return source, f"the centre is in {code.upper()}"
     return SOURCES["europe"], f"no national source for {code.upper() if code else 'this place'}"
 
@@ -549,6 +588,7 @@ GAP_RING = 3  # pixels around a gap used to match the filling source's heights
 GAP_MATCH_SLOPE = 15  # degrees; only gentler ground is used to match heights
 GAP_MAX_LOCAL_SHIFT = 3  # m; local height offsets differing more from the overall one are ignored
 SHORE_BUFFER = 45  # m around water in the mask that may still be water (the mask is 30 m)
+SEA_LEVEL_TOLERANCE = 1.0  # m; data at most this high inside the sea counts as water
 WATER_MASK = DegreeTiles("Copernicus water body mask", "copernicus30/wbm",
                          lambda lat, lon: _copernicus_url(lat, lon, "WBM"), native_res=30,
                          bytes_per_tile=1e5)
@@ -627,8 +667,10 @@ def fill_water(elevation_path: str, surface_path: Optional[str], grid: Grid, wbm
             sblock[area & np.isnan(sblock)] = level
         water[rows, cols] |= area
         lake_px += int(area.sum())
-    # Lakes that the elevation data covers (water surface measured by LiDAR)
+    # Water that the elevation data covers: lakes measured by LiDAR, and sea given as
+    # about 0 m by the data itself (e.g. IGN Spain)
     water |= (wbm == LAKE) & ~empty
+    water |= sea_zone & ~empty & (np.asarray(elevation) <= SEA_LEVEL_TOLERANCE)
     elevation.flush()
     if surface is not None:
         surface.flush()

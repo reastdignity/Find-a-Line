@@ -15,6 +15,7 @@ rewritten after every run.
 import csv
 import html
 import json
+import math
 import os
 import re
 import time
@@ -26,6 +27,7 @@ import requests
 
 NOMINATIM_URL = "https://nominatim.openstreetmap.org/reverse"
 HEADERS = {"User-Agent": "Find-a-Line/1.0 (highline finder)"}
+MAX_FEATURE_DEG = 0.2  # about 20 km; larger natural features are not used in run names
 
 
 def _reverse(lat: float, lon: float, **params) -> Dict:
@@ -38,8 +40,19 @@ def _reverse(lat: float, lon: float, **params) -> Dict:
 
 
 def _nearest_feature(lat: float, lon: float) -> Optional[str]:
-    """Name of the nearest natural feature: rock, peak, valley, river..."""
-    return _reverse(lat, lon, zoom=18, layer="natural").get("name") or None
+    """Name of the nearest natural feature: rock, peak, valley, river...
+
+    Very large features (a peninsula, a sea strait) say nothing about the spot
+    and are skipped.
+    """
+    data = _reverse(lat, lon, zoom=18, layer="natural")
+    try:
+        south, north, west, east = map(float, data.get("boundingbox", []))
+        if north - south > MAX_FEATURE_DEG or (east - west) * math.cos(math.radians(lat)) > MAX_FEATURE_DEG:
+            return None
+    except ValueError:
+        pass
+    return data.get("name") or None
 
 
 def _locality(lat: float, lon: float) -> Optional[str]:
