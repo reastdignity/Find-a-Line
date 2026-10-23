@@ -77,7 +77,7 @@ Run `python findaline.py --help` for the full list.
 A steep rock face produces many near-identical lines (anchors shifted by a metre or two). Such lines are grouped into one spot: two lines belong to the same group when both of their anchors are within `--group-distance` metres of each other. Each group is shown as one line, the one with the largest clearance (or the longest one, `--group-by longest`). Lines over trees/buildings are grouped separately from clear lines.
 
 - The coordinates are printed in the terminal (WGS84, latitude and longitude), one line per group with the number of similar lines. Use `--all-lines` to list every line.
-- An interactive map (`findaline_map.html`) can be opened in any web browser. You can switch between OpenTopoMap, OpenStreetMap and the geoportal orthophoto, and click a line to see its length, anchor elevations and clearance. The panel in the bottom-left corner turns grouping on and off, sets the grouping distance and the line shown for each group. Clicking a group shows all of its lines.
+- An interactive map (`findaline_map.html`) can be opened in any web browser. You can switch between OpenTopoMap, OpenStreetMap and the geoportal orthophoto, and click a line to see its length, anchor elevations and clearance. The panel in the bottom-left corner turns grouping on and off, sets the grouping distance and the line shown for each group. Clicking a group shows all of its lines. A popup can be moved off the line by dragging its top bar.
 - A static map is shown in a separate window (close it to finish the program), with one line per group.
 
 ### Run time and data size

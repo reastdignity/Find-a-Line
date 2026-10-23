@@ -155,6 +155,9 @@ GROUPING_SCRIPT = """
   .fal-panel input[type=range] { width: 140px; vertical-align: middle; }
   .fal-panel .fal-dim { color: #999; }
   .fal-swatch { display: inline-block; width: 14px; height: 3px; vertical-align: middle; }
+  .fal-drag { cursor: move; margin: -6px -6px 6px; padding: 2px 6px; border-radius: 4px;
+              background: #eee; color: #888; font-size: 11px; text-align: center; user-select: none; }
+  .fal-dragged .leaflet-popup-tip-container { visibility: hidden; }
 </style>
 {% endmacro %}
 
@@ -231,6 +234,42 @@ GROUPING_SCRIPT = """
     });
   }
 
+  // Popups can be dragged by their top bar, so they don't cover the line.
+  // The offset is kept when the map is zoomed or panned.
+  function makeDraggable(popup) {
+    var container = popup.getElement(), handle = container.querySelector(".fal-drag");
+    if (!handle || popup._falDraggable) return;
+    popup._falOffset = L.point(0, 0);
+
+    var draggable = new L.Draggable(container, handle);
+    var start;
+    draggable.on("dragstart", function() { start = L.DomUtil.getPosition(container); });
+    draggable.on("drag", function() {
+      popup._falOffset = popup._falOffset.add(L.DomUtil.getPosition(container).subtract(start));
+      start = L.DomUtil.getPosition(container);
+      L.DomUtil.addClass(container, "fal-dragged");
+    });
+    draggable.enable();
+    popup._falDraggable = draggable;
+  }
+  // Patched on the prototype: popups register these as event handlers when they open
+  ["_updatePosition", "_animateZoom"].forEach(function(name) {
+    var original = L.Popup.prototype[name];
+    L.Popup.prototype[name] = function() {
+      original.apply(this, arguments);
+      if (this._falOffset && this._container) {
+        L.DomUtil.setPosition(this._container,
+                              L.DomUtil.getPosition(this._container).add(this._falOffset));
+      }
+    };
+  });
+  map.on("popupopen", function(e) { makeDraggable(e.popup); });
+  map.on("popupclose", function(e) {
+    // Reopened popups start next to the line again
+    e.popup._falOffset = L.point(0, 0);
+    if (e.popup.getElement()) L.DomUtil.removeClass(e.popup.getElement(), "fal-dragged");
+  });
+
   function render() {
     linesLayer.clearLayers();
     variantsLayer.clearLayers();
@@ -244,7 +283,7 @@ GROUPING_SCRIPT = """
       var pl = polyline(l, {weight: 3, opacity: 0.9});
       pl.bindTooltip(l.len.toFixed(0) + " m, clearance " + l.clr.toFixed(1) + " m" +
                      (g.members.length > 1 ? " (" + g.members.length + " similar lines)" : ""));
-      pl.bindPopup(groupInfo(g));
+      pl.bindPopup("<div class='fal-drag'>&#10021; drag to move</div>" + groupInfo(g));
       if (g.members.length > 1) {
         pl.on("popupopen", function() { showVariants(g); });
         pl.on("popupclose", function() { variantsLayer.clearLayers(); });
