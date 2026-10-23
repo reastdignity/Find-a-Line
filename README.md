@@ -1,10 +1,10 @@
 # Find a Line
-This is an application that finds topographically valid highlines in Poland. It downloads elevation data from [geoportal.gov.pl](https://www.geoportal.gov.pl) (GUGiK) and evaluates the potential of each raster pixel by applying a custom "maximum elevation formula".
+This is an application that finds topographically valid highlines. It downloads elevation data for the area you choose and evaluates the potential of each raster pixel by applying a custom "maximum elevation formula" (or a physical sag estimate of the webbing).
 
-The whole of Poland has been scanned with airborne LiDAR and is published by GUGiK as a free terrain model (NMT, 1 metre grid) and a surface model including trees and buildings (NMPT, 0.5 metre grid). This is much more detailed than global datasets (NASADEM is 30 metres), which makes it possible to find short lines as well as long ones.
+Where a country publishes airborne LiDAR data, the tool uses it: a terrain model (ground only) and a surface model including trees and buildings, at 1 metre or better. This is built in for Poland ([geoportal.gov.pl](https://www.geoportal.gov.pl)) and Malta, and other countries can be added (see *Data sources*). Everywhere else in Europe (and the world) it uses 30 m global models, which is enough for long lines only. NASADEM and your own raster files are supported too.
 
 **Limitations and future scope**
-- Data is only available for Poland. Areas outside the country are treated as "no data" and lines never cross them.
+- High-resolution data is built in for Poland and Malta only; elsewhere the 30 m models find long lines only. Areas without data (for example the sea) are treated as "no data" and lines never cross them.
 - Trees and buildings are taken into account through NMPT (on by default, `--nmpt off` to skip it). Other factors that make rigging difficult are not.
 - It would be nice to overlay with property maps.
 - The math behind line dynamics is very nuanced, somewhat complex, and generally not available; we are using a simple formula.
@@ -37,7 +37,7 @@ Instead of the formula above, lines can be checked against a physical estimate o
 Anchors are taken at ground level, as with the formula. With the default values (2.5 kN, 5% @ 10 kN, 70 g/m, 80 kg, 3 m) the estimator is less strict than the formula for most lengths, so it finds many more lines; tune the values to your setup. The interactive map always shows the estimator in the line profile, whichever model was used for the search.
 
 ## Algorithm Breakdown
-- Elevation data for a circle around the given point is downloaded from the GUGiK WCS service in tiles and resampled to the working resolution (`--resolution`). Tiles are cached, so a second run over the same area does not download anything.
+- Elevation data for a circle around the given point is downloaded in tiles from the data source (see *Data sources*) and resampled to the working resolution (`--resolution`). Tiles are cached, so a second run over the same area does not download anything.
 - Slope is computed from the terrain model (or read from your own slope raster, `--slope-file`). Pixels steeper than `--slope-threshold` degrees become promising anchors.
 - For every promising anchor, we find every other anchor whose distance matches our length criteria (using a KD-tree, so pairs that are too far apart are never considered). Pairs whose anchors differ in height by more than 5% of the line length, or by more than 50 m, are skipped.
 - For each such pair, we "draw" a line using a DDA (Digital Differential Analyzer) algorithm. This allows us to intercept every raster pixel between the two anchors.
@@ -45,6 +45,42 @@ Anchors are taken at ground level, as with the formula. With the default values 
 - If every pixel has a positive clearance, the line is added to a list of valid lines.
 - The same check is repeated against the surface model (treetops, roofs), unless `--nmpt off`. In `mark` mode lines that fail it are kept but drawn in orange; in `reject` mode they are dropped.
 - The list of valid lines is then converted into GPS coordinates, printed, and displayed on a map.
+
+## Data sources
+| `--source` | Where | Terrain (DTM) | Surface (DSM, trees/buildings) | Orthophoto (cached) |
+| --- | --- | --- | --- | --- |
+| `geoportal` | Poland | GUGiK NMT, LiDAR 1 m | GUGiK NMPT 0.5 m | geoportal.gov.pl |
+| `malta` | Malta | MSDI DTM 2012, LiDAR 1 m | MSDI DSM 2012, 1 m | MSDI 2018 |
+| `malta2018` | Malta | MSDI DTM 2018, whole metres only | MSDI DSM 2018 | MSDI 2018 |
+| `europe` | anywhere | [FABDEM](https://data.bris.ac.uk/data/dataset/s5hqmjcdj8yo2ibzi9b4ew3sn) V1-2, 30 m (trees and buildings removed) | [Copernicus DEM GLO-30](https://registry.opendata.aws/copernicus-dem/), 30 m | – |
+| `nasadem` | anywhere | NASADEM 30 m via the [OpenTopography API](https://portal.opentopography.org/apidocs/) | – | – |
+| `files` | your files | `--elevation-file` | `--surface-file` (optional) | – |
+
+- With the default `--source auto`, the country of the search centre is looked up in OpenStreetMap: Poland uses `geoportal`, Malta uses `malta`, anywhere else uses `europe`. Giving `--elevation-file` selects `files`.
+- Every source has its own folder in `cache` (`cache/poland`, `cache/malta`, `cache/fabdem`, `cache/copernicus30`, `cache/nasadem`), so switching between sources (or back) never downloads again what is already there. National WCS data is cached in tiles of 2 km (Poland: per working resolution, because the server downsamples), the 30 m models in 1°×1° tiles.
+- The default `--resolution` is 2 m for the LiDAR sources, 30 m for `europe` and `nasadem`, and the file's own resolution for `files`. The grouping distance follows it (twice the resolution, at least 20 m).
+- Esri World Imagery is available as an online background layer everywhere; it is not cached, because Esri's terms do not allow downloading tiles for offline use.
+- **NASADEM**: `--source nasadem` needs a free API key from [opentopography.org](https://portal.opentopography.org/myopentopo), given with `--opentopo-key` or in the `OPENTOPOGRAPHY_API_KEY` environment variable. Alternatively download a NASADEM GeoTIFF (or a slope raster) from the [OpenTopography portal](https://portal.opentopography.org/raster?opentopoID=OTSDEM.032021.4326.2), as in the original version of this tool, and use `--elevation-file` (and `--slope-file`).
+- **Licences**: FABDEM is free for non-commercial use only. Copernicus DEM, NASADEM, GUGiK and MSDI data are free to use with attribution.
+- **Malta 2018** heights are published in whole metres, which gives stair-stepped slopes and coarse clearances; the 2012 data has centimetre precision and is the default.
+
+### Adding a country
+Most European countries publish LiDAR terrain models as open data, many through an INSPIRE WCS service. To add one, add a `Source` to `SOURCES` in [sources.py](sources.py), modelled on the Malta entry:
+
+```python
+Source(
+    id="austria", name="Austria (BEV)", description="BEV ALS DTM and DSM 1 m",
+    nmt=WcsTiles("DTM Austria", "https://.../wcs", "coverage_id", "EPSG:31287", "austria/dtm",
+                 native_res=1.0, fetch_res=1.0, axes=("E", "N")),
+    nmpt=WcsTiles("DSM Austria", "https://.../wcs", "coverage_id", "EPSG:31287", "austria/dsm",
+                  native_res=1.0, fetch_res=1.0, axes=("E", "N")),
+    countries=("at",), crs="EPSG:31287", default_resolution=2,
+    ortho=OrthoService("Orthophoto Austria", "https://.../wms", "layer", "austria/ortho", "BEV"))
+```
+
+- `crs` is the service's coordinate system (metric), `axes` the axis labels the service expects in `SUBSET` (see its DescribeCoverage), and `fetch_res` the resolution of the cached tiles (usually the native resolution; leave it out to let the server downsample to the working resolution, as for Poland).
+- `countries` holds the ISO codes for which `--source auto` picks it.
+- Services that publish files instead of WCS can use `DegreeTiles` with a function returning the URL of a tile, as for FABDEM and Copernicus.
 
 ## Getting Started
 New to the terminal? Follow the [step-by-step setup guide](setup-for-regular-folk.md) for macOS and Windows.
@@ -72,8 +108,11 @@ The search centre can be given in either of two coordinate systems:
 ### Options
 | Option | Default | Description |
 | --- | --- | --- |
+| `--source` | `auto` | Data source: `auto`, `geoportal`, `malta`, `malta2018`, `europe`, `nasadem`, `files` (see *Data sources*) |
+| `--elevation-file` / `--surface-file` | | Your own terrain / surface raster (GeoTIFF, ASC...) |
+| `--opentopo-key` | `OPENTOPOGRAPHY_API_KEY` | OpenTopography API key for `--source nasadem` |
 | `--radius` | 1000 | Search radius around the centre, in metres |
-| `--resolution` | 2 | Working resolution in metres (1 is the native NMT resolution) |
+| `--resolution` | depends on the source | Working resolution in metres: 2 for LiDAR sources, 30 for `europe`/`nasadem` |
 | `--min-length` / `--max-length` | 30 / 1000 | Line length constraints, in metres |
 | `--slope-threshold` | 45 | Minimum terrain slope (degrees) for an anchor |
 | `--max-anchor-diff` / `--max-anchor-diff-m` | 5 / 50 | Maximum height difference of the anchors: % of the line length / metres (whichever is smaller) |
@@ -86,7 +125,7 @@ The search centre can be given in either of two coordinate systems:
 | `--fall-zone` | 3 | Height below the sagged webbing that must stay free, in metres |
 | `--cache-dir` | `cache` | Folder for downloaded data |
 | `--refresh` | | Download data again even if it is cached |
-| `--group-distance` | 20 | Group similar lines: both anchors within this many metres |
+| `--group-distance` | 20 (2 × resolution if more) | Group similar lines: both anchors within this many metres |
 | `--group-by` | `clearance` | Line shown for each group: `clearance` (largest) or `longest` |
 | `--all-lines` | | List every line instead of one line per group |
 | `--runs-dir` | `runs` | Folder where every run is saved |
@@ -104,7 +143,7 @@ A steep rock face produces many near-identical lines (anchors shifted by a metre
 - The coordinates are printed in the terminal (WGS84, latitude and longitude), one line per group with the number of similar lines. Use `--all-lines` to list every line.
 - Every run is saved in its own folder, `runs/<date>_<place>/`: the interactive map (`map.html`), all lines with their group number (`lines.csv` for spreadsheets, `lines.geojson` for QGIS and other GIS tools) and the parameters (`run.json`). Runs are named after the nearest rock, peak or valley in OpenStreetMap and the locality (for example "Żabi Koń, Gaj Kobylański"); use `--name` to choose your own. `runs/index.html` lists all runs.
 - The interactive map can be opened in any web browser; `findaline_map.html` always opens the latest run. The panel in the top-left corner shows the run's parameters and switches to any other saved run. You can switch between OpenTopoMap, OpenStreetMap and the geoportal orthophoto, and click a line to see its length, anchor elevations and clearance. The panel in the bottom-left corner turns grouping on and off, sets the grouping distance and the line shown for each group. Clicking a group shows all of its lines. Clicking a line also opens its terrain profile at the bottom of the map: terrain (NMT), trees and buildings (NMPT) and the safety limit used by the search, with the point of smallest clearance marked. The sag estimator adds the webbing under its own weight, the sag envelope, the fall zone and, under the mouse cursor, the webbing with the athlete standing there; each can be switched on and off, and the rigging values can be changed in the panel to see the effect immediately. Moving the mouse over the profile shows the values at that point and marks it on the map; the button switches between a fitted and a true (1:1) vertical scale. A popup can be moved off the line by dragging its top bar.
-- Orthophoto tiles for the map are saved in `cache/ortho`, so the aerial photos also work without internet: the whole search area up to zoom 16, and a 30 m strip around each group's line up to the maximum zoom (21). Elsewhere the map loads the orthophoto online. The first run in an area can download a couple of thousand tiles (for example about 1700 tiles, 26 MB and 8 minutes for 66 spots within 1 km); later runs reuse them. Maps find the tiles through a relative path, so keep the `runs` and `cache` folders where they are; a map moved elsewhere loads everything online.
+- Orthophoto tiles for the map are saved in the source's folder (for example `cache/poland/ortho`), so the aerial photos also work without internet: the whole search area up to zoom 16, and a 30 m strip around each group's line up to the maximum zoom (21). Elsewhere the map loads the orthophoto online. The first run in an area can download a couple of thousand tiles (for example about 1700 tiles, 26 MB and 8 minutes for 66 spots within 1 km); later runs reuse them. Maps find the tiles through a relative path, so keep the `runs` and `cache` folders where they are; a map moved elsewhere loads everything online.
 - A static map is shown in a separate window (close it to finish the program), with one line per group.
 
 ### Progress
@@ -199,10 +238,10 @@ And here is an example of one such location found using it.
 <img width="1404" height="356" alt="Screenshot 2025-11-03 at 4 14 58 PM" src="https://github.com/user-attachments/assets/e44f01cf-f3a1-4a7d-b629-f00bec73779e" />
 
 ## Data
-- Terrain: NMT, WCS service `DigitalTerrainModelFormatTIFF`, height system PL-KRON86-NH.
-- Trees and buildings: NMPT, WCS service `DigitalSurfaceModel`, same height system.
-- Both are downsampled on the server by averaging, so at coarse resolutions small objects such as single trees appear lower than they are.
-- Source: Główny Urząd Geodezji i Kartografii, [geoportal.gov.pl](https://www.geoportal.gov.pl). The data is free to use.
+- **Poland**: terrain NMT (WCS `DigitalTerrainModelFormatTIFF`) and trees/buildings NMPT (WCS `DigitalSurfaceModel`), both in height system PL-KRON86-NH, downsampled on the server by averaging, so at coarse resolutions small objects such as single trees appear lower than they are. Source: Główny Urząd Geodezji i Kartografii, [geoportal.gov.pl](https://www.geoportal.gov.pl).
+- **Malta**: DTM and DSM from the Planning Authority's LiDAR surveys (ERDF156), [Malta Spatial Data Infrastructure](https://msdi.data.gov.mt/geonetwork/srv/api/records/2269ab80-81a5-4f30-b8ce-2b16292b345d), WCS at `malta.coverage.wetransform.eu`, ETRS89 / UTM 33N. Downloaded at 1 m and averaged locally.
+- **Europe-wide**: FABDEM V1-2 (University of Bristol / Fathom; tiles from a public mirror on Hugging Face) and Copernicus DEM GLO-30 (ESA / Copernicus, AWS open data), reprojected to the UTM zone of the search centre.
+- **NASADEM**: NASA, via the OpenTopography global DEM API.
 
 ## Learn More
 - [I'm a non-technical user, how do I run this?](setup-for-regular-folk.md)

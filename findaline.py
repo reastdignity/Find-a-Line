@@ -3,10 +3,12 @@ Find-a-Line - Highline Location Finder
 ========================================
 
 This application finds locations with significant highline potential by analyzing
-elevation data (NMT / NMPT) downloaded from geoportal.gov.pl.
+elevation data: terrain (NMT/DTM) and surface (NMPT/DSM) models from national
+LiDAR services (geoportal.gov.pl, Malta), Europe-wide models (FABDEM, Copernicus),
+NASADEM or local files. See sources.py.
 
 Example:
-    python findaline.py --lat 49.2320 --lon 19.9817 --radius 2000
+    python findaline.py --lat 50.1559508 --lon 19.7562722
 
 Run `python findaline.py --help` for all options.
 """
@@ -18,14 +20,16 @@ import sys
 from datetime import datetime
 
 import numpy as np
+from pyproj import Transformer
 
-import geoportal as gp
+import grid as gd
 import helpers as sh
 import mapping as mp
 import orthophoto as ortho
 from progress import progress
 import runs as rn
 import sag as sg
+import sources as src
 
 # Ask before continuing when a run looks this expensive
 CONFIRM_DOWNLOAD_MB = 500
@@ -36,7 +40,8 @@ ORTHO_SECONDS_PER_TILE = 0.3  # measured download rate with orthophoto.DOWNLOAD_
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="Find highline spots using elevation data from geoportal.gov.pl.",
+        description="Find highline spots using elevation data (geoportal.gov.pl, Malta, FABDEM/"
+                    "Copernicus, NASADEM or your own files).",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter)
 
     location = parser.add_argument_group(
@@ -48,11 +53,26 @@ def parse_args():
     location.add_argument("--easting", type=float,
                           help="PL-1992 (EPSG:2180) easting in metres; geoportal shows it as Y")
 
+    data = parser.add_argument_group("elevation data")
+    data.add_argument("--source", default="auto", choices=["auto", "files"] + list(src.SOURCES),
+                      help="data source; 'auto' picks the national source for the country of "
+                           "the centre (Poland, Malta) or the Europe-wide model elsewhere")
+    data.add_argument("--elevation-file",
+                      help="your own terrain model (GeoTIFF/ASC, e.g. NASADEM from OpenTopography); "
+                           "implies --source files")
+    data.add_argument("--surface-file",
+                      help="your own surface model with trees/buildings, used with --elevation-file")
+    data.add_argument("--opentopo-key", default=os.environ.get("OPENTOPOGRAPHY_API_KEY"),
+                      help="OpenTopography API key for --source nasadem "
+                           "(default: the OPENTOPOGRAPHY_API_KEY environment variable)")
+
     search = parser.add_argument_group("search")
     search.add_argument("--radius", type=float, default=1000,
                         help="search radius around the centre in metres")
-    search.add_argument("--resolution", type=float, default=2,
-                        help="working resolution in metres (data is downsampled to it); min 1")
+    search.add_argument("--resolution", type=float,
+                        help="working resolution in metres (data is resampled to it); "
+                             "default: 2 for national LiDAR sources, 30 for Europe-wide/NASADEM, "
+                             "the file resolution for --elevation-file")
     search.add_argument("--min-length", type=float, default=30, help="minimum line length in metres")
     search.add_argument("--max-length", type=float, default=1000, help="maximum line length in metres")
     search.add_argument("--max-anchor-diff", type=float, default=5,
@@ -87,9 +107,10 @@ def parse_args():
     output.add_argument("--cache-dir", default="cache", help="folder for downloaded data")
     output.add_argument("--refresh", action="store_true",
                         help="download data again even if it is cached")
-    output.add_argument("--group-distance", type=float, default=20,
+    output.add_argument("--group-distance", type=float,
                         help="group similar lines: both anchors within this many metres "
-                             "(also the initial setting of the interactive map)")
+                             "(also the initial setting of the interactive map); "
+                             "default: 20, or twice the resolution if that is more")
     output.add_argument("--group-by", choices=["clearance", "longest"], default="clearance",
                         help="line shown for each group: largest clearance or longest")
     output.add_argument("--all-lines", action="store_true",
@@ -117,13 +138,18 @@ def parse_args():
         parser.error("both --lat and --lon are required")
     if pl1992 and (args.northing is None or args.easting is None):
         parser.error("both --northing and --easting are required")
-    if args.resolution < gp.LAYERS["nmt"]["native_res"]:
-        parser.error("--resolution cannot be finer than the NMT resolution (1 m)")
+    if args.resolution is not None and args.resolution <= 0:
+        parser.error("--resolution must be positive")
+    for path in (args.elevation_file, args.surface_file):
+        if path and not os.path.exists(path):
+            parser.error(f"file not found: {path}")
+    if args.surface_file and not args.elevation_file:
+        parser.error("--surface-file needs --elevation-file")
     if not 0 < args.min_length < args.max_length:
         parser.error("--min-length must be positive and smaller than --max-length")
     if args.radius <= 0:
         parser.error("--radius must be positive")
-    if args.group_distance <= 0:
+    if args.group_distance is not None and args.group_distance <= 0:
         parser.error("--group-distance must be positive (use --all-lines to list every line)")
     if args.slope_file and not os.path.exists(args.slope_file):
         parser.error(f"slope file not found: {args.slope_file}")
@@ -161,26 +187,46 @@ def ask(question):
 
 
 def main(args):
-
     if args.lat is not None:
         center_lat, center_lon = args.lat, args.lon
-        easting, northing = mp.wgs84_to_pl1992(args.lat, args.lon)
     else:
-        easting, northing = args.easting, args.northing
-        center_lat, center_lon = mp.pl1992_to_wgs84(easting, northing)
+        center_lat, center_lon = mp.pl1992_to_wgs84(args.easting, args.northing)
 
-    grid = gp.make_grid(easting, northing, args.radius, args.resolution)
+    src.migrate_cache(args.cache_dir)
+    try:
+        source, reason = src.choose_source(args.source, center_lat, center_lon,
+                                           args.elevation_file, args.surface_file)
+    except ValueError as e:
+        sys.exit(str(e))
+    src.OpenTopographyTiles.api_key = args.opentopo_key
+    if args.nmpt and source.nmpt is None:
+        print(f"Note: {source.name} has no surface model (trees/buildings), NMPT check is off")
+        args.nmpt = None
+    args.resolution = args.resolution or source.default_resolution
+    args.group_distance = args.group_distance or max(20.0, 2 * args.resolution)
+    native = source.nmt.native_res
+    if isinstance(source.nmt, src.WcsTiles) and source.nmt.fetch_res is None and args.resolution < native:
+        sys.exit(f"--resolution cannot be finer than the {source.name} data ({native:g} m)")
+
+    crs = source.working_crs(center_lat, center_lon)
+    x, y = Transformer.from_crs("EPSG:4326", crs, always_xy=True).transform(center_lon, center_lat)
+    grid = gd.make_grid(x, y, args.radius, args.resolution, crs)
     rigging = sg.Rigging(args.pretension, args.stretch, args.webbing_weight,
                          args.athlete_mass, args.fall_zone)
-    layers = ["nmt"] + (["nmpt"] if args.nmpt else [])
+    layers = [source.nmt] + ([source.nmpt] if args.nmpt else [])
 
     print("=" * 60)
     print("Find-a-Line - Highline Location Finder")
     print("=" * 60)
     print(f"Centre: {center_lat:.6f}, {center_lon:.6f} (WGS84) / "
-          f"N {northing:.0f}, E {easting:.0f} (PL-1992)")
+          f"E {x:.0f}, N {y:.0f} ({crs})")
+    print(f"Data: {source.name} ({reason}) - {source.description}")
+    if source.note:
+        print(f"Note: {source.note}")
     print(f"Radius: {args.radius:.0f}m, resolution: {args.resolution:g}m "
           f"({grid.width} x {grid.height} px)")
+    if args.resolution < native * 0.99:
+        print(f"Note: the resolution is finer than the data ({native:g} m), which is interpolated")
     print(f"Length constraints: {args.min_length:g}m - {args.max_length:g}m")
     print(f"Anchor height difference: at most {args.max_anchor_diff:g}% of the length "
           f"and {args.max_anchor_diff_m:g}m")
@@ -198,25 +244,28 @@ def main(args):
     reasons = []
     download_mb = 0.0
     for layer in layers:
-        tiles = gp.tiles_for_circle(layer, easting, northing, args.radius, args.resolution)
-        n_missing, mb = gp.estimate_download(layer, tiles, args.cache_dir, args.resolution, args.refresh)
+        n_tiles, n_missing, mb = layer.estimate(grid, args.cache_dir, args.refresh)
         download_mb += mb
-        print(f"{gp.LAYERS[layer]['description']}: {len(tiles)} tiles, {n_missing} to download (~{mb:.0f} MB)")
+        print(f"{layer.description}: {n_tiles} tiles, {n_missing} to download (~{mb:.0f} MB)")
     work_gb = grid.width * grid.height * 4 * (len(layers) + bool(args.slope_file)) / 1e9
     if download_mb > CONFIRM_DOWNLOAD_MB:
-        reasons.append(f"about {download_mb:.0f} MB to download from geoportal.gov.pl")
+        reasons.append(f"about {download_mb:.0f} MB to download ({source.name})")
     if work_gb > CONFIRM_DISK_GB:
         reasons.append(f"working grids take about {work_gb:.1f} GB of disk in {args.cache_dir}")
     confirm(reasons, args.yes)
 
     # Step 1: Download elevation data
-    print("\nStep 1: Downloading elevation data from geoportal.gov.pl...")
-    elevation_path = gp.prepare_layer("nmt", easting, northing, args.radius, grid,
-                                      args.cache_dir, args.refresh)
-    surface_path = None
-    if args.nmpt:
-        surface_path = gp.prepare_layer("nmpt", easting, northing, args.radius, grid,
-                                        args.cache_dir, args.refresh)
+    print(f"\nStep 1: Downloading elevation data ({source.name})...")
+    work = os.path.join(args.cache_dir, "work")
+    try:
+        elevation_path = src.prepare_layer(source.nmt, grid, args.cache_dir,
+                                           os.path.join(work, "nmt.npy"), "terrain", args.refresh)
+        surface_path = None
+        if args.nmpt:
+            surface_path = src.prepare_layer(source.nmpt, grid, args.cache_dir,
+                                             os.path.join(work, "nmpt.npy"), "surface", args.refresh)
+    except RuntimeError as e:
+        sys.exit(f"Download failed: {e}")
     elevation = np.load(elevation_path, mmap_mode="r")
     surface = np.load(surface_path, mmap_mode="r") if surface_path else None
 
@@ -224,7 +273,7 @@ def main(args):
     print("\nStep 2: Finding significant slopes...")
     slope = None
     if args.slope_file:
-        slope_path = gp.load_slope_file(args.slope_file, grid,
+        slope_path = src.load_slope_file(args.slope_file, grid,
                                         os.path.join(args.cache_dir, "work", "slope.npy"))
         slope = np.load(slope_path, mmap_mode="r")
     anchors = sh.find_significant_slopes(elevation, args.resolution, args.slope_threshold,
@@ -302,7 +351,8 @@ def main(args):
         "id": run["id"],
         "name": name,
         "created": created.isoformat(timespec="seconds"),
-        "center": {"lat": center_lat, "lon": center_lon, "northing": northing, "easting": easting},
+        "center": {"lat": center_lat, "lon": center_lon, "x": x, "y": y, "crs": crs},
+        "source": {"id": source.id, "name": source.name, "description": source.description},
         "params": {"radius": args.radius, "resolution": args.resolution,
                    "min_length": args.min_length, "max_length": args.max_length,
                    "max_anchor_diff": args.max_anchor_diff,
@@ -320,23 +370,24 @@ def main(args):
 
     if not args.no_html:
         ortho_cache = None
-        if not args.no_ortho_cache:
+        if source.ortho and not args.no_ortho_cache:
             # Detailed orthophoto only around one line per group (variants lie within the strip)
             spots = [g["rep"] for g in spot_groups]
+            ortho_folder = ortho.cache_folder(args.cache_dir, source.ortho)
             tiles = ortho.missing_tiles(ortho.tiles_to_cache(spots, center_lat, center_lon,
-                                                             args.radius), args.cache_dir)
+                                                             args.radius), ortho_folder)
             minutes = len(tiles) * ORTHO_SECONDS_PER_TILE / 60
             print(f"Orthophoto for offline use: {len(tiles)} tiles to download "
                   f"(~{len(tiles) * ortho.APPROX_TILE_KB / 1000:.0f} MB, ~{minutes:.0f} min)")
             if minutes > CONFIRM_MINUTES and not args.yes and not ask(
                     "Download now? Otherwise the map loads the orthophoto online. [y/N] "):
                 tiles = []
-            ortho.download(tiles, args.cache_dir)
-            ortho_cache = os.path.join(args.cache_dir, "ortho")
+            ortho.download(source.ortho, tiles, ortho_folder)
+            ortho_cache = ortho_folder
         map_path = os.path.join(run["path"], "map.html")
         mp.save_html_map(results, center_lat, center_lon, args.radius, map_path,
-                         args.group_distance, args.group_by, ortho_cache, meta, args.runs_dir,
-                         args.model, rigging)
+                         args.group_distance, args.group_by, ortho_cache, source.ortho, meta,
+                         args.runs_dir, args.model, rigging)
         rn.write_latest_redirect(args.html, map_path)
         print(f"Interactive map saved to {os.path.abspath(map_path)}")
         print(f"Open {os.path.abspath(args.html)} in a web browser to see the latest run")

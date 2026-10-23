@@ -3,10 +3,10 @@ This guide takes you from nothing to your first map of possible highlines. You d
 
 **What you need**
 - A computer with Windows or macOS
-- An internet connection (the elevation data and aerial photos are downloaded from geoportal.gov.pl)
+- An internet connection (the elevation data and aerial photos are downloaded automatically)
 - About 1 GB of free disk space for a few searches
 
-The tool works for places in Poland only, because it uses the Polish national elevation data.
+The tool works best in Poland and Malta, where it uses very detailed national elevation data (1 m). It also works anywhere else in Europe with less detailed data (30 m), which is good enough to find long lines only. It picks the right data by itself.
 
 ## 1. Install the tools (once)
 ### Windows
@@ -100,6 +100,12 @@ python findaline.py --lat 50.15595 --lon 19.75627 --radius 2000 --min-length 100
 
 To see all options, run `python findaline.py --help`.
 
+## Outside Poland
+- **Malta** works the same way as Poland, with detailed data and aerial photos.
+- **Elsewhere** the script uses Europe-wide data with a 30 m grid. It finds long lines (roughly 100 m and more) reliably, short ones not. These data are free for non-commercial use only. Aerial photos are shown online (choose *Esri World Imagery* in the top-right corner).
+- If you have your own elevation file (for example NASADEM from [OpenTopography](https://portal.opentopography.org)), use it with `--elevation-file path/to/file.tif`.
+- To download NASADEM automatically, create a free account at [opentopography.org](https://portal.opentopography.org/myopentopo), request an API key there, and run with `--source nasadem --opentopo-key YOUR_KEY`.
+
 ## Next time
 Open PowerShell or the Terminal and run:
 
@@ -128,6 +134,6 @@ pip install -r requirements.txt
 ## If something goes wrong
 - **`python` is not recognised** (Windows): Python was installed without "Add python.exe to PATH". Run the installer again, choose *Modify* and tick *Add Python to environment variables*, then open a new PowerShell window.
 - **It takes too long:** use a smaller `--radius`, a higher `--slope-threshold`, or a coarser `--resolution 5`. You can stop the script at any time with Ctrl+C.
-- **"No lines found":** try a lower `--slope-threshold`, a larger `--radius` or other line lengths. Check that the point is in Poland.
-- **Download errors:** the geoportal servers are sometimes busy. Run the same command again; what was already downloaded is kept.
+- **"No lines found":** try a lower `--slope-threshold`, a larger `--radius` or other line lengths. Outside Poland and Malta the data is less detailed, so try longer lines, for example `--min-length 100`.
+- **Download errors:** the data servers are sometimes busy. Run the same command again; what was already downloaded is kept.
 - **Not enough disk space:** you can delete the `cache` folder (it is downloaded again when needed) and old searches in the `runs` folder.

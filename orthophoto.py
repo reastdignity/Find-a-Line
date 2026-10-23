@@ -1,5 +1,5 @@
 """
-Caching orthophoto tiles from geoportal.gov.pl for offline use of the interactive map.
+Caching orthophoto tiles (from the WMS of a data source) for offline use of the interactive map.
 
 Tiles follow the Web Mercator XYZ scheme used by the map ({z}/{x}/{y}.jpg) and are
 requested from the WMS with exactly the same bounding box the map would use, so
@@ -21,7 +21,6 @@ from shapely.prepared import prep
 
 from progress import progress
 
-WMS_URL = "https://mapy.geoportal.gov.pl/wss/service/PZGIK/ORTO/WMS/HighResolution"
 TILE_PX = 256
 OVERVIEW_ZOOMS = range(10, 17)  # whole search area
 DETAIL_ZOOMS = range(17, 22)    # only around lines (up to mapping.MAX_ZOOM)
@@ -36,8 +35,13 @@ _to_mercator = Transformer.from_crs("EPSG:4326", "EPSG:3857", always_xy=True)
 Tile = Tuple[int, int, int]  # (z, x, y)
 
 
-def tile_path(cache_dir: str, z: int, x: int, y: int) -> str:
-    return os.path.join(cache_dir, "ortho", str(z), str(x), f"{y}.jpg")
+def cache_folder(cache_dir: str, service) -> str:
+    """Folder of a service's tiles ({z}/{x}/{y}.jpg); service is a sources.OrthoService."""
+    return os.path.join(cache_dir, service.cache_name)
+
+
+def tile_path(folder: str, z: int, x: int, y: int) -> str:
+    return os.path.join(folder, str(z), str(x), f"{y}.jpg")
 
 
 def _tile_size(z: int) -> float:
@@ -77,8 +81,8 @@ def tiles_to_cache(lines: List[Dict], center_lat: float, center_lon: float,
     return tiles
 
 
-def missing_tiles(tiles: Iterable[Tile], cache_dir: str) -> List[Tile]:
-    return sorted(t for t in tiles if not os.path.exists(tile_path(cache_dir, *t)))
+def missing_tiles(tiles: Iterable[Tile], folder: str) -> List[Tile]:
+    return sorted(t for t in tiles if not os.path.exists(tile_path(folder, *t)))
 
 
 def _wms_bbox(z: int, x: int, y: int) -> str:
@@ -90,16 +94,16 @@ def _wms_bbox(z: int, x: int, y: int) -> str:
     return f"{south!r},{west!r},{north!r},{east!r}"
 
 
-def _download_tile(z: int, x: int, y: int, path: str):
+def _download_tile(service, z: int, x: int, y: int, path: str):
     params = {
-        "SERVICE": "WMS", "VERSION": "1.3.0", "REQUEST": "GetMap", "LAYERS": "Raster",
+        "SERVICE": "WMS", "VERSION": "1.3.0", "REQUEST": "GetMap", "LAYERS": service.layer,
         "STYLES": "", "CRS": "EPSG:4326", "BBOX": _wms_bbox(z, x, y),
         "WIDTH": TILE_PX, "HEIGHT": TILE_PX, "FORMAT": "image/jpeg",
     }
     last_error = None
     for attempt in range(RETRIES):
         try:
-            response = requests.get(WMS_URL, params=params, timeout=60)
+            response = requests.get(service.url, params=params, timeout=60)
             if response.status_code == 200 and response.headers.get("content-type", "").startswith("image/"):
                 break
             last_error = RuntimeError(f"HTTP {response.status_code}: {response.text[:200]}")
@@ -116,7 +120,7 @@ def _download_tile(z: int, x: int, y: int, path: str):
     return len(response.content)
 
 
-def download(tiles: List[Tile], cache_dir: str):
+def download(service, tiles: List[Tile], folder: str):
     """Download tiles (in parallel) into the cache. Failed tiles are skipped."""
     if not tiles:
         return
@@ -124,7 +128,7 @@ def download(tiles: List[Tile], cache_dir: str):
     received = 0
     progress.download.start("orthophoto tiles", len(tiles), unit="tile")
     with ThreadPoolExecutor(max_workers=DOWNLOAD_THREADS) as pool:
-        futures = [pool.submit(_download_tile, *t, tile_path(cache_dir, *t)) for t in tiles]
+        futures = [pool.submit(_download_tile, service, *t, tile_path(folder, *t)) for t in tiles]
         for future in as_completed(futures):
             try:
                 received += future.result()

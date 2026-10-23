@@ -10,9 +10,8 @@ from typing import Dict, List, Optional
 import numpy as np
 from pyproj import Transformer
 
-from geoportal import CRS, Grid
+from grid import Grid
 from helpers import LEASH_FALL, SLOPE, Line
-from orthophoto import WMS_URL as ORTHOPHOTO_WMS
 from progress import progress
 from sag import Rigging
 
@@ -21,13 +20,8 @@ MAX_ZOOM = 21  # about 5 cm per pixel, the detail of the best geoportal orthopho
 COLOR_VALID = "#FF10F0"     # neon pink
 COLOR_OBSTACLE = "#FF8C00"  # orange: line passes too close to trees/buildings (NMPT)
 
-_to_wgs84 = Transformer.from_crs(CRS, "EPSG:4326", always_xy=True)
-_to_pl1992 = Transformer.from_crs("EPSG:4326", CRS, always_xy=True)
-
-
-def wgs84_to_pl1992(lat: float, lon: float):
-    """Return (easting, northing) in EPSG:2180."""
-    return _to_pl1992.transform(lon, lat)
+PL1992 = "EPSG:2180"  # Polish national grid, accepted by --northing/--easting
+_to_wgs84 = Transformer.from_crs(PL1992, "EPSG:4326", always_xy=True)
 
 
 def pl1992_to_wgs84(easting: float, northing: float):
@@ -46,8 +40,8 @@ def coordify(lines: List[Line], grid: Grid, nmpt_mode: Optional[str]) -> List[Di
         return []
     rows = np.array([[line.a1[0], line.a2[0]] for line in lines]).ravel()
     cols = np.array([[line.a1[1], line.a2[1]] for line in lines]).ravel()
-    easting, northing = grid.pixel_to_pl1992(rows, cols)
-    lon, lat = _to_wgs84.transform(easting, northing)
+    easting, northing = grid.pixel_to_xy(rows, cols)
+    lon, lat = Transformer.from_crs(grid.crs, "EPSG:4326", always_xy=True).transform(easting, northing)
 
     results = []
     for k, line in enumerate(lines):
@@ -56,7 +50,7 @@ def coordify(lines: List[Line], grid: Grid, nmpt_mode: Optional[str]) -> List[Di
         results.append({
             "anchor1": (float(lat[2 * k]), float(lon[2 * k])),
             "anchor2": (float(lat[2 * k + 1]), float(lon[2 * k + 1])),
-            # PL-1992 (easting, northing) in metres, used for grouping
+            # (easting, northing) in metres in the grid CRS, used for grouping
             "a1_xy": (float(easting[2 * k]), float(northing[2 * k])),
             "a2_xy": (float(easting[2 * k + 1]), float(northing[2 * k + 1])),
             "length": line.length,
@@ -119,8 +113,8 @@ def _search_area(center_lat: float, center_lon: float, radius: float):
     import geopandas as gpd
     from shapely.geometry import Point
 
-    easting, northing = wgs84_to_pl1992(center_lat, center_lon)
-    circle = gpd.GeoSeries([Point(easting, northing).buffer(radius)], crs=CRS)
+    local = f"+proj=aeqd +lat_0={center_lat} +lon_0={center_lon} +datum=WGS84 +units=m"
+    circle = gpd.GeoSeries([Point(0, 0).buffer(radius, 128)], crs=local)
     return circle.to_crs("EPSG:4326")
 
 
@@ -755,7 +749,8 @@ GROUPING_SCRIPT = """
         "<div class='fal-summary'></div>" +
         "<label><input type='checkbox' class='fal-group'> Group similar lines</label>" +
         "<div class='fal-opts'>" +
-        "Anchors within <input type='range' class='fal-distance' min='5' max='100' step='1'> " +
+        "Anchors within <input type='range' class='fal-distance' min='5' max='" +
+        Math.max(100, Math.round(3 * state.distance)) + "' step='1'> " +
         "<span class='fal-distance-label'></span><br>" +
         "Show per group: <label><input type='radio' name='fal-by' value='clearance'> largest clearance</label> " +
         "<label><input type='radio' name='fal-by' value='longest'> longest</label></div>" +
@@ -862,14 +857,16 @@ def _relative_url(folder: str, html_path: str) -> str:
 def save_html_map(results: List[Dict], center_lat: float, center_lon: float,
                   radius: float, path: str, group_distance: float = 20,
                   group_by: str = "clearance", ortho_cache: Optional[str] = None,
+                  ortho_service=None,
                   run: Optional[Dict] = None, runs_dir: Optional[str] = None,
                   model: str = "formula", rigging: Optional[Rigging] = None):
-    """Save an interactive map (Leaflet) with OpenTopoMap, OSM and geoportal orthophoto.
+    """Save an interactive map (Leaflet) with OpenTopoMap, OSM, Esri imagery and the
+    orthophoto of the data source (ortho_service, a sources.OrthoService) if it has one.
 
     Lines are grouped in the browser; the panel on the map switches grouping on
     and off and sets the grouping distance and representative line.
     Orthophoto tiles are read from ortho_cache (a {z}/{x}/{y}.jpg folder) when
-    present there, and from the geoportal WMS otherwise.
+    present there, and from the WMS otherwise.
     With run (its run.json metadata) and runs_dir, the map shows the run's
     parameters and a list of all runs. model and rigging set the clearance model
     shown in the profile and the initial values of the sag estimator.
@@ -914,13 +911,19 @@ def save_html_map(results: List[Dict], center_lat: float, center_lon: float,
                      max_native_zoom=xyz.OpenTopoMap["max_zoom"]).add_to(fmap)
     folium.TileLayer("OpenStreetMap", name="OpenStreetMap", show=False, max_zoom=MAX_ZOOM,
                      max_native_zoom=xyz.OpenStreetMap.Mapnik["max_zoom"]).add_to(fmap)
-    # The geoportal WMS does not support Web Mercator, so tiles are requested in WGS84.
-    # WMS renders at any scale, so the orthophoto stays sharp up to MAX_ZOOM.
-    ortho = OrthophotoLayer(ORTHOPHOTO_WMS, layers="Raster", fmt="image/jpeg", version="1.3.0",
-                            name="Orthophoto (geoportal.gov.pl)", attr="GUGiK", max_zoom=MAX_ZOOM,
-                            overlay=False, show=False, crs=JsCode("L.CRS.EPSG4326"))
-    ortho.cache_url = _relative_url(ortho_cache, path) if ortho_cache else None
-    ortho.add_to(fmap)
+    if ortho_service:
+        # National WMS (e.g. geoportal) may not support Web Mercator, so tiles are requested
+        # in WGS84. WMS renders at any scale, so the orthophoto stays sharp up to MAX_ZOOM.
+        ortho = OrthophotoLayer(ortho_service.url, layers=ortho_service.layer, fmt="image/jpeg",
+                                version="1.3.0", name=ortho_service.name,
+                                attr=ortho_service.attribution, max_zoom=MAX_ZOOM,
+                                overlay=False, show=False, crs=JsCode("L.CRS.EPSG4326"))
+        ortho.cache_url = _relative_url(ortho_cache, path) if ortho_cache else None
+        ortho.add_to(fmap)
+    # Worldwide imagery, online only (Esri's terms do not allow caching tiles for offline use)
+    folium.TileLayer(xyz.Esri.WorldImagery, name="Esri World Imagery (online)", show=False,
+                     max_zoom=MAX_ZOOM, max_native_zoom=xyz.Esri.WorldImagery.get("max_zoom", 18)
+                     ).add_to(fmap)
 
     folium.GeoJson(_search_area(center_lat, center_lon, radius).__geo_interface__,
                    name="Search area", interactive=False,
