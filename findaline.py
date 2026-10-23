@@ -30,6 +30,7 @@ from progress import progress
 import runs as rn
 import sag as sg
 import sources as src
+import coast
 
 # Ask before continuing when a run looks this expensive
 CONFIRM_DOWNLOAD_MB = 500
@@ -62,6 +63,21 @@ def parse_args():
                            "implies --source files")
     data.add_argument("--surface-file",
                       help="your own surface model with trees/buildings, used with --elevation-file")
+    data.add_argument("--water", choices=["fill", "off"], default="fill",
+                      help="'fill' gives the sea (0 m) and lakes (their shore level) an elevation "
+                           "where the data has none, so lines over water and the edges of sea "
+                           "cliffs are found")
+    data.add_argument("--coastline", choices=["overpass", "world", "copernicus"], default="overpass",
+                      help="where the sea is: OpenStreetMap coastline from the Overpass API (falls back "
+                           "to the Copernicus mask with a warning), OpenStreetMap water polygons of the "
+                           "whole world (one download of about 900 MB), or the Copernicus water body "
+                           "mask (30 m, less accurate)")
+    data.add_argument("--shore-buffer", type=float, default=20,
+                      help="metres around the sea (from --coastline) where pixels without data are "
+                           "still taken as water")
+    data.add_argument("--fill-gaps", choices=["on", "off"], default="on",
+                      help="fill gaps in the data on land from another source (Malta 2012 from 2018, "
+                           "others from FABDEM 30 m)")
     data.add_argument("--opentopo-key", default=os.environ.get("OPENTOPOGRAPHY_API_KEY"),
                       help="OpenTopography API key for --source nasadem "
                            "(default: the OPENTOPOGRAPHY_API_KEY environment variable)")
@@ -149,6 +165,8 @@ def parse_args():
         parser.error("--min-length must be positive and smaller than --max-length")
     if args.radius <= 0:
         parser.error("--radius must be positive")
+    if args.shore_buffer < 0:
+        parser.error("--shore-buffer cannot be negative")
     if args.group_distance is not None and args.group_distance <= 0:
         parser.error("--group-distance must be positive (use --all-lines to list every line)")
     if args.slope_file and not os.path.exists(args.slope_file):
@@ -246,6 +264,10 @@ def main(args):
         n_tiles, n_missing, mb = layer.estimate(grid, args.cache_dir, args.refresh)
         download_mb += mb
         print(f"{layer.description}: {n_tiles} tiles, {n_missing} to download (~{mb:.0f} MB)")
+    if args.water == "fill" and args.coastline == "world" and not os.path.exists(
+            os.path.join(args.cache_dir, "osm", "water-polygons", "water-polygons-split-4326")):
+        download_mb += coast.WORLD_MB
+        print(f"OpenStreetMap water polygons (world): one download of ~{coast.WORLD_MB} MB")
     work_gb = grid.width * grid.height * 4 * (len(layers) + bool(args.slope_file)) / 1e9
     if download_mb > CONFIRM_DOWNLOAD_MB:
         reasons.append(f"about {download_mb:.0f} MB to download ({source.name})")
@@ -263,10 +285,37 @@ def main(args):
         if args.nmpt:
             surface_path = src.prepare_layer(source.nmpt, grid, args.cache_dir,
                                              os.path.join(work, "nmpt.npy"), "surface", args.refresh)
+        # Order matters: where the sea is, then gaps on land (outside the sea), then the water
+        water_path = filled_path = sea_zone = None
+        if args.water == "fill":
+            wbm = src.water_body_mask(grid, args.cache_dir, os.path.join(work, "wbm.npy"), args.refresh)
+            sea, coast_source, warning = coast.sea_mask(grid, args.cache_dir, args.coastline,
+                                                        wbm == src.OCEAN, args.refresh)
+            print(f"Coastline: {coast_source}")
+            if warning:
+                print("\n" + "!" * 60 + "\nWARNING: " + warning + "\n" + "!" * 60 + "\n")
+            sea_zone = src.near(sea, args.shore_buffer, grid.res)
+        elif args.fill_gaps == "on" and source.fallback:
+            # Without --water fill the sea stays without data; keep the gap filling off it too
+            wbm = src.water_body_mask(grid, args.cache_dir, os.path.join(work, "wbm.npy"), args.refresh)
+            sea_zone = src.near(wbm == src.OCEAN, src.SHORE_BUFFER, grid.res)
+        if args.fill_gaps == "on" and source.fallback:
+            fallback = src.SOURCES[source.fallback]
+            filled_path, filled_px = src.fill_gaps(elevation_path, surface_path, grid, fallback,
+                                                   args.cache_dir, os.path.join(work, "filled.npy"),
+                                                   args.refresh, exclude=sea_zone)
+            if filled_px:
+                print(f"Filled {filled_px * args.resolution ** 2 / 1e6:.2f} km² of gaps in the data "
+                      f"from {fallback.name}")
+        if args.water == "fill":
+            water_path = src.fill_water(elevation_path, surface_path, grid, wbm, sea_zone,
+                                        os.path.join(work, "water.npy"))
     except RuntimeError as e:
         sys.exit(f"Download failed: {e}")
     elevation = np.load(elevation_path, mmap_mode="r")
     surface = np.load(surface_path, mmap_mode="r") if surface_path else None
+    water = np.load(water_path, mmap_mode="r") if water_path else None
+    filled = np.load(filled_path, mmap_mode="r") if filled_path else None
 
     # Step 2: Find raster pixels with significant slope for promising anchors
     print("\nStep 2: Finding significant slopes...")
@@ -277,6 +326,12 @@ def main(args):
         slope = np.load(slope_path, mmap_mode="r")
     anchors = sh.find_significant_slopes(elevation, args.resolution, args.slope_threshold,
                                          (grid.center_row, grid.center_col), grid.radius_px, slope)
+    if filled is not None:
+        # Slopes across the edge of a filled gap mix two surveys: not reliable anchors there
+        from scipy import ndimage
+        gaps = np.asarray(filled)
+        unreliable = ndimage.binary_dilation(gaps, structure=np.ones((3, 3))) &             ~ndimage.binary_erosion(gaps, structure=np.ones((3, 3)))
+        anchors = anchors[~unreliable[anchors[:, 0], anchors[:, 1]]]
     print(f"Found {len(anchors)} potential anchors to evaluate")
     if len(anchors) < 2:
         sys.exit("Not enough steep terrain. Try a lower --slope-threshold or a larger --radius.")
@@ -312,13 +367,14 @@ def main(args):
     # Step 4: Convert pixel coordinates to GPS coordinates
     print("\nStep 4: Converting pixel coordinates to GPS coordinates...")
     results = mp.coordify(valid_lines, grid, args.nmpt)
-    if not args.no_html:
-        progress.compute.start("line profiles", len(results), unit="line")
-        for r, line in zip(results, valid_lines):
-            r["profile"] = sh.line_profile(line.a1, line.a2, elevation, args.resolution, surface,
-                                           sag_table=sag_table)
-            progress.compute.update(1)
-        progress.compute.finish()
+    progress.compute.start("line profiles", len(results), unit="line")
+    for r, line in zip(results, valid_lines):
+        r["profile"] = sh.line_profile(line.a1, line.a2, elevation, args.resolution, surface,
+                                       sag_table=sag_table, water=water, filled=filled)
+        r["water_m"] = r["profile"]["water_m"]
+        r["filled_m"] = r["profile"]["filled_m"]
+        progress.compute.update(1)
+    progress.compute.finish()
     spot_groups = mp.group_lines(results, args.group_distance, args.group_by)
     if args.all_lines:
         groups = [{"rep": r, "members": [r]} for r in results]
@@ -334,6 +390,10 @@ def main(args):
         r, members = g["rep"], g["members"]
         flag = "  [over trees/buildings]" if r["over_obstacles"] else ""
         label = "Line" if args.all_lines else "Spot"
+        if r["water_m"]:
+            flag += f"  [{r['water_m']:.0f}m over water]"
+        if r["filled_m"]:
+            flag += f"  [{r['filled_m']:.0f}m over filled gaps]"
         print(f"  {label} {n}: {r['length']:.0f}m, min. clearance {r['clearance']:.1f}m{flag}")
         if len(members) > 1:
             lengths = [m["length"] for m in members]
@@ -357,7 +417,9 @@ def main(args):
                    "max_anchor_diff": args.max_anchor_diff,
                    "max_anchor_diff_m": args.max_anchor_diff_m,
                    "slope_threshold": args.slope_threshold, "slope_file": args.slope_file,
-                   "nmpt": args.nmpt, "group_distance": args.group_distance,
+                   "nmpt": args.nmpt, "water": args.water, "coastline": args.coastline,
+                   "shore_buffer": args.shore_buffer, "fill_gaps": args.fill_gaps,
+                   "group_distance": args.group_distance,
                    "group_by": args.group_by, "model": args.model,
                    "rigging": dataclasses.asdict(rigging)},
         "summary": {"lines": len(results), "spots": len(spot_groups),

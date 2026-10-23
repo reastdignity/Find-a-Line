@@ -141,7 +141,8 @@ def evaluate_line(a1: np.ndarray, a2: np.ndarray, elevation: np.ndarray, res: fl
 
 def line_profile(a1: Tuple[int, int], a2: Tuple[int, int], elevation: np.ndarray, res: float,
                  surface: Optional[np.ndarray] = None, max_points: int = 200,
-                 sag_table=None) -> dict:
+                 sag_table=None, water: Optional[np.ndarray] = None,
+                 filled: Optional[np.ndarray] = None) -> dict:
     """Terrain (and NMPT) profile along a line, for the profile chart of the map.
 
     Every pixel between the anchors is sampled (as in evaluate_line), then the
@@ -150,7 +151,9 @@ def line_profile(a1: Tuple[int, int], a2: Tuple[int, int], elevation: np.ndarray
 
     Returns:
         {"d": distances from anchor 1 [m], "z": NMT [m], "s": NMPT [m] or None,
-         "min": [distance, clearance] over NMT, "min_nmpt": [distance, clearance] or None}
+         "min": [distance, clearance] over NMT, "min_nmpt": [distance, clearance] or None,
+         "w": 1 where the point is water, or None, "water_m": length over water [m],
+         "g": 1 where the data was filled from another source, or None, "filled_m": that length [m]}
     """
     r1, c1 = a1
     r2, c2 = a2
@@ -186,6 +189,13 @@ def line_profile(a1: Tuple[int, int], a2: Tuple[int, int], elevation: np.ndarray
 
     profile.update(d=[round(float(v), 1) for v in distance[idx]], z=rounded(terrain),
                    s=None if obstacles is None else rounded(obstacles))
+    for mask, flags, metres in ((water, "w", "water_m"), (filled, "g", "filled_m")):
+        profile[flags], profile[metres] = None, 0.0
+        if mask is not None:
+            over = np.asarray(mask[rows, cols], dtype=bool)
+            if over.any():
+                profile[flags] = over[idx].astype(int).tolist()
+                profile[metres] = round(float(over[1:steps].sum()) * length / steps, 1)
     return profile
 
 

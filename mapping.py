@@ -228,6 +228,10 @@ GROUPING_SCRIPT = """
       "<b>Anchor 2:</b> " + l.lat2.toFixed(6) + ", " + l.lon2.toFixed(6) + " (" + l.e2.toFixed(1) + " m)<br>" +
       "<b>Min. clearance over terrain:</b> " + l.clr.toFixed(1) + " m";
     if (l.clrN !== null) html += "<br><b>Min. clearance over trees/buildings:</b> " + l.clrN.toFixed(1) + " m";
+    if (l.prof && l.prof.water_m > 0)
+      html += "<br><b>Over water:</b> " + l.prof.water_m.toFixed(0) + " m of " + l.len.toFixed(0) + " m";
+    if (l.prof && l.prof.filled_m > 0)
+      html += "<br><b>Over filled gaps in the data:</b> " + l.prof.filled_m.toFixed(0) + " m (less precise)";
     return html;
   }
   function groupInfo(g) {
@@ -422,7 +426,8 @@ GROUPING_SCRIPT = """
   var MODEL = {{ this.model|tojson }};
   var PROFILE = {terrain: "#8a7656", terrainFill: "#e3d8c3", trees: "#3f8f35",
                  treesFill: "rgba(76,153,60,0.45)", limit: "#d62728", envelope: "#6a3d9a",
-                 fallFill: "rgba(214,39,40,0.12)", athlete: "#222"};
+                 fallFill: "rgba(214,39,40,0.12)", athlete: "#222", water: "#2f6fc0",
+                 waterFill: "rgba(47,111,192,0.45)"};
   var RIGGING = [["pretension", "kN pretension", 0.1], ["stretch", "% stretch @ 10 kN", 0.5],
                  ["webbing_weight", "g/m webbing", 5], ["athlete_mass", "kg athlete", 5],
                  ["fall_zone", "m fall zone", 0.5]];
@@ -471,6 +476,7 @@ GROUPING_SCRIPT = """
       "<span class='fal-profile-legend'>" +
       "<span>" + swatch("height:8px;background:" + PROFILE.terrainFill + ";border:1px solid " + PROFILE.terrain) + "terrain</span>" +
       "<span>" + swatch("height:8px;background:" + PROFILE.treesFill) + "trees/buildings</span>" +
+      "<span>" + swatch("height:8px;background:" + PROFILE.waterFill) + "water</span>" +
       "<span>" + swatch("border-top:2px dashed " + PROFILE.limit + ";height:0") + "safety limit (" +
       (MODEL === "sag" ? "sag model" : "formula") + ")</span></span></div>" +
       "<div><button class='fal-scale'></button> <button class='fal-close' title='Close'>&times;</button></div></div>" +
@@ -596,6 +602,23 @@ GROUPING_SCRIPT = """
     out += svg("polygon", {points: ground.concat([X(l.len).toFixed(1) + "," + (H - m.b),
                                                   X(0).toFixed(1) + "," + (H - m.b)]).join(" "),
                            fill: PROFILE.terrainFill, stroke: PROFILE.terrain, "stroke-width": 1});
+    // Water (sea and lakes): each run of water points, from the surface down
+    if (p.w) {
+      var run = [];
+      var flush = function() {
+        if (run.length > 1) {
+          out += svg("polygon", {points: run.map(function(j) { return pt(p.d[j], p.z[j]); }).concat(
+                       [X(p.d[run[run.length - 1]]).toFixed(1) + "," + (H - m.b),
+                        X(p.d[run[0]]).toFixed(1) + "," + (H - m.b)]).join(" "),
+                     fill: PROFILE.waterFill, stroke: PROFILE.water, "stroke-width": 1});
+        }
+        run = [];
+      };
+      for (i = 0; i < p.d.length; i++) {
+        if (p.w[i] && p.z[i] !== null) run.push(i); else flush();
+      }
+      flush();
+    }
 
     // Safety limit used by the search
     out += svg("polyline", {points: dsamples.map(function(d) { return pt(d, limit(d)); }).join(" "),
@@ -675,6 +698,8 @@ GROUPING_SCRIPT = """
 
       var text = d.toFixed(0) + " m from A1";
       if (p.z[k] !== null) text += " · terrain " + p.z[k].toFixed(1) + " m";
+      if (p.w && p.w[k]) text += " (water)";
+      if (p.g && p.g[k]) text += " (filled gap)";
       if (p.s && p.s[k] !== null) text += " · trees/buildings " + p.s[k].toFixed(1) + " m";
       var lim = limit(d);
       if (isFinite(lim)) {

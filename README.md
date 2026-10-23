@@ -50,19 +50,31 @@ Anchors are taken at ground level, as with the formula. With the default values 
 | `--source` | Where | Terrain (DTM) | Surface (DSM, trees/buildings) | Orthophoto (cached) |
 | --- | --- | --- | --- | --- |
 | `geoportal` | Poland | GUGiK NMT, LiDAR 1 m | GUGiK NMPT 0.5 m | geoportal.gov.pl |
-| `malta` | Malta | MSDI DTM 2012, LiDAR 1 m | MSDI DSM 2012, 1 m | MSDI 2018 |
-| `malta2018` | Malta | MSDI DTM 2018, whole metres only | MSDI DSM 2018 | MSDI 2018 |
+| `malta` | Malta | MSDI DTM 2018, LiDAR 1 m (heights in whole metres) | MSDI DSM 2018, 1 m | MSDI 2018 |
+| `malta2012` | Malta | MSDI DTM 2012, centimetre heights, gaps filled from 2018 | MSDI DSM 2012 | MSDI 2018 |
 | `europe` | anywhere | [FABDEM](https://data.bris.ac.uk/data/dataset/s5hqmjcdj8yo2ibzi9b4ew3sn) V1-2, 30 m (trees and buildings removed) | [Copernicus DEM GLO-30](https://registry.opendata.aws/copernicus-dem/), 30 m | – |
 | `nasadem` | anywhere | NASADEM 30 m via the [OpenTopography API](https://portal.opentopography.org/apidocs/) | – | – |
 | `files` | your files | `--elevation-file` | `--surface-file` (optional) | – |
 
-- With the default `--source auto`, the country of the search centre is looked up in OpenStreetMap: Poland uses `geoportal`, Malta uses `malta`, anywhere else uses `europe`. Giving `--elevation-file` selects `files`.
+- With the default `--source auto`, the country of the search centre is looked up in OpenStreetMap: Poland uses `geoportal`, Malta uses `malta` (2018), anywhere else uses `europe`. Giving `--elevation-file` selects `files`.
 - Every source has its own folder in `cache` (`cache/poland`, `cache/malta`, `cache/fabdem`, `cache/copernicus30`, `cache/nasadem`), so switching between sources (or back) never downloads again what is already there. National WCS data is cached in tiles of 2 km (Poland: per working resolution, because the server downsamples), the 30 m models in 1°×1° tiles.
 - The default `--resolution` is 2 m for the LiDAR sources, 30 m for `europe` and `nasadem`, and the file's own resolution for `files`. The grouping distance follows it (twice the resolution, at least 20 m).
 - Esri World Imagery is available as an online background layer everywhere; it is not cached, because Esri's terms do not allow downloading tiles for offline use.
 - **NASADEM**: `--source nasadem` needs a free API key from [opentopography.org](https://portal.opentopography.org/myopentopo), given with `--opentopo-key` or in the `OPENTOPOGRAPHY_API_KEY` environment variable (step-by-step: [getting an API key](setup-for-regular-folk.md#getting-an-opentopography-api-key-optional)). Alternatively download a NASADEM GeoTIFF (or a slope raster) from the [OpenTopography portal](https://portal.opentopography.org/raster?opentopoID=OTSDEM.032021.4326.2), as in the original version of this tool, and use `--elevation-file` (and `--slope-file`).
 - **Licences**: FABDEM is free for non-commercial use only. Copernicus DEM, NASADEM, GUGiK and MSDI data are free to use with attribution.
-- **Malta 2018** heights are published in whole metres, which gives stair-stepped slopes and coarse clearances; the 2012 data has centimetre precision and is the default.
+- **Malta**: the 2018 survey covers the coast down to the sea, but its heights are published in whole metres. The 2012 survey has centimetre precision, but leaves out buildings and much of the coast (filled from 2018), and its WCS service places the data about 56 m east and 196 m north of the true position; `--source malta2012` corrects this (measured against Copernicus DEM and the 2018 survey at three places, the corrected data matches 2018 to 0.2 m).
+
+### Sea, lakes and gaps in the data
+LiDAR models usually have no data over water. Without it, lines across the sea between cliffs are never found, and neither are the cliff edges themselves (their slope needs the pixels next to them). By default (`--water fill`):
+- **The sea** gets 0 m where the elevation data has none. Where the sea is comes from `--coastline`:
+  - `overpass` (default): the OpenStreetMap coastline of the search area from the Overpass API (cached in `cache/osm`). If Overpass does not answer, the Copernicus mask is used instead and a warning is printed.
+  - `world`: the OpenStreetMap water polygons of the whole world, downloaded once (about 900 MB) into `cache/osm`; no Overpass needed afterwards.
+  - `copernicus`: the Copernicus DEM water body mask (30 m).
+
+  Measured along 2 km of the Maltese coast, 90% of the OpenStreetMap coastline is within 13 m of the shoreline in the LiDAR data (median 6 m), against 70 m for the Copernicus mask (median 12 m). Pixels without data within `--shore-buffer` metres (default 20) of the sea are taken as water too, as the mapped coastline is not exact; the exact shoreline comes from the elevation data itself. Cliffs can be vertical, so the land right next to the water may be high.
+- **Lakes** of the Copernicus mask get the level of their shore.
+- **Gaps on land** (for example under buildings in the Maltese 2012 data) are filled from another source (`--fill-gaps on`): Malta 2012 from Malta 2018, everything else from FABDEM 30 m. Each gap is shifted to match the heights around it. No anchors are taken at the edge of a filled gap, where two surveys meet.
+- The popup of a line tells how much of it is over water and over filled gaps, the profile shows water in blue, and `lines.csv` has `water_m` and `filled_m` columns.
 
 ### Adding a country
 Most European countries publish LiDAR terrain models as open data, many through an INSPIRE WCS service. To add one, add a `Source` to `SOURCES` in [sources.py](sources.py), modelled on the Malta entry:
@@ -108,8 +120,12 @@ The search centre can be given in either of two coordinate systems:
 ### Options
 | Option | Default | Description |
 | --- | --- | --- |
-| `--source` | `auto` | Data source: `auto`, `geoportal`, `malta`, `malta2018`, `europe`, `nasadem`, `files` (see *Data sources*) |
+| `--source` | `auto` | Data source: `auto`, `geoportal`, `malta`, `malta2012`, `europe`, `nasadem`, `files` (see *Data sources*) |
 | `--elevation-file` / `--surface-file` | | Your own terrain / surface raster (GeoTIFF, ASC...) |
+| `--water` | `fill` | Fill the sea and lakes where the data has none (`off` to skip) |
+| `--coastline` | `overpass` | Where the sea is: `overpass`, `world` or `copernicus` (see *Sea, lakes and gaps*) |
+| `--shore-buffer` | 20 | Metres around the sea where pixels without data are still taken as water |
+| `--fill-gaps` | `on` | Fill gaps in the data on land from another source |
 | `--opentopo-key` | `OPENTOPOGRAPHY_API_KEY` | OpenTopography API key for `--source nasadem` |
 | `--radius` | 1000 | Search radius around the centre, in metres |
 | `--resolution` | depends on the source | Working resolution in metres: 2 for LiDAR sources, 30 for `europe`/`nasadem` |
@@ -239,7 +255,8 @@ And here is an example of one such location found using it.
 
 ## Data
 - **Poland**: terrain NMT (WCS `DigitalTerrainModelFormatTIFF`) and trees/buildings NMPT (WCS `DigitalSurfaceModel`), both in height system PL-KRON86-NH, downsampled on the server by averaging, so at coarse resolutions small objects such as single trees appear lower than they are. Source: Główny Urząd Geodezji i Kartografii, [geoportal.gov.pl](https://www.geoportal.gov.pl).
-- **Malta**: DTM and DSM from the Planning Authority's LiDAR surveys (ERDF156), [Malta Spatial Data Infrastructure](https://msdi.data.gov.mt/geonetwork/srv/api/records/2269ab80-81a5-4f30-b8ce-2b16292b345d), WCS at `malta.coverage.wetransform.eu`, ETRS89 / UTM 33N. Downloaded at 1 m and averaged locally.
+- **Malta**: DTM and DSM from the Planning Authority's LiDAR surveys (ERDF156), [Malta Spatial Data Infrastructure](https://msdi.data.gov.mt/geonetwork/srv/api/records/2269ab80-81a5-4f30-b8ce-2b16292b345d), WCS at `malta.coverage.wetransform.eu`, UTM 33N. Downloaded at 1 m and averaged locally.
+- **Sea**: OpenStreetMap coastline (© OpenStreetMap contributors, ODbL) via Overpass or [osmdata.openstreetmap.de](https://osmdata.openstreetmap.de/data/water-polygons.html); Copernicus DEM water body mask.
 - **Europe-wide**: FABDEM V1-2 (University of Bristol / Fathom; tiles from a public mirror on Hugging Face) and Copernicus DEM GLO-30 (ESA / Copernicus, AWS open data), reprojected to the UTM zone of the search centre.
 - **NASADEM**: NASA, via the OpenTopography global DEM API.
 

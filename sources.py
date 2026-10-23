@@ -28,6 +28,7 @@ from typing import Callable, Dict, List, Optional, Tuple
 import numpy as np
 import rasterio as rio
 import requests
+from affine import Affine
 from rasterio.io import MemoryFile
 from rasterio.transform import from_origin
 from rasterio.warp import Resampling, reproject, transform_bounds
@@ -82,6 +83,9 @@ def _clean(band: np.ndarray, zero_is_nodata: bool = False) -> np.ndarray:
 class Layer:
     """One elevation model of a source."""
     description = ""
+    # Correction (east, north) in metres of the layer CRS for data whose service is
+    # georeferenced wrongly; applied when tiles are placed on the grid
+    shift: Tuple[float, float] = (0.0, 0.0)
 
     def tiles(self, grid: Grid) -> list:
         raise NotImplementedError
@@ -145,11 +149,11 @@ class WcsTiles(Layer):
                  native_res: float, tile_px: int = 2000, fmt: str = "image/tiff",
                  axes: Tuple[str, str] = ("x", "y"), fetch_res: Optional[float] = None,
                  interpolation: Optional[str] = None, zero_is_nodata: bool = False,
-                 bytes_per_px: float = 4):
+                 bytes_per_px: float = 4, shift: Tuple[float, float] = (0.0, 0.0)):
         self.description, self.url, self.coverage, self.crs = description, url, coverage, crs
         self.cache_name, self.native_res, self.tile_px, self.fmt = cache_name, native_res, tile_px, fmt
         self.axes, self.fetch_res, self.interpolation = axes, fetch_res, interpolation
-        self.zero_is_nodata, self.bytes_per_px = zero_is_nodata, bytes_per_px
+        self.zero_is_nodata, self.bytes_per_px, self.shift = zero_is_nodata, bytes_per_px, shift
         self._res = None
 
     def _tile_res(self, grid: Grid) -> float:
@@ -159,7 +163,8 @@ class WcsTiles(Layer):
         self._res = res = self._tile_res(grid)
         size = self.tile_px * res
         left, bottom, right, top = transform_bounds(grid.crs, self.crs, *grid.bounds)
-        cx, cy, radius = (left + right) / 2, (bottom + top) / 2, (right - left) / 2
+        # Tiles hold the data where the service puts it, i.e. before the shift correction
+        cx, cy, radius = (left + right) / 2 - self.shift[0], (bottom + top) / 2 - self.shift[1], (right - left) / 2
         tiles = []
         for i in range(math.floor((cx - radius) / size), math.floor((cx + radius) / size) + 1):
             for j in range(math.floor((cy - radius) / size), math.floor((cy + radius) / size) + 1):
@@ -324,6 +329,7 @@ class Source:
     default_resolution: float = 2
     ortho: Optional[OrthoService] = None
     note: str = ""                  # licence or quality note printed at the start
+    fallback: Optional[str] = "europe"  # source that fills gaps in the data on land
 
     def working_crs(self, lat: float, lon: float) -> str:
         return self.crs or utm_crs(lat, lon)
@@ -342,21 +348,32 @@ def _fabdem_url(lat: int, lon: int) -> str:
     return f"{FABDEM}/{group}_FABDEM_V1-2/{_hemi(lat, 'N', 'S', 2)}{_hemi(lon, 'E', 'W', 3)}_FABDEM_V1-2.tif"
 
 
-def _copernicus_url(lat: int, lon: int) -> str:
-    name = f"Copernicus_DSM_COG_10_{_hemi(lat, 'N', 'S', 2)}_00_{_hemi(lon, 'E', 'W', 3)}_00_DEM"
-    return f"{COPERNICUS}/{name}/{name}.tif"
+def _copernicus_url(lat: int, lon: int, aux: Optional[str] = None) -> str:
+    """URL of a Copernicus DEM tile, or of one of its auxiliary files (e.g. aux="WBM")."""
+    name = f"Copernicus_DSM_COG_10_{_hemi(lat, 'N', 'S', 2)}_00_{_hemi(lon, 'E', 'W', 3)}_00"
+    if aux:
+        return f"{COPERNICUS}/{name}_DEM/AUXFILES/{name}_{aux}.tif"
+    return f"{COPERNICUS}/{name}_DEM/{name}_DEM.tif"
+
+
+# The 2012 Malta services are georeferenced about 56 m east and 196 m north of the
+# true position: measured against Copernicus DEM and the 2018 survey at Dingli
+# (-56, -196 m), Valletta (-50, -190) and Gozo (-60, -190).
+MALTA_2012_SHIFT = (-56.0, -196.0)
 
 
 def _malta(year: int, note: str = "") -> Source:
     crs = "EPSG:25833" if year == 2012 else "EPSG:32633"
     layer = lambda kind, desc: WcsTiles(
         f"{desc} Malta {year}", f"{MALTA}/{kind}_1m_{year}/ows", f"{kind}_1m_{year}", crs,
-        f"malta/{kind}{year}", native_res=1.0 if year == 2012 else 0.15, fetch_res=1.0, axes=("E", "N"))
+        f"malta/{kind}{year}", native_res=1.0 if year == 2012 else 0.15, fetch_res=1.0, axes=("E", "N"),
+        shift=MALTA_2012_SHIFT if year == 2012 else (0.0, 0.0))
     return Source(
-        id="malta" if year == 2012 else f"malta{year}", name=f"Malta {year} (MSDI)",
+        id="malta" if year == 2018 else f"malta{year}", name=f"Malta {year} (MSDI)",
         description=f"Malta Planning Authority LiDAR {year}, DTM and DSM 1 m",
         nmt=layer("dtm", "DTM (terrain)"), nmpt=layer("dsm", "DSM (trees, buildings)"),
-        countries=("mt",) if year == 2012 else (), crs=crs, default_resolution=2,
+        countries=("mt",) if year == 2018 else (), crs=crs, default_resolution=2,
+        fallback="malta" if year == 2012 else "europe",
         ortho=OrthoService("Orthophoto Malta 2018 (MSDI)", f"{MALTA}/wms/ortho_2018/ows",
                            "OI.OrthoimageCoverage", "malta/ortho2018", "Planning Authority Malta"),
         note=note)
@@ -375,16 +392,17 @@ SOURCES: Dict[str, Source] = {s.id: s for s in [
         countries=("pl",), crs="EPSG:2180", default_resolution=2,
         ortho=OrthoService("Orthophoto (geoportal.gov.pl)", f"{GEOPORTAL}/ORTO/WMS/HighResolution",
                            "Raster", "poland/ortho", "GUGiK")),
-    _malta(2012),
     _malta(2018, note="Malta 2018 heights are published in whole metres, which makes slopes and "
-                      "clearances coarse; --source malta (2012) has centimetre precision."),
+                      "clearances coarser; --source malta2012 has centimetre precision but gaps "
+                      "along the coast (filled from 2018)."),
+    _malta(2012),
     Source(
         id="europe", name="FABDEM + Copernicus DEM",
         description="FABDEM V1-2 (terrain, trees and buildings removed) and Copernicus GLO-30 (surface), 30 m",
         nmt=DegreeTiles("FABDEM (terrain)", "fabdem", _fabdem_url, native_res=30, bytes_per_tile=20e6),
         nmpt=DegreeTiles("Copernicus DEM GLO-30 (surface)", "copernicus30", _copernicus_url,
                          native_res=30, bytes_per_tile=20e6),
-        default_resolution=30,
+        default_resolution=30, fallback=None,
         note="FABDEM is free for non-commercial use only (Non-Commercial Government Licence). "
              "At 30 m only long lines can be found reliably."),
     Source(
@@ -445,15 +463,17 @@ def prepare_layer(layer: Layer, grid: Grid, cache_dir: str, out_path: str, label
                   refresh: bool = False) -> str:
     """Download what is missing and bring the layer onto the working grid (.npy)."""
     layer.download(grid, cache_dir, refresh, label)
-    build_mosaic(layer.files(grid, cache_dir), grid, out_path, label)
+    build_mosaic(layer.files(grid, cache_dir), grid, out_path, label, shift=layer.shift)
     return out_path
 
 
-def build_mosaic(files: List[str], grid: Grid, out_path: str, label: str) -> np.ndarray:
+def build_mosaic(files: List[str], grid: Grid, out_path: str, label: str,
+                 categorical: bool = False, shift: Tuple[float, float] = (0.0, 0.0)) -> np.ndarray:
     """Stitch rasters into a memory-mapped array covering the grid.
 
     Tiles already on the grid are copied; others are reprojected, averaging when
-    the data is finer than the grid and interpolating bilinearly when it is coarser.
+    the data is finer than the grid and interpolating bilinearly when it is coarser
+    (categorical rasters, such as a water mask, use the nearest value instead).
     """
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
     mosaic = np.lib.format.open_memmap(out_path, mode="w+", dtype=np.float32,
@@ -463,16 +483,21 @@ def build_mosaic(files: List[str], grid: Grid, out_path: str, label: str) -> np.
     for path in files:
         progress.compute.update(1)
         with rio.open(path) as src:
-            _place(src, grid, mosaic)
+            _place(src, grid, mosaic, categorical, shift)
     mosaic.flush()
     progress.compute.finish()
     return mosaic
 
 
-def _place(src, grid: Grid, mosaic: np.ndarray):
+def _place(src, grid: Grid, mosaic: np.ndarray, categorical: bool = False,
+           shift: Tuple[float, float] = (0.0, 0.0)):
+    clean = (lambda band: band.astype(np.float32)) if categorical else _clean
     grid_crs = rio.crs.CRS.from_user_input(grid.crs)
     src_crs = src.crs or grid_crs
-    same_grid = src_crs == grid_crs and math.isclose(abs(src.res[0]), grid.res) \
+    moved = Affine.translation(*shift)
+    src_bounds = rio.coords.BoundingBox(src.bounds.left + shift[0], src.bounds.bottom + shift[1],
+                                        src.bounds.right + shift[0], src.bounds.top + shift[1])
+    same_grid = src_crs == grid_crs and shift == (0.0, 0.0) and math.isclose(abs(src.res[0]), grid.res) \
         and math.isclose(abs(src.res[1]), grid.res)
     if same_grid:
         row_off = int(round((grid.top - src.bounds.top) / grid.res))
@@ -482,13 +507,13 @@ def _place(src, grid: Grid, mosaic: np.ndarray):
             r1, c1 = min(row_off + src.height, grid.height), min(col_off + src.width, grid.width)
             if r0 < r1 and c0 < c1:
                 window = rio.windows.Window(c0 - col_off, r0 - row_off, c1 - c0, r1 - r0)
-                values = _clean(src.read(1, window=window, masked=True).filled(np.nan))
+                values = clean(src.read(1, window=window, masked=True).astype(np.float32).filled(np.nan))
                 target = mosaic[r0:r1, c0:c1]
                 mosaic[r0:r1, c0:c1] = np.where(np.isnan(target), values, target)
             return
 
     # Part of the grid covered by this raster
-    left, bottom, right, top = transform_bounds(src_crs, grid.crs, *src.bounds)
+    left, bottom, right, top = transform_bounds(src_crs, grid.crs, *src_bounds)
     c0 = max(0, int(math.floor((left - grid.left) / grid.res)))
     c1 = min(grid.width, int(math.ceil((right - grid.left) / grid.res)))
     r0 = max(0, int(math.floor((grid.top - top) / grid.res)))
@@ -496,22 +521,178 @@ def _place(src, grid: Grid, mosaic: np.ndarray):
     if r0 >= r1 or c0 >= c1:
         return
     src_res = abs(src.res[0]) * (111320 if src_crs.is_geographic else 1)
-    resampling = Resampling.average if src_res < grid.res * 0.75 else Resampling.bilinear
+    if categorical:
+        resampling = Resampling.nearest
+    else:
+        resampling = Resampling.average if src_res < grid.res * 0.75 else Resampling.bilinear
     window_transform = from_origin(grid.left + c0 * grid.res, grid.top - r0 * grid.res, grid.res, grid.res)
     values = np.full((r1 - r0, c1 - c0), np.nan, dtype=np.float32)
 
     # Read only the part of the raster under the grid (plus a margin for resampling)
     area = transform_bounds(grid.crs, src_crs, *grid.bounds)
+    area = (area[0] - shift[0], area[1] - shift[1], area[2] - shift[0], area[3] - shift[1])
     margin = 3 * max(abs(src.res[0]), abs(src.res[1]))
     window = from_bounds(area[0] - margin, area[1] - margin, area[2] + margin, area[3] + margin,
                          src.transform).round_offsets().round_lengths()
     window = window.intersection(rio.windows.Window(0, 0, src.width, src.height))
     band = src.read(1, window=window, masked=True).astype(np.float32).filled(np.nan)
-    reproject(_clean(band), values, src_transform=src.window_transform(window), src_crs=src_crs,
+    reproject(clean(band), values, src_transform=moved * src.window_transform(window), src_crs=src_crs,
               dst_transform=window_transform, dst_crs=grid.crs,
               src_nodata=np.nan, dst_nodata=np.nan, resampling=resampling)
     target = mosaic[r0:r1, c0:c1]
     mosaic[r0:r1, c0:c1] = np.where(np.isnan(target), values, target)
+
+
+# Copernicus water body mask, 1°×1° tiles next to the DEM tiles: 1 ocean, 2 lake, 3 river
+OCEAN, LAKE = 1, 2
+GAP_RING = 3  # pixels around a gap used to match the filling source's heights
+GAP_MATCH_SLOPE = 15  # degrees; only gentler ground is used to match heights
+GAP_MAX_LOCAL_SHIFT = 3  # m; local height offsets differing more from the overall one are ignored
+SHORE_BUFFER = 45  # m around water in the mask that may still be water (the mask is 30 m)
+WATER_MASK = DegreeTiles("Copernicus water body mask", "copernicus30/wbm",
+                         lambda lat, lon: _copernicus_url(lat, lon, "WBM"), native_res=30,
+                         bytes_per_tile=1e5)
+
+
+def water_body_mask(grid: Grid, cache_dir: str, out_path: str, refresh: bool = False) -> np.ndarray:
+    """Copernicus water body mask on the grid (OCEAN, LAKE...), open sea where tiles are missing."""
+    WATER_MASK.download(grid, cache_dir, refresh, "water mask")
+    wbm = build_mosaic(WATER_MASK.files(grid, cache_dir), grid, out_path, "water mask", categorical=True)
+    for tile in WATER_MASK.tiles(grid):
+        if os.path.exists(WATER_MASK.tile_path(cache_dir, tile) + ".missing"):
+            lat, lon = tile
+            left, bottom, right, top = transform_bounds("EPSG:4326", grid.crs, lon, lat, lon + 1, lat + 1)
+            c0, c1 = max(0, int((left - grid.left) // grid.res)), min(grid.width, int((right - grid.left) // grid.res) + 1)
+            r0, r1 = max(0, int((grid.top - top) // grid.res)), min(grid.height, int((grid.top - bottom) // grid.res) + 1)
+            if r0 < r1 and c0 < c1:
+                block = wbm[r0:r1, c0:c1]
+                block[np.isnan(block)] = OCEAN
+    return np.asarray(wbm)
+
+
+def near(mask: np.ndarray, metres: float, res: float) -> np.ndarray:
+    """The mask grown by about `metres` (square neighbourhood)."""
+    from scipy import ndimage
+    if metres <= 0:
+        return mask
+    return ndimage.binary_dilation(mask, structure=np.ones((3, 3)), iterations=max(1, math.ceil(metres / res)))
+
+
+def fill_water(elevation_path: str, surface_path: Optional[str], grid: Grid, wbm: np.ndarray,
+               sea_zone: np.ndarray, out_path: str) -> str:
+    """Give the sea and lakes an elevation where the data has none.
+
+    National LiDAR models have no data over water, so lines across the sea (and
+    the edges of sea cliffs, whose slope needs the neighbouring pixels) would be
+    missed. Pixels without data in sea_zone (the sea mask of coast.py grown by
+    --shore-buffer, see near) get 0 m. Pixels without data next to lakes of the
+    Copernicus mask (within SHORE_BUFFER, as the mask is 30 m) get the level of
+    the lake's shore (the median elevation around it). The exact shoreline comes
+    from the elevation data itself; gaps in the data on land stay without data.
+    Saves a boolean water mask (filled pixels, and lakes that have data) to out_path.
+    """
+    from scipy import ndimage
+
+    elevation = np.load(elevation_path, mmap_mode="r+")
+    surface = np.load(surface_path, mmap_mode="r+") if surface_path else None
+    progress.compute.start("filling sea and lakes", 3, unit="step")
+    empty = np.isnan(elevation)
+    sea_fill = empty & sea_zone
+    progress.compute.update(1)
+    lake = empty & near(wbm == LAKE, SHORE_BUFFER, grid.res) & ~sea_fill
+    progress.compute.update(1)
+
+    elevation[sea_fill] = 0.0
+    if surface is not None:
+        surface[sea_fill & np.isnan(surface)] = 0.0
+    water = sea_fill.copy()
+    lake_px = 0
+    labels, _ = ndimage.label(lake, structure=np.ones((3, 3)))
+    for index, region in enumerate(ndimage.find_objects(labels), 1):
+        if region is None:
+            continue
+        rows = slice(max(region[0].start - 1, 0), region[0].stop + 1)
+        cols = slice(max(region[1].start - 1, 0), region[1].stop + 1)
+        area = labels[rows, cols] == index
+        shore = ndimage.binary_dilation(area) & ~empty[rows, cols]
+        heights = elevation[rows, cols][shore]
+        heights = heights[np.isfinite(heights)]
+        if heights.size == 0:
+            continue
+        level = float(np.median(heights))
+        block = elevation[rows, cols]
+        block[area] = level
+        if surface is not None:
+            sblock = surface[rows, cols]
+            sblock[area & np.isnan(sblock)] = level
+        water[rows, cols] |= area
+        lake_px += int(area.sum())
+    # Lakes that the elevation data covers (water surface measured by LiDAR)
+    water |= (wbm == LAKE) & ~empty
+    elevation.flush()
+    if surface is not None:
+        surface.flush()
+    np.save(out_path, water)
+    progress.compute.update(1)
+    km2 = lambda px: px * grid.res ** 2 / 1e6
+    progress.compute.finish(f"sea {km2(int(sea_fill.sum())):.2f} km², lakes {km2(lake_px):.2f} km²")
+    return out_path
+
+
+def fill_gaps(elevation_path: str, surface_path: Optional[str], grid: Grid, fallback: "Source",
+              cache_dir: str, out_path: str, refresh: bool = False,
+              exclude: Optional[np.ndarray] = None) -> Tuple[str, int]:
+    """Fill the remaining gaps in the data on land from another source.
+
+    Each gap gets the other source shifted by the median height difference in a
+    ring of pixels around that gap, so it joins its surroundings without a step
+    (different surveys and height systems differ by up to a few metres). Only
+    gentle slopes are used for this: on a cliff, a shift of a metre between two
+    surveys changes the height by tens of metres. A local offset more than
+    GAP_MAX_LOCAL_SHIFT from the overall median is not trusted.
+    Saves a boolean mask of the filled pixels to out_path; returns
+    (out_path, number of filled pixels). Pixels in `exclude` (the sea) are left alone.
+    """
+    from scipy import ndimage
+
+    work = os.path.dirname(out_path)
+    elevation = np.load(elevation_path, mmap_mode="r+")
+    filled = np.isnan(elevation)
+    if exclude is not None:
+        filled &= ~exclude
+    if not filled.any():
+        np.save(out_path, filled)
+        return out_path, 0
+    pairs = [(elevation, fallback.nmt, "gap_nmt.npy")]
+    if surface_path:
+        surface = np.load(surface_path, mmap_mode="r+")
+        pairs.append((surface, fallback.nmpt or fallback.nmt, "gap_nmpt.npy"))
+    for target, layer, name in pairs:
+        gaps = np.isnan(target) if exclude is None else np.isnan(target) & ~exclude
+        if not gaps.any():
+            continue
+        other = np.asarray(np.load(prepare_layer(layer, grid, cache_dir, os.path.join(work, name),
+                                                 f"gap fill ({fallback.name})", refresh), mmap_mode="r"))
+        values = np.asarray(target)
+        gy, gx = np.gradient(np.where(np.isfinite(values), values, other), grid.res)
+        flat = np.degrees(np.arctan(np.hypot(gx, gy))) < GAP_MATCH_SLOPE
+        both = ~gaps & np.isfinite(values) & np.isfinite(other) & flat
+        overall = float(np.median(values[both] - other[both])) if both.any() else 0.0
+        # Offset of every gap from the ring of pixels around it
+        labels, count = ndimage.label(gaps, structure=np.ones((3, 3)))
+        ring = ndimage.grey_dilation(labels, size=(GAP_RING * 2 + 1,) * 2) * (both & (labels == 0))
+        offsets = np.full(count + 1, overall)
+        if ring.any():
+            local = ndimage.median(values - np.where(both, other, 0), ring, index=np.arange(1, count + 1))
+            local = np.asarray(local, dtype=float)
+            # A local offset far from the overall one comes from misaligned edges, not heights
+            usable = np.isfinite(local) & (np.abs(local - overall) <= GAP_MAX_LOCAL_SHIFT)
+            offsets[1:] = np.where(usable, local, overall)
+        target[gaps] = other[gaps] + offsets[labels[gaps]]
+        target.flush()
+    filled &= np.isfinite(elevation)
+    np.save(out_path, filled)
+    return out_path, int(filled.sum())
 
 
 def load_slope_file(slope_file: str, grid: Grid, out_path: str) -> str:
