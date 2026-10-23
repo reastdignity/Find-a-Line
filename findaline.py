@@ -12,6 +12,7 @@ Run `python findaline.py --help` for all options.
 """
 
 import argparse
+import dataclasses
 import os
 import sys
 from datetime import datetime
@@ -23,6 +24,7 @@ import helpers as sh
 import mapping as mp
 import orthophoto as ortho
 import runs as rn
+import sag as sg
 
 # Ask before continuing when a run looks this expensive
 CONFIRM_DOWNLOAD_MB = 500
@@ -63,6 +65,18 @@ def parse_args():
                              "'off' skips the check (and the NMPT download)")
     search.add_argument("--processes", type=int,
                         help="number of parallel processes (default: CPU count - 1)")
+
+    rigging = parser.add_argument_group(
+        "clearance model (the sag estimator is also shown in the profile of the map)")
+    rigging.add_argument("--model", choices=["formula", "sag"], default="formula",
+                         help="'formula': maximum elevation formula (see README); "
+                              "'sag': sag estimator below the webbing plus --fall-zone")
+    rigging.add_argument("--pretension", type=float, default=2.5, help="pretension in kN")
+    rigging.add_argument("--stretch", type=float, default=5, help="webbing stretch at 10 kN in %%")
+    rigging.add_argument("--webbing-weight", type=float, default=70, help="webbing weight in g/m")
+    rigging.add_argument("--athlete-mass", type=float, default=80, help="athlete mass in kg")
+    rigging.add_argument("--fall-zone", type=float, default=3,
+                         help="height below the sagged webbing that must stay free (leash fall), m")
 
     output = parser.add_argument_group("data and output")
     output.add_argument("--cache-dir", default="cache", help="folder for downloaded data")
@@ -108,6 +122,9 @@ def parse_args():
         parser.error("--group-distance must be positive (use --all-lines to list every line)")
     if args.slope_file and not os.path.exists(args.slope_file):
         parser.error(f"slope file not found: {args.slope_file}")
+    if min(args.pretension, args.stretch) <= 0 or min(args.webbing_weight, args.athlete_mass,
+                                                         args.fall_zone) < 0:
+        parser.error("rigging values must be positive")
     if args.nmpt == "off":
         args.nmpt = None
     return args
@@ -147,6 +164,8 @@ if __name__ == "__main__":
         center_lat, center_lon = mp.pl1992_to_wgs84(easting, northing)
 
     grid = gp.make_grid(easting, northing, args.radius, args.resolution)
+    rigging = sg.Rigging(args.pretension, args.stretch, args.webbing_weight,
+                         args.athlete_mass, args.fall_zone)
     layers = ["nmt"] + (["nmpt"] if args.nmpt else [])
 
     print("=" * 60)
@@ -159,6 +178,12 @@ if __name__ == "__main__":
     print(f"Length constraints: {args.min_length:g}m - {args.max_length:g}m")
     print(f"Slope threshold: {args.slope_threshold:g} degrees")
     print(f"NMPT (trees/buildings): {args.nmpt or 'not used'}")
+    if args.model == "sag":
+        print(f"Clearance model: sag estimator ({args.pretension:g} kN, {args.stretch:g}% @ 10 kN, "
+              f"{args.webbing_weight:g} g/m, athlete {args.athlete_mass:g} kg, "
+              f"fall zone {args.fall_zone:g} m)")
+    else:
+        print("Clearance model: maximum elevation formula")
     print("=" * 60)
 
     # Warn before large downloads / disk use
@@ -205,8 +230,13 @@ if __name__ == "__main__":
     # Step 3: Compare each promising anchor to every other anchor
     print("\nStep 3: Evaluating anchor pairs...")
     num_processes = args.processes or max(1, os.cpu_count() - 1)
+    sag_table = None
+    if args.model == "sag":
+        print("Precomputing the sag estimator for all line lengths...")
+        sag_table = sg.EnvelopeTable(rigging, args.min_length, args.max_length)
     pairs, seconds_per_pair = sh.estimate_search(anchors, elevation, args.resolution,
-                                                 args.min_length, args.max_length, surface)
+                                                 args.min_length, args.max_length, surface,
+                                                 sag_table)
     minutes = pairs * seconds_per_pair / num_processes / 60
     print(f"Estimated {pairs:,.0f} anchor pairs within length constraints, "
           f"~{minutes:.0f} min on {num_processes} processes")
@@ -217,7 +247,7 @@ if __name__ == "__main__":
 
     valid_lines = sh.find_valid_lines(elevation_path, surface_path, anchors_path, len(anchors),
                                       args.resolution, args.min_length, args.max_length,
-                                      args.nmpt, num_processes)
+                                      args.nmpt, num_processes, sag_table)
     if not valid_lines:
         sys.exit("No lines found matching elevation requirements.")
 
@@ -226,7 +256,8 @@ if __name__ == "__main__":
     results = mp.coordify(valid_lines, grid, args.nmpt)
     if not args.no_html:
         for r, line in zip(results, valid_lines):
-            r["profile"] = sh.line_profile(line.a1, line.a2, elevation, args.resolution, surface)
+            r["profile"] = sh.line_profile(line.a1, line.a2, elevation, args.resolution, surface,
+                                           sag_table=sag_table)
     spot_groups = mp.group_lines(results, args.group_distance, args.group_by)
     if args.all_lines:
         groups = [{"rep": r, "members": [r]} for r in results]
@@ -263,7 +294,8 @@ if __name__ == "__main__":
                    "min_length": args.min_length, "max_length": args.max_length,
                    "slope_threshold": args.slope_threshold, "slope_file": args.slope_file,
                    "nmpt": args.nmpt, "group_distance": args.group_distance,
-                   "group_by": args.group_by},
+                   "group_by": args.group_by, "model": args.model,
+                   "rigging": dataclasses.asdict(rigging)},
         "summary": {"lines": len(results), "spots": len(spot_groups),
                     "clear_spots": sum(not g["rep"]["over_obstacles"] for g in spot_groups)},
     }
@@ -288,7 +320,8 @@ if __name__ == "__main__":
             ortho_cache = os.path.join(args.cache_dir, "ortho")
         map_path = os.path.join(run["path"], "map.html")
         mp.save_html_map(results, center_lat, center_lon, args.radius, map_path,
-                         args.group_distance, args.group_by, ortho_cache, meta, args.runs_dir)
+                         args.group_distance, args.group_by, ortho_cache, meta, args.runs_dir,
+                         args.model, rigging)
         rn.write_latest_redirect(args.html, map_path)
         print(f"Interactive map saved to {os.path.abspath(map_path)}")
         print(f"Open {os.path.abspath(args.html)} in a web browser to see the latest run")

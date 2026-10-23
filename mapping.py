@@ -2,6 +2,7 @@
 Converting results to GPS coordinates and displaying them on maps.
 """
 
+import dataclasses
 import os
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -12,6 +13,7 @@ from pyproj import Transformer
 from geoportal import CRS, Grid
 from helpers import LEASH_FALL, SLOPE, Line
 from orthophoto import WMS_URL as ORTHOPHOTO_WMS
+from sag import Rigging
 
 MAX_ZOOM = 21  # about 5 cm per pixel, the detail of the best geoportal orthophotos
 
@@ -161,9 +163,13 @@ GROUPING_SCRIPT = """
   .fal-drag { cursor: move; margin: -6px -6px 6px; padding: 2px 6px; border-radius: 4px;
               background: #eee; color: #888; font-size: 11px; text-align: center; user-select: none; }
   .fal-dragged .leaflet-popup-tip-container { visibility: hidden; }
-  .fal-profile { position: absolute; left: 0; right: 0; bottom: 0; height: 240px; z-index: 1000;
+  .fal-profile { position: absolute; left: 0; right: 0; bottom: 0; height: 270px; z-index: 1000;
                  background: white; box-shadow: 0 -1px 6px rgba(0,0,0,0.35); font: 12px/1.5 sans-serif; }
-  .fal-profile-open .leaflet-bottom { bottom: 240px; }
+  .fal-profile-open .leaflet-bottom { bottom: 270px; }
+  .fal-profile-controls { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 4px 14px;
+                          padding: 3px 10px; color: #444; }
+  .fal-profile-controls label { margin-right: 10px; white-space: nowrap; }
+  .fal-profile-controls input[type=number] { width: 52px; font: inherit; }
   .fal-profile-head { display: flex; justify-content: space-between; align-items: center;
                       gap: 8px; padding: 4px 10px; border-bottom: 1px solid #eee; }
   .fal-profile-head button { font: inherit; cursor: pointer; }
@@ -282,11 +288,151 @@ GROUPING_SCRIPT = """
     if (e.popup.getElement()) L.DomUtil.removeClass(e.popup.getElement(), "fal-dragged");
   });
 
+  // Sag estimator: the same algorithm as sag.py (keep both in sync)
+  var Sag = (function() {
+    var G = 9.80665, POINTS = 40;
+    function constants(r) {
+      return {H0: r.pretension * 1e3, EA: 1e4 / (r.stretch / 100),
+              w: Math.max(r.webbing_weight / 1e3 * G, 1e-6), P: r.athlete_mass * G};
+    }
+    function segment(H, V, s, w, EA) {
+      var Ve = V - w * s;
+      return [H * s / EA + H / w * (Math.asinh(V / H) - Math.asinh(Ve / H)),
+              (V * s - 0.5 * w * s * s) / EA + (Math.hypot(H, V) - Math.hypot(H, Ve)) / w, Ve];
+    }
+    function norm(r) { return Math.sqrt(r.reduce(function(a, v) { return a + v * v; }, 0)); }
+    function finite(r) { return r.every(function(v) { return isFinite(v); }); }
+    function solveLinear(A, b) {  // Gaussian elimination with partial pivoting
+      var n = b.length, M = A.map(function(row, i) { return row.concat([b[i]]); });
+      for (var c = 0; c < n; c++) {
+        var p = c;
+        for (var r = c + 1; r < n; r++) if (Math.abs(M[r][c]) > Math.abs(M[p][c])) p = r;
+        if (Math.abs(M[p][c]) < 1e-300) return null;
+        var tmp = M[c]; M[c] = M[p]; M[p] = tmp;
+        for (r = c + 1; r < n; r++) {
+          var k = M[r][c] / M[c][c];
+          for (var j = c; j <= n; j++) M[r][j] -= k * M[c][j];
+        }
+      }
+      var x = new Array(n);
+      for (var i = n - 1; i >= 0; i--) {
+        var s = M[i][n];
+        for (j = i + 1; j < n; j++) s -= M[i][j] * x[j];
+        x[i] = s / M[i][i];
+      }
+      return x;
+    }
+    function newton(f, x0, scale) {  // damped Newton's method, forward-difference Jacobian
+      var x = x0.slice(), r = f(x);
+      if (!finite(r)) return null;
+      for (var it = 0; it < 60; it++) {
+        var n = norm(r);
+        if (n < 1e-9) return x;
+        var J = r.map(function() { return []; });
+        for (var j = 0; j < x.length; j++) {
+          var h = 1e-7 * Math.max(Math.abs(x[j]), scale[j]), xh = x.slice();
+          xh[j] += h;
+          var rh = f(xh);
+          for (var i = 0; i < r.length; i++) J[i][j] = (rh[i] - r[i]) / h;
+        }
+        var step = solveLinear(J, r.map(function(v) { return -v; }));
+        if (!step) return null;
+        var lam = 1, xn = null, rn = null;
+        while (lam > 1e-4) {
+          xn = x.map(function(v, k) { return v + lam * step[k]; });
+          rn = f(xn);
+          if (finite(rn) && norm(rn) < n) break;
+          lam /= 2;
+        }
+        if (lam <= 1e-4) return n < 1e-6 ? x : null;
+        x = xn; r = rn;
+      }
+      return norm(r) < 1e-6 ? x : null;
+    }
+    function unstretched(span, dh, c) {
+      var chord = Math.hypot(span, dh);
+      var v = newton(function(v) {
+        var e = segment(c.H0, v[0], v[1], c.w, c.EA);
+        return [e[0] - span, e[1] - dh];
+      }, [0.5 * c.w * chord + c.H0 * dh / span, chord / (1 + c.H0 / c.EA)], [c.H0, span]);
+      return v && {L0: v[1], V: v[0]};
+    }
+    function loaded(span, dh, c, x, L0, guess) {
+      function residualFor(P) {
+        return function(v) {
+          var a = segment(v[0], v[1], v[2], c.w, c.EA), b = segment(v[0], a[2] - P, L0 - v[2], c.w, c.EA);
+          return [a[0] + b[0] - span, a[1] + b[1] - dh, a[0] - x];
+        };
+      }
+      var scale = [c.H0, c.H0, span];
+      if (!guess) {
+        var u = unstretched(span, dh, c);
+        if (!u) return null;
+        guess = [c.H0, u.V, L0 * x / span];
+        for (var k = 1; k <= 8 && guess; k++) guess = newton(residualFor(c.P * k / 8), guess, scale);
+      } else guess = newton(residualFor(c.P), guess, scale);
+      if (!guess) return null;
+      var y1 = segment(guess[0], guess[1], guess[2], c.w, c.EA)[1];
+      return {H: guess[0], sag: y1 - dh / span * x, solution: guess};
+    }
+    function loadedCurve(c, s, L0, n) {
+      var H = s.solution[0], V = s.solution[1], u = s.solution[2];
+      var k1 = Math.max(1, Math.round(n * u / L0)), pts = [], k;
+      for (k = 0; k <= k1; k++) pts.push(segment(H, V, u * k / k1, c.w, c.EA).slice(0, 2));
+      var end = segment(H, V, u, c.w, c.EA), k2 = Math.max(1, n - k1);
+      for (k = 1; k <= k2; k++) {
+        var p = segment(H, end[2] - c.P, (L0 - u) * k / k2, c.w, c.EA);
+        pts.push([end[0] + p[0], end[1] + p[1]]);
+      }
+      return pts;
+    }
+    // Everything the profile needs for one line: unloaded webbing and the envelope
+    function estimate(span, dh, rigging) {
+      var c = constants(rigging), u = unstretched(span, dh, c);
+      if (!u) return null;
+      var unloadedPts = [];
+      for (var k = 0; k <= 50; k++) unloadedPts.push(segment(c.H0, u.V, u.L0 * k / 50, c.w, c.EA).slice(0, 2));
+      var n = POINTS + 2, f = [], sag = [], H = [], solutions = [], mid = Math.floor(n / 2);
+      for (k = 0; k < n; k++) { f.push(k / (n - 1)); sag.push(0); H.push(c.H0); solutions.push(null); }
+      var first = loaded(span, dh, c, f[mid] * span, u.L0);
+      if (!first) return null;
+      sag[mid] = first.sag; H[mid] = first.H; solutions[mid] = first.solution;
+      for (var dir = -1; dir <= 1; dir += 2) {
+        var guess = first.solution;
+        for (k = mid + dir; dir < 0 ? k > 0 : k < n - 1; k += dir) {
+          var r = loaded(span, dh, c, f[k] * span, u.L0, guess) || loaded(span, dh, c, f[k] * span, u.L0);
+          if (!r) return null;
+          sag[k] = r.sag; H[k] = r.H; solutions[k] = r.solution; guess = r.solution;
+        }
+      }
+      return {c: c, L0: u.L0, unloaded: unloadedPts, f: f, sag: sag, H: H, solutions: solutions,
+              sagAt: function(t) {  // envelope at fraction t (linear interpolation)
+                var i = Math.min(n - 2, Math.floor(t * (n - 1))), a = t * (n - 1) - i;
+                return sag[i] * (1 - a) + sag[i + 1] * a;
+              },
+              athlete: function(x) {  // loaded webbing with the athlete at x
+                var t = x / span, i = Math.max(1, Math.min(n - 2, Math.round(t * (n - 1))));
+                var s = loaded(span, dh, c, x, u.L0, solutions[i]) || loaded(span, dh, c, x, u.L0);
+                return s && {sag: s.sag, H: s.H, curve: loadedCurve(c, s, u.L0, 60)};
+              }};
+    }
+    return {estimate: estimate};
+  })();
+
   // Terrain profile of the clicked line, in a panel along the bottom of the map
   var SLOPE = {{ this.slope|tojson }}, LEASH_FALL = {{ this.leash_fall|tojson }};
+  var MODEL = {{ this.model|tojson }};
   var PROFILE = {terrain: "#8a7656", terrainFill: "#e3d8c3", trees: "#3f8f35",
-                 treesFill: "rgba(76,153,60,0.45)", limit: "#d62728"};
-  var profile = {panel: null, line: null, equal: false, marker: null};
+                 treesFill: "rgba(76,153,60,0.45)", limit: "#d62728", envelope: "#6a3d9a",
+                 fallFill: "rgba(214,39,40,0.12)", athlete: "#222"};
+  var RIGGING = [["pretension", "kN pretension", 0.1], ["stretch", "% stretch @ 10 kN", 0.5],
+                 ["webbing_weight", "g/m webbing", 5], ["athlete_mass", "kg athlete", 5],
+                 ["fall_zone", "m fall zone", 0.5]];
+  var LAYERS = [["webbing", "webbing"], ["athlete", "athlete under cursor"],
+                ["envelope", "sag envelope"], ["fall", "fall zone"]];
+  var profile = {panel: null, line: null, equal: false, marker: null, estimate: null, key: null,
+                 rigging: {{ this.rigging|tojson }},
+                 show: {webbing: true, athlete: true, envelope: true, fall: true}};
 
   function svg(tag, attrs, text) {
     var s = "<" + tag;
@@ -299,7 +445,7 @@ GROUPING_SCRIPT = """
     for (var i = 0; i < steps.length; i++) if (steps[i] * mag >= raw) return steps[i] * mag;
     return 10 * mag;
   }
-  function safetyLimit(l, d) {
+  function formulaLimit(l, d) {
     return Math.min(l.e1, l.e2) - SLOPE * Math.min(d, l.len - d) - LEASH_FALL;
   }
 
@@ -314,24 +460,56 @@ GROUPING_SCRIPT = """
   function hideProfile() {
     profile.panel.hidden = true;
     L.DomUtil.removeClass(map.getContainer(), "fal-profile-open");
+    removeMarker();
+  }
+  function removeMarker() {
     if (profile.marker) { map.removeLayer(profile.marker); profile.marker = null; }
   }
+  function swatch(style) { return "<span class='fal-swatch' style='" + style + "'></span> "; }
   function createProfilePanel() {
     var div = L.DomUtil.create("div", "fal-profile", map.getContainer());
     div.innerHTML =
       "<div class='fal-profile-head'><div><b class='fal-profile-title'></b>" +
       "<span class='fal-profile-legend'>" +
-      "<span><span class='fal-swatch' style='height:8px;background:" + PROFILE.terrainFill +
-      ";border:1px solid " + PROFILE.terrain + "'></span> terrain</span>" +
-      "<span><span class='fal-swatch' style='height:8px;background:" + PROFILE.treesFill +
-      "'></span> trees/buildings</span>" +
-      "<span><span class='fal-swatch fal-tape'></span> webbing</span>" +
-      "<span><span class='fal-swatch' style='border-top:2px dashed " + PROFILE.limit +
-      ";height:0'></span> safety limit</span></span></div>" +
+      "<span>" + swatch("height:8px;background:" + PROFILE.terrainFill + ";border:1px solid " + PROFILE.terrain) + "terrain</span>" +
+      "<span>" + swatch("height:8px;background:" + PROFILE.treesFill) + "trees/buildings</span>" +
+      "<span>" + swatch("border-top:2px dashed " + PROFILE.limit + ";height:0") + "safety limit (" +
+      (MODEL === "sag" ? "sag model" : "formula") + ")</span></span></div>" +
       "<div><button class='fal-scale'></button> <button class='fal-close' title='Close'>&times;</button></div></div>" +
+      "<div class='fal-profile-controls'><span class='fal-rigging'></span><span class='fal-layers'></span></div>" +
       "<div class='fal-profile-chart'></div><div class='fal-profile-readout'></div>";
     L.DomEvent.disableClickPropagation(div);
     L.DomEvent.disableScrollPropagation(div);
+
+    var rigging = div.querySelector(".fal-rigging");
+    RIGGING.forEach(function(r) {
+      var label = document.createElement("label"), input = document.createElement("input");
+      input.type = "number"; input.min = 0; input.step = r[2]; input.value = profile.rigging[r[0]];
+      input.addEventListener("change", function() {
+        var v = parseFloat(input.value);
+        if (isFinite(v) && (v > 0 || (r[0] !== "pretension" && r[0] !== "stretch" && v >= 0))) {
+          profile.rigging[r[0]] = v;
+          drawProfile();
+        } else input.value = profile.rigging[r[0]];
+      });
+      label.appendChild(input);
+      label.appendChild(document.createTextNode(" " + r[1]));
+      rigging.appendChild(label);
+    });
+    var layers = div.querySelector(".fal-layers");
+    var layerStyle = {webbing: "height:3px;background:" + COLORS.clean,
+                      athlete: "height:2px;background:" + PROFILE.athlete,
+                      envelope: "border-top:2px dotted " + PROFILE.envelope + ";height:0",
+                      fall: "height:8px;background:" + PROFILE.fallFill + ";border:1px solid " + PROFILE.limit};
+    LAYERS.forEach(function(layer) {
+      var label = document.createElement("label"), box = document.createElement("input");
+      box.type = "checkbox"; box.checked = profile.show[layer[0]];
+      box.addEventListener("change", function() { profile.show[layer[0]] = box.checked; drawProfile(); });
+      label.appendChild(box);
+      label.insertAdjacentHTML("beforeend", " " + swatch(layerStyle[layer[0]]) + layer[1]);
+      layers.appendChild(label);
+    });
+
     div.querySelector(".fal-close").addEventListener("click", hideProfile);
     div.querySelector(".fal-scale").addEventListener("click", function() {
       profile.equal = !profile.equal;
@@ -341,15 +519,38 @@ GROUPING_SCRIPT = """
     profile.panel = div;
   }
 
+  function currentEstimate(l) {
+    var key = [l.x1, l.y1, l.x2, l.y2, JSON.stringify(profile.rigging)].join("|");
+    if (profile.key !== key) {
+      profile.key = key;
+      profile.estimate = Sag.estimate(l.len, l.e1 - l.e2, profile.rigging);
+    }
+    return profile.estimate;
+  }
+
   function drawProfile() {
-    var l = profile.line, p = l.prof, panel = profile.panel;
+    var l = profile.line, p = l.prof, panel = profile.panel, est = currentEstimate(l);
     var chart = panel.querySelector(".fal-profile-chart");
     var W = chart.clientWidth || 800, H = 170, m = {l: 58, r: 20, t: 18, b: 24};
     var pw = W - m.l - m.r, ph = H - m.t - m.b;
     var color = l.over ? COLORS.over : COLORS.clean;
-    var limitMid = safetyLimit(l, l.len / 2);
+    var chord = function(d) { return l.e1 + (l.e2 - l.e1) * d / l.len; };
+    var fall = profile.rigging.fall_zone;
+    var envelopeAt = function(d) { return chord(d) - est.sagAt(d / l.len); };
+    var limit = function(d) {
+      if (MODEL !== "sag") return formulaLimit(l, d);
+      return est ? envelopeAt(d) - fall : NaN;
+    };
 
-    var values = p.z.concat(p.s || [], [l.e1, l.e2, limitMid]).filter(function(v) { return v !== null; });
+    // Vertical range: everything that is drawn
+    var values = p.z.concat(p.s || [], [l.e1, l.e2]);
+    var dsamples = [];
+    for (var q = 0; q <= 40; q++) dsamples.push(l.len * q / 40);
+    dsamples.forEach(function(d) {
+      values.push(limit(d));
+      if (est) values.push(envelopeAt(d) - (profile.show.fall ? fall : 0));
+    });
+    values = values.filter(function(v) { return v !== null && isFinite(v); });
     var zmin = Math.min.apply(null, values), zmax = Math.max.apply(null, values);
     var pad = Math.max((zmax - zmin) * 0.08, 1);
     zmin -= pad; zmax += pad;
@@ -376,6 +577,13 @@ GROUPING_SCRIPT = """
       out += svg("text", {x: X(d), y: H - 6, "text-anchor": "middle", fill: "#777"}, d.toFixed(0) + " m");
     }
 
+    // Fall zone: from the sag envelope down by the fall zone height
+    if (est && profile.show.fall) {
+      var upper = dsamples.map(function(d) { return pt(d, envelopeAt(d)); });
+      var lower = dsamples.map(function(d) { return pt(d, envelopeAt(d) - fall); }).reverse();
+      out += svg("polygon", {points: upper.concat(lower).join(" "), fill: PROFILE.fallFill, stroke: "none"});
+    }
+
     // Terrain (NMT) and trees/buildings (NMPT)
     var ground = [], top = [], bottom = [], i;
     for (i = 0; i < p.d.length; i++) if (p.z[i] !== null) ground.push(pt(p.d[i], p.z[i]));
@@ -391,19 +599,32 @@ GROUPING_SCRIPT = """
                                                   X(0).toFixed(1) + "," + (H - m.b)]).join(" "),
                            fill: PROFILE.terrainFill, stroke: PROFILE.terrain, "stroke-width": 1});
 
-    // Safety limit (formula) and the webbing between anchors
-    out += svg("polyline", {points: [pt(0, safetyLimit(l, 0)), pt(l.len / 2, limitMid),
-                                     pt(l.len, safetyLimit(l, l.len))].join(" "),
+    // Safety limit used by the search
+    out += svg("polyline", {points: dsamples.map(function(d) { return pt(d, limit(d)); }).join(" "),
                             fill: "none", stroke: PROFILE.limit, "stroke-width": 1.5, "stroke-dasharray": "6 4"});
-    out += svg("line", {x1: X(0), y1: Y(l.e1), x2: X(l.len), y2: Y(l.e2), stroke: color, "stroke-width": 2.5});
 
-    // Smallest clearance over terrain and over trees/buildings
+    // Sag estimator: envelope and the webbing without the athlete
+    if (est && profile.show.envelope) {
+      out += svg("polyline", {points: dsamples.map(function(d) { return pt(d, envelopeAt(d)); }).join(" "),
+                              fill: "none", stroke: PROFILE.envelope, "stroke-width": 1.5, "stroke-dasharray": "2 3"});
+    }
+    if (profile.show.webbing) {
+      var webbing = est ? est.unloaded.map(function(e) { return pt(e[0], l.e1 - e[1]); })
+                        : [pt(0, l.e1), pt(l.len, l.e2)];
+      out += svg("polyline", {points: webbing.join(" "), fill: "none", stroke: color, "stroke-width": 2.5});
+    }
+    out += svg("polyline", {"class": "fal-loaded", fill: "none", stroke: PROFILE.athlete, "stroke-width": 1.5,
+                            visibility: "hidden"});
+    out += svg("circle", {"class": "fal-athlete", r: 4, fill: PROFILE.athlete, visibility: "hidden"});
+
+    // Smallest clearance over terrain and over trees/buildings (from the search)
     function minMarker(min, stroke, label, below) {
-      var top = safetyLimit(l, min[0]), bottom = top - min[1];
-      out += svg("line", {x1: X(min[0]), x2: X(min[0]), y1: Y(top), y2: Y(bottom), stroke: stroke,
-                          "stroke-width": 2});
+      var topZ = limit(min[0]), bottomZ = topZ - min[1];
+      if (!isFinite(topZ)) return;
       var right = min[0] > l.len / 2;  // label on the inner side, so it is not cut off
-      out += svg("text", {x: X(min[0]) + (right ? -4 : 4), y: (below ? Y(bottom) + 12 : Y(top) - 4),
+      out += svg("line", {x1: X(min[0]), x2: X(min[0]), y1: Y(topZ), y2: Y(bottomZ), stroke: stroke,
+                          "stroke-width": 2});
+      out += svg("text", {x: X(min[0]) + (right ? -4 : 4), y: (below ? Y(bottomZ) + 12 : Y(topZ) - 4),
                           fill: stroke, "text-anchor": right ? "end" : "start"},
                  label + " " + min[1].toFixed(1) + " m");
     }
@@ -425,32 +646,60 @@ GROUPING_SCRIPT = """
 
     var dh = Math.abs(l.e1 - l.e2);
     panel.querySelector(".fal-profile-title").textContent =
-      "Profile: " + l.len.toFixed(0) + " m, A1 " + l.e1.toFixed(1) + " m \\u2192 A2 " + l.e2.toFixed(1) +
-      " m (\\u0394h " + dh.toFixed(1) + " m), min. clearance " + l.clr.toFixed(1) + " m";
-    panel.querySelector(".fal-tape").style.background = color;
+      "Profile: " + l.len.toFixed(0) + " m, A1 " + l.e1.toFixed(1) + " m → A2 " + l.e2.toFixed(1) +
+      " m (Δh " + dh.toFixed(1) + " m), min. clearance " + l.clr.toFixed(1) + " m";
     panel.querySelector(".fal-scale").textContent =
-      profile.equal ? "Auto scale" : "1:1 scale (now vertical \\u00d7" + (sy / sx).toFixed(1) + ")";
-    panel.querySelector(".fal-profile-readout").textContent = "";
+      profile.equal ? "Auto scale" : "1:1 scale (now vertical ×" + (sy / sx).toFixed(1) + ")";
 
-    var cursor = chart.querySelector(".fal-cursor"), hover = chart.querySelector(".fal-hover");
+    var summary = "Sag estimator did not converge for these values.";
+    if (est) {
+      var k = est.sag.indexOf(Math.max.apply(null, est.sag));
+      summary = "Sag estimator: max sag " + est.sag[k].toFixed(2) + " m below the chord with the athlete at " +
+        (est.f[k] * l.len).toFixed(0) + " m (line tension " + (est.H[k] / 1e3).toFixed(1) +
+        " kN); without the athlete " + Math.max.apply(null, est.unloaded.map(function(e, j) {
+          return e[1] - (l.e1 - l.e2) * e[0] / l.len; })).toFixed(2) + " m.";
+    }
+    var readout = panel.querySelector(".fal-profile-readout");
+    readout.textContent = summary;
+
+    var svgEl = chart.querySelector("svg"), cursor = chart.querySelector(".fal-cursor");
+    var hover = chart.querySelector(".fal-hover"), loadedLine = chart.querySelector(".fal-loaded");
+    var athleteDot = chart.querySelector(".fal-athlete");
     hover.addEventListener("mousemove", function(e) {
-      var box = chart.querySelector("svg").getBoundingClientRect();
+      var box = svgEl.getBoundingClientRect();
       var d = Math.max(0, Math.min(l.len, (e.clientX - box.left - m.l - xoff) / sx));
-      var lo = 0, hi = p.d.length - 1;  // nearest sample
+      var lo = 0, hi = p.d.length - 1;  // nearest terrain sample
       while (hi - lo > 1) { var mid = (lo + hi) >> 1; if (p.d[mid] < d) lo = mid; else hi = mid; }
       var k = (d - p.d[lo] < p.d[hi] - d) ? lo : hi;
-      cursor.setAttribute("x1", X(p.d[k]));
-      cursor.setAttribute("x2", X(p.d[k]));
+      cursor.setAttribute("x1", X(d));
+      cursor.setAttribute("x2", X(d));
       cursor.setAttribute("visibility", "visible");
-      var limit = safetyLimit(l, p.d[k]), text = p.d[k].toFixed(0) + " m from A1";
-      if (p.z[k] !== null) text += " \\u00b7 terrain " + p.z[k].toFixed(1) + " m";
-      if (p.s && p.s[k] !== null) text += " \\u00b7 trees/buildings " + p.s[k].toFixed(1) + " m";
-      text += " \\u00b7 safety limit " + limit.toFixed(1) + " m";
-      if (p.z[k] !== null) text += " \\u00b7 clearance " + (limit - p.z[k]).toFixed(1) + " m";
-      if (p.s && p.s[k] !== null) text += " (over trees/buildings " + (limit - Math.max(p.s[k], p.z[k])).toFixed(1) + " m)";
-      panel.querySelector(".fal-profile-readout").textContent = text;
 
-      var t = p.d[k] / l.len, at = [l.lat1 + (l.lat2 - l.lat1) * t, l.lon1 + (l.lon2 - l.lon1) * t];
+      var text = d.toFixed(0) + " m from A1";
+      if (p.z[k] !== null) text += " · terrain " + p.z[k].toFixed(1) + " m";
+      if (p.s && p.s[k] !== null) text += " · trees/buildings " + p.s[k].toFixed(1) + " m";
+      var lim = limit(d);
+      if (isFinite(lim)) {
+        text += " · safety limit " + lim.toFixed(1) + " m";
+        if (p.z[k] !== null) text += " · clearance " + (lim - p.z[k]).toFixed(1) + " m";
+        if (p.s && p.s[k] !== null) text += " (over trees/buildings " + (lim - Math.max(p.s[k], p.z[k])).toFixed(1) + " m)";
+      }
+      var athlete = est && profile.show.athlete && d > 0.01 * l.len && d < 0.99 * l.len ? est.athlete(d) : null;
+      if (athlete) {
+        loadedLine.setAttribute("points", athlete.curve.map(function(e) { return pt(e[0], l.e1 - e[1]); }).join(" "));
+        loadedLine.setAttribute("visibility", "visible");
+        athleteDot.setAttribute("cx", X(d));
+        athleteDot.setAttribute("cy", Y(chord(d) - athlete.sag));
+        athleteDot.setAttribute("visibility", "visible");
+        text += " · athlete here: sag " + athlete.sag.toFixed(2) + " m, tension " + (athlete.H / 1e3).toFixed(1) + " kN";
+        if (p.z[k] !== null) text += ", " + (chord(d) - athlete.sag - p.z[k]).toFixed(1) + " m above terrain";
+      } else {
+        loadedLine.setAttribute("visibility", "hidden");
+        athleteDot.setAttribute("visibility", "hidden");
+      }
+      readout.textContent = text;
+
+      var t = d / l.len, at = [l.lat1 + (l.lat2 - l.lat1) * t, l.lon1 + (l.lon2 - l.lon1) * t];
       if (!profile.marker) {
         profile.marker = L.circleMarker(at, {radius: 6, color: "#000", weight: 2, fillColor: "#fff",
                                              fillOpacity: 1, interactive: false}).addTo(map);
@@ -458,7 +707,10 @@ GROUPING_SCRIPT = """
     });
     hover.addEventListener("mouseleave", function() {
       cursor.setAttribute("visibility", "hidden");
-      if (profile.marker) { map.removeLayer(profile.marker); profile.marker = null; }
+      loadedLine.setAttribute("visibility", "hidden");
+      athleteDot.setAttribute("visibility", "hidden");
+      readout.textContent = summary;
+      removeMarker();
     });
   }
 
@@ -606,7 +858,8 @@ def _relative_url(folder: str, html_path: str) -> str:
 def save_html_map(results: List[Dict], center_lat: float, center_lon: float,
                   radius: float, path: str, group_distance: float = 20,
                   group_by: str = "clearance", ortho_cache: Optional[str] = None,
-                  run: Optional[Dict] = None, runs_dir: Optional[str] = None):
+                  run: Optional[Dict] = None, runs_dir: Optional[str] = None,
+                  model: str = "formula", rigging: Optional[Rigging] = None):
     """Save an interactive map (Leaflet) with OpenTopoMap, OSM and geoportal orthophoto.
 
     Lines are grouped in the browser; the panel on the map switches grouping on
@@ -614,7 +867,8 @@ def save_html_map(results: List[Dict], center_lat: float, center_lon: float,
     Orthophoto tiles are read from ortho_cache (a {z}/{x}/{y}.jpg folder) when
     present there, and from the geoportal WMS otherwise.
     With run (its run.json metadata) and runs_dir, the map shows the run's
-    parameters and a list of all runs.
+    parameters and a list of all runs. model and rigging set the clearance model
+    shown in the profile and the initial values of the sag estimator.
     """
     import folium
     import xyzservices.providers as xyz
@@ -682,6 +936,8 @@ def save_html_map(results: List[Dict], center_lat: float, center_lon: float,
          round(r["elev_a1"], 2), round(r["elev_a2"], 2), r["over_obstacles"], r.get("profile")]
         for r in results]
     lines.slope, lines.leash_fall = SLOPE, LEASH_FALL
+    lines.model = model
+    lines.rigging = dataclasses.asdict(rigging or Rigging())
     lines.add_to(fmap)
 
     if run and runs_dir:

@@ -39,7 +39,7 @@ Next time you open PowerShell, just run `cd Find-a-Line` and `.\venv\Scripts\Act
   To search a larger area, add for example `--radius 2000` (in metres).
 
 - The elevation data is downloaded automatically from geoportal.gov.pl (only the first time for a given area) and the search starts.
-- When it is done, the coordinates of the lines are printed, a map opens in a new window, and an interactive map is saved. Open `findaline_map.html` from the project folder in your web browser, click a line to see its details and its terrain profile, and switch to the orthophoto (aerial photos) in the top-right corner.
+- When it is done, the coordinates of the lines are printed, a map opens in a new window, and an interactive map is saved. Open `findaline_map.html` from the project folder in your web browser, click a line to see its details and its terrain profile (move the mouse over the profile to see how the webbing sags with someone standing there; you can change the tension, webbing and weight below the profile), and switch to the orthophoto (aerial photos) in the top-right corner.
 - Aerial photos around the found lines are saved too, so you can look at them later without internet. The first time this can take a while; add `--no-ortho-cache` to skip it.
 - Every run is kept. To go back to an earlier one, pick it from the list in the top-left corner of the map, or open `runs/index.html`, which lists all runs with their maps and results (CSV files open in Excel).
 - Similar lines in the same spot are shown as one line. Use the panel in the bottom-left corner of the map to change how they are grouped or to show every line.

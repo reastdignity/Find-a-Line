@@ -27,6 +27,15 @@ The formula for safe elevation at any given point on a highline can be described
 This can also be visualised as a slope below the line that is always exactly 6 metres below the line at maximum deflection.
 <img width="1361" height="224" alt="visualisation" src="https://github.com/user-attachments/assets/5147f16f-768c-4a63-89b6-105c0c6ea8bd" />
 
+## Sag Estimator
+Instead of the formula above, lines can be checked against a physical estimate of the webbing (`--model sag`). Inspired by the [Highline Sag Calculator](https://sagcalc.krw.sk), the webbing is modelled as an elastic catenary:
+- the webbing has its own weight (`--webbing-weight`, g/m) and stretches under load (`--stretch`, % at 10 kN);
+- its unstretched length follows from the pretension (`--pretension`, kN) for the given span and height difference of the anchors;
+- the athlete (`--athlete-mass`, kg) is a point load. For every position of the athlete along the line the webbing shape is solved, which gives the *sag envelope*: how low the webbing is under the athlete at each point;
+- below the envelope a *fall zone* (`--fall-zone`, m) must stay free of terrain (and of trees/buildings with NMPT).
+
+Anchors are taken at ground level, as with the formula. With the default values (2.5 kN, 5% @ 10 kN, 70 g/m, 80 kg, 3 m) the estimator is less strict than the formula for most lengths, so it finds many more lines; tune the values to your setup. The interactive map always shows the estimator in the line profile, whichever model was used for the search.
+
 ## Algorithm Breakdown
 - Elevation data for a circle around the given point is downloaded from the GUGiK WCS service in tiles and resampled to the working resolution (`--resolution`). Tiles are cached, so a second run over the same area does not download anything.
 - Slope is computed from the terrain model (or read from your own slope raster, `--slope-file`). Pixels steeper than `--slope-threshold` degrees become promising anchors.
@@ -62,6 +71,10 @@ The search centre can be given in either of two coordinate systems:
 | `--slope-file` | | Your own slope raster in degrees (GeoTIFF or ASC) instead of computing it from NMT |
 | `--nmpt` | `mark` | `mark` or `reject` lines that pass too close to trees or buildings; `off` skips the check and the NMPT download |
 | `--processes` | CPU count - 1 | Number of parallel processes |
+| `--model` | `formula` | Clearance model for the search: `formula` or `sag` (see *Sag Estimator*) |
+| `--pretension` / `--stretch` | 2.5 / 5 | Pretension in kN / webbing stretch at 10 kN in % |
+| `--webbing-weight` / `--athlete-mass` | 70 / 80 | Webbing weight in g/m / athlete mass in kg |
+| `--fall-zone` | 3 | Height below the sagged webbing that must stay free, in metres |
 | `--cache-dir` | `cache` | Folder for downloaded data |
 | `--refresh` | | Download data again even if it is cached |
 | `--group-distance` | 20 | Group similar lines: both anchors within this many metres |
@@ -81,7 +94,7 @@ A steep rock face produces many near-identical lines (anchors shifted by a metre
 
 - The coordinates are printed in the terminal (WGS84, latitude and longitude), one line per group with the number of similar lines. Use `--all-lines` to list every line.
 - Every run is saved in its own folder, `runs/<date>_<place>/`: the interactive map (`map.html`), all lines with their group number (`lines.csv` for spreadsheets, `lines.geojson` for QGIS and other GIS tools) and the parameters (`run.json`). Runs are named after the nearest rock, peak or valley in OpenStreetMap and the locality (for example "Żabi Koń, Gaj Kobylański"); use `--name` to choose your own. `runs/index.html` lists all runs.
-- The interactive map can be opened in any web browser; `findaline_map.html` always opens the latest run. The panel in the top-left corner shows the run's parameters and switches to any other saved run. You can switch between OpenTopoMap, OpenStreetMap and the geoportal orthophoto, and click a line to see its length, anchor elevations and clearance. The panel in the bottom-left corner turns grouping on and off, sets the grouping distance and the line shown for each group. Clicking a group shows all of its lines. Clicking a line also opens its terrain profile at the bottom of the map: terrain (NMT), trees and buildings (NMPT), the webbing between the anchors and the safety limit from the formula, with the point of smallest clearance marked. Moving the mouse over the profile shows the values at that point and marks it on the map; the button switches between a fitted and a true (1:1) vertical scale. A popup can be moved off the line by dragging its top bar.
+- The interactive map can be opened in any web browser; `findaline_map.html` always opens the latest run. The panel in the top-left corner shows the run's parameters and switches to any other saved run. You can switch between OpenTopoMap, OpenStreetMap and the geoportal orthophoto, and click a line to see its length, anchor elevations and clearance. The panel in the bottom-left corner turns grouping on and off, sets the grouping distance and the line shown for each group. Clicking a group shows all of its lines. Clicking a line also opens its terrain profile at the bottom of the map: terrain (NMT), trees and buildings (NMPT) and the safety limit used by the search, with the point of smallest clearance marked. The sag estimator adds the webbing under its own weight, the sag envelope, the fall zone and, under the mouse cursor, the webbing with the athlete standing there; each can be switched on and off, and the rigging values can be changed in the panel to see the effect immediately. Moving the mouse over the profile shows the values at that point and marks it on the map; the button switches between a fitted and a true (1:1) vertical scale. A popup can be moved off the line by dragging its top bar.
 - Orthophoto tiles for the map are saved in `cache/ortho`, so the aerial photos also work without internet: the whole search area up to zoom 16, and a 30 m strip around each group's line up to the maximum zoom (21). Elsewhere the map loads the orthophoto online. The first run in an area can download a couple of thousand tiles (for example about 1700 tiles, 26 MB and 8 minutes for 66 spots within 1 km); later runs reuse them. Maps find the tiles through a relative path, so keep the `runs` and `cache` folders where they are; a map moved elsewhere loads everything online.
 - A static map is shown in a separate window (close it to finish the program), with one line per group.
 

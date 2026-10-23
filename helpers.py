@@ -72,8 +72,22 @@ def find_significant_slopes(elevation: np.ndarray, res: float, slope_threshold: 
     return np.concatenate(anchors) if anchors else np.empty((0, 2), dtype=np.int32)
 
 
+def max_safe_elevation(t: np.ndarray, length: float, elev_a1: float, elev_a2: float,
+                       sag_table=None) -> np.ndarray:
+    """Highest allowed terrain/obstacle elevation at fractions t of a line.
+
+    Without sag_table: the maximum elevation formula (see README).
+    With a sag.EnvelopeTable: the chord between the anchors, minus the sag under the
+    athlete (envelope from the sag estimator), minus the fall zone.
+    """
+    if sag_table is None:
+        return min(elev_a1, elev_a2) - SLOPE * np.minimum(t, 1 - t) * length - LEASH_FALL
+    chord = elev_a1 + (elev_a2 - elev_a1) * t
+    return chord - sag_table(length, elev_a1 - elev_a2, t) - sag_table.rig.fall_zone
+
+
 def evaluate_line(a1: np.ndarray, a2: np.ndarray, elevation: np.ndarray, res: float,
-                  surface: Optional[np.ndarray] = None
+                  surface: Optional[np.ndarray] = None, sag_table=None
                   ) -> Optional[Tuple[float, float, float, float, Optional[float]]]:
     """Evaluates clearance along a line between two anchor points.
 
@@ -85,6 +99,7 @@ def evaluate_line(a1: np.ndarray, a2: np.ndarray, elevation: np.ndarray, res: fl
         elevation: NMT elevation grid
         res: Pixel size in metres
         surface: Optional NMPT grid (trees, buildings)
+        sag_table: sag.EnvelopeTable to use the sag estimator instead of the formula
 
     Returns:
         (elev_a1, elev_a2, length, min clearance over NMT, min clearance over NMPT or None),
@@ -104,11 +119,9 @@ def evaluate_line(a1: np.ndarray, a2: np.ndarray, elevation: np.ndarray, res: fl
     cols = np.rint(c1 + dc * t).astype(np.intp)
 
     length = float(np.hypot(dr, dc)) * res
-    distance = np.minimum(t, 1 - t) * length  # metres to the nearest anchor
-
     elev_a1 = float(elevation[r1, c1])
     elev_a2 = float(elevation[r2, c2])
-    max_elev = min(elev_a1, elev_a2) - SLOPE * distance - LEASH_FALL
+    max_elev = max_safe_elevation(t, length, elev_a1, elev_a2, sag_table)
 
     # NaN (no data) makes the clearance NaN, so such lines never pass
     clearance = float(np.min(max_elev - elevation[rows, cols]))
@@ -123,7 +136,8 @@ def evaluate_line(a1: np.ndarray, a2: np.ndarray, elevation: np.ndarray, res: fl
 
 
 def line_profile(a1: Tuple[int, int], a2: Tuple[int, int], elevation: np.ndarray, res: float,
-                 surface: Optional[np.ndarray] = None, max_points: int = 200) -> dict:
+                 surface: Optional[np.ndarray] = None, max_points: int = 200,
+                 sag_table=None) -> dict:
     """Terrain (and NMPT) profile along a line, for the profile chart of the map.
 
     Every pixel between the anchors is sampled (as in evaluate_line), then the
@@ -147,8 +161,8 @@ def line_profile(a1: Tuple[int, int], a2: Tuple[int, int], elevation: np.ndarray
     terrain = np.asarray(elevation[rows, cols], dtype=np.float64)
     obstacles = None if surface is None else np.asarray(surface[rows, cols], dtype=np.float64)
 
-    # Same formula as evaluate_line, anchors excluded from the minimum
-    max_elev = min(terrain[0], terrain[-1]) - SLOPE * np.minimum(distance, length - distance) - LEASH_FALL
+    # Same limit as evaluate_line, anchors excluded from the minimum
+    max_elev = max_safe_elevation(t, length, terrain[0], terrain[-1], sag_table)
     inner = slice(1, steps)
     i_min = 1 + int(np.nanargmin((max_elev - terrain)[inner]))
     keep = {0, steps, i_min}
@@ -188,7 +202,8 @@ _worker = {}
 
 
 def _worker_init(elevation_path: str, surface_path: Optional[str], anchors_path: str,
-                 res: float, min_length: float, max_length: float, nmpt_mode: Optional[str]):
+                 res: float, min_length: float, max_length: float, nmpt_mode: Optional[str],
+                 sag_table=None):
     """Initialize worker process - memory-map the grids and index the anchors."""
     anchors = np.load(anchors_path)
     _worker.update(
@@ -197,6 +212,7 @@ def _worker_init(elevation_path: str, surface_path: Optional[str], anchors_path:
         anchors=anchors,
         tree=cKDTree(anchors * res),
         res=res, min_length=min_length, max_length=max_length, nmpt_mode=nmpt_mode,
+        sag_table=sag_table,
     )
 
 
@@ -224,7 +240,8 @@ def _search_chunk(bounds: Tuple[int, int]) -> Tuple[int, int, List[Line]]:
         evaluated += partners.size
 
         for j in partners:
-            result = evaluate_line(anchors[i], anchors[j], w["elevation"], res, w["surface"])
+            result = evaluate_line(anchors[i], anchors[j], w["elevation"], res, w["surface"],
+                                   w["sag_table"])
             if is_valid(result, w["nmpt_mode"]):
                 elev_a1, elev_a2, length, clearance, clearance_nmpt = result
                 lines.append(Line(tuple(map(int, anchors[i])), tuple(map(int, anchors[j])),
@@ -234,7 +251,7 @@ def _search_chunk(bounds: Tuple[int, int]) -> Tuple[int, int, List[Line]]:
 
 def estimate_search(anchors: np.ndarray, elevation: np.ndarray, res: float,
                     min_length: float, max_length: float,
-                    surface: Optional[np.ndarray] = None,
+                    surface: Optional[np.ndarray] = None, sag_table=None,
                     sample_size: int = 2000) -> Tuple[float, float]:
     """Estimate the number of anchor pairs and the time to evaluate one pair.
 
@@ -255,7 +272,7 @@ def estimate_search(anchors: np.ndarray, elevation: np.ndarray, res: float,
     timed, start = 0, time.perf_counter()
     for i in sample[:200]:
         for j in tree.query_ball_point(points[i], r=max_length)[:20]:
-            evaluate_line(anchors[i], anchors[j], elevation, res, surface)
+            evaluate_line(anchors[i], anchors[j], elevation, res, surface, sag_table)
             timed += 1
     seconds_per_pair = (time.perf_counter() - start) / timed if timed else 0
     return pairs, seconds_per_pair
@@ -264,7 +281,7 @@ def estimate_search(anchors: np.ndarray, elevation: np.ndarray, res: float,
 def find_valid_lines(elevation_path: str, surface_path: Optional[str], anchors_path: str,
                      num_anchors: int, res: float, min_length: float, max_length: float,
                      nmpt_mode: Optional[str] = None,
-                     num_processes: Optional[int] = None) -> List[Line]:
+                     num_processes: Optional[int] = None, sag_table=None) -> List[Line]:
     """Finds valid lines between anchors using parallel processing.
 
     Anchor pairs are generated on the fly with a KD-tree (only pairs within the
@@ -279,6 +296,7 @@ def find_valid_lines(elevation_path: str, surface_path: Optional[str], anchors_p
         min_length, max_length: Line length constraints in metres
         nmpt_mode: None, "mark" or "reject"
         num_processes: Number of parallel processes (defaults to CPU count - 1)
+        sag_table: sag.EnvelopeTable to use the sag estimator instead of the formula
 
     Returns:
         List of valid lines
@@ -295,7 +313,8 @@ def find_valid_lines(elevation_path: str, surface_path: Optional[str], anchors_p
     done_anchors = evaluated = 0
     valid_lines: List[Line] = []
 
-    initargs = (elevation_path, surface_path, anchors_path, res, min_length, max_length, nmpt_mode)
+    initargs = (elevation_path, surface_path, anchors_path, res, min_length, max_length, nmpt_mode,
+                sag_table)
     with Pool(processes=num_processes, initializer=_worker_init, initargs=initargs) as pool:
         for n_anchors, n_pairs, lines in pool.imap_unordered(_search_chunk, chunks):
             done_anchors += n_anchors
