@@ -150,6 +150,8 @@ def params_summary(meta: Dict) -> str:
     nmpt = f"NMPT {p['nmpt']}" if p["nmpt"] else "no NMPT"
     text = (f"radius {p['radius']:g} m, {p['resolution']:g} m grid, slope ≥{p['slope_threshold']:g}°, "
             f"{p['min_length']:g}–{p['max_length']:g} m, {nmpt}")
+    if "max_anchor_diff" in p:
+        text += f", Δh ≤{p['max_anchor_diff']:g}% / {p['max_anchor_diff_m']:g} m"
     if p.get("model") == "sag":
         r = p["rigging"]
         text += (f", sag model ({r['pretension']:g} kN, {r['stretch']:g}%, {r['webbing_weight']:g} g/m, "

@@ -39,7 +39,7 @@ Anchors are taken at ground level, as with the formula. With the default values 
 ## Algorithm Breakdown
 - Elevation data for a circle around the given point is downloaded from the GUGiK WCS service in tiles and resampled to the working resolution (`--resolution`). Tiles are cached, so a second run over the same area does not download anything.
 - Slope is computed from the terrain model (or read from your own slope raster, `--slope-file`). Pixels steeper than `--slope-threshold` degrees become promising anchors.
-- For every promising anchor, we find every other anchor whose distance matches our length criteria (using a KD-tree, so pairs that are too far apart are never considered).
+- For every promising anchor, we find every other anchor whose distance matches our length criteria (using a KD-tree, so pairs that are too far apart are never considered). Pairs whose anchors differ in height by more than 5% of the line length, or by more than 50 m, are skipped.
 - For each such pair, we "draw" a line using a DDA (Digital Differential Analyzer) algorithm. This allows us to intercept every raster pixel between the two anchors.
 - For each raster pixel that exists along this line, the maximum acceptable elevation is calculated using our formula, and the pixel's actual elevation is subtracted from this value to retrieve the elevation difference (clearance). A **positive** clearance implies that the pixel's elevation is **lower** than our required maximum.
 - If every pixel has a positive clearance, the line is added to a list of valid lines.
@@ -68,6 +68,7 @@ The search centre can be given in either of two coordinate systems:
 | `--resolution` | 2 | Working resolution in metres (1 is the native NMT resolution) |
 | `--min-length` / `--max-length` | 30 / 1000 | Line length constraints, in metres |
 | `--slope-threshold` | 45 | Minimum terrain slope (degrees) for an anchor |
+| `--max-anchor-diff` / `--max-anchor-diff-m` | 5 / 50 | Maximum height difference of the anchors: % of the line length / metres (whichever is smaller) |
 | `--slope-file` | | Your own slope raster in degrees (GeoTIFF or ASC) instead of computing it from NMT |
 | `--nmpt` | `mark` | `mark` or `reject` lines that pass too close to trees or buildings; `off` skips the check and the NMPT download |
 | `--processes` | CPU count - 1 | Number of parallel processes |

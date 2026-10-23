@@ -197,22 +197,36 @@ def is_valid(result, nmpt_mode: Optional[str]) -> bool:
     return True
 
 
+def pair_filter(i: int, partners: np.ndarray, anchors: np.ndarray, anchor_elev: np.ndarray,
+                res: float, min_length: float, max_dh_ratio: float, max_dh: float) -> np.ndarray:
+    """Which partners of anchor i make a candidate line.
+
+    The line must be at least min_length long and the anchors may differ in
+    elevation by at most max_dh_ratio of the line length, and never more than max_dh.
+    """
+    lengths = np.hypot(*(anchors[partners] - anchors[i]).T) * res
+    dh = np.abs(anchor_elev[partners] - anchor_elev[i])
+    return (lengths >= min_length) & (dh <= np.minimum(max_dh_ratio * lengths, max_dh))
+
+
 # Data shared by each worker process (loaded once per worker)
 _worker = {}
 
 
 def _worker_init(elevation_path: str, surface_path: Optional[str], anchors_path: str,
                  res: float, min_length: float, max_length: float, nmpt_mode: Optional[str],
-                 sag_table=None):
+                 sag_table=None, max_dh_ratio: float = np.inf, max_dh: float = np.inf):
     """Initialize worker process - memory-map the grids and index the anchors."""
     anchors = np.load(anchors_path)
+    elevation = np.load(elevation_path, mmap_mode="r")
     _worker.update(
-        elevation=np.load(elevation_path, mmap_mode="r"),
+        elevation=elevation,
         surface=np.load(surface_path, mmap_mode="r") if surface_path else None,
         anchors=anchors,
+        anchor_elev=np.asarray(elevation[anchors[:, 0], anchors[:, 1]]),
         tree=cKDTree(anchors * res),
         res=res, min_length=min_length, max_length=max_length, nmpt_mode=nmpt_mode,
-        sag_table=sag_table,
+        sag_table=sag_table, max_dh_ratio=max_dh_ratio, max_dh=max_dh,
     )
 
 
@@ -235,8 +249,8 @@ def _search_chunk(bounds: Tuple[int, int]) -> Tuple[int, int, List[Line]]:
         partners = partners[partners > i]
         if partners.size == 0:
             continue
-        lengths = np.hypot(*(anchors[partners] - anchors[i]).T) * res
-        partners = partners[lengths >= w["min_length"]]
+        partners = partners[pair_filter(i, partners, anchors, w["anchor_elev"], res, w["min_length"],
+                                        w["max_dh_ratio"], w["max_dh"])]
         evaluated += partners.size
 
         for j in partners:
@@ -252,8 +266,12 @@ def _search_chunk(bounds: Tuple[int, int]) -> Tuple[int, int, List[Line]]:
 def estimate_search(anchors: np.ndarray, elevation: np.ndarray, res: float,
                     min_length: float, max_length: float,
                     surface: Optional[np.ndarray] = None, sag_table=None,
+                    max_dh_ratio: float = np.inf, max_dh: float = np.inf,
                     sample_size: int = 2000) -> Tuple[float, float]:
     """Estimate the number of anchor pairs and the time to evaluate one pair.
+
+    Pairs are counted with the same filter as the search (length, height difference)
+    for a random sample of anchors.
 
     Returns:
         (estimated pairs, seconds per pair on a single core)
@@ -264,14 +282,19 @@ def estimate_search(anchors: np.ndarray, elevation: np.ndarray, res: float,
     points = anchors * res
     tree = cKDTree(points)
     sample = rng.choice(len(anchors), min(len(anchors), sample_size), replace=False)
-    within_max = tree.query_ball_point(points[sample], r=max_length, return_length=True)
-    within_min = tree.query_ball_point(points[sample], r=min_length, return_length=True)
-    pairs = len(anchors) * float(np.mean(within_max - within_min)) / 2
+    anchor_elev = np.asarray(elevation[anchors[:, 0], anchors[:, 1]])
+    candidates = []
+    for i, partners in zip(sample, tree.query_ball_point(points[sample], r=max_length)):
+        partners = np.asarray(partners, dtype=np.intp)
+        partners = partners[partners != i]
+        candidates.append(partners[pair_filter(i, partners, anchors, anchor_elev, res, min_length,
+                                               max_dh_ratio, max_dh)])
+    pairs = len(anchors) * float(np.mean([len(c) for c in candidates])) / 2
 
     # Time a handful of real evaluations
     timed, start = 0, time.perf_counter()
-    for i in sample[:200]:
-        for j in tree.query_ball_point(points[i], r=max_length)[:20]:
+    for i, partners in zip(sample[:200], candidates[:200]):
+        for j in partners[:20]:
             evaluate_line(anchors[i], anchors[j], elevation, res, surface, sag_table)
             timed += 1
     seconds_per_pair = (time.perf_counter() - start) / timed if timed else 0
@@ -281,7 +304,8 @@ def estimate_search(anchors: np.ndarray, elevation: np.ndarray, res: float,
 def find_valid_lines(elevation_path: str, surface_path: Optional[str], anchors_path: str,
                      num_anchors: int, res: float, min_length: float, max_length: float,
                      nmpt_mode: Optional[str] = None,
-                     num_processes: Optional[int] = None, sag_table=None) -> List[Line]:
+                     num_processes: Optional[int] = None, sag_table=None,
+                     max_dh_ratio: float = np.inf, max_dh: float = np.inf) -> List[Line]:
     """Finds valid lines between anchors using parallel processing.
 
     Anchor pairs are generated on the fly with a KD-tree (only pairs within the
@@ -297,6 +321,7 @@ def find_valid_lines(elevation_path: str, surface_path: Optional[str], anchors_p
         nmpt_mode: None, "mark" or "reject"
         num_processes: Number of parallel processes (defaults to CPU count - 1)
         sag_table: sag.EnvelopeTable to use the sag estimator instead of the formula
+        max_dh_ratio, max_dh: Limits of the anchor height difference (see pair_filter)
 
     Returns:
         List of valid lines
@@ -314,7 +339,7 @@ def find_valid_lines(elevation_path: str, surface_path: Optional[str], anchors_p
     valid_lines: List[Line] = []
 
     initargs = (elevation_path, surface_path, anchors_path, res, min_length, max_length, nmpt_mode,
-                sag_table)
+                sag_table, max_dh_ratio, max_dh)
     with Pool(processes=num_processes, initializer=_worker_init, initargs=initargs) as pool:
         for n_anchors, n_pairs, lines in pool.imap_unordered(_search_chunk, chunks):
             done_anchors += n_anchors

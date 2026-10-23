@@ -54,6 +54,10 @@ def parse_args():
                         help="working resolution in metres (data is downsampled to it); min 1")
     search.add_argument("--min-length", type=float, default=30, help="minimum line length in metres")
     search.add_argument("--max-length", type=float, default=1000, help="maximum line length in metres")
+    search.add_argument("--max-anchor-diff", type=float, default=5,
+                        help="maximum height difference of the anchors in %% of the line length")
+    search.add_argument("--max-anchor-diff-m", type=float, default=50,
+                        help="maximum height difference of the anchors in metres")
     search.add_argument("--slope-threshold", type=float, default=45,
                         help="minimum terrain slope in degrees for a pixel to be an anchor")
     search.add_argument("--slope-file",
@@ -122,6 +126,8 @@ def parse_args():
         parser.error("--group-distance must be positive (use --all-lines to list every line)")
     if args.slope_file and not os.path.exists(args.slope_file):
         parser.error(f"slope file not found: {args.slope_file}")
+    if min(args.max_anchor_diff, args.max_anchor_diff_m) < 0:
+        parser.error("--max-anchor-diff and --max-anchor-diff-m cannot be negative")
     if min(args.pretension, args.stretch) <= 0 or min(args.webbing_weight, args.athlete_mass,
                                                          args.fall_zone) < 0:
         parser.error("rigging values must be positive")
@@ -176,6 +182,8 @@ if __name__ == "__main__":
     print(f"Radius: {args.radius:.0f}m, resolution: {args.resolution:g}m "
           f"({grid.width} x {grid.height} px)")
     print(f"Length constraints: {args.min_length:g}m - {args.max_length:g}m")
+    print(f"Anchor height difference: at most {args.max_anchor_diff:g}% of the length "
+          f"and {args.max_anchor_diff_m:g}m")
     print(f"Slope threshold: {args.slope_threshold:g} degrees")
     print(f"NMPT (trees/buildings): {args.nmpt or 'not used'}")
     if args.model == "sag":
@@ -234,9 +242,10 @@ if __name__ == "__main__":
     if args.model == "sag":
         print("Precomputing the sag estimator for all line lengths...")
         sag_table = sg.EnvelopeTable(rigging, args.min_length, args.max_length)
+    max_dh_ratio = args.max_anchor_diff / 100
     pairs, seconds_per_pair = sh.estimate_search(anchors, elevation, args.resolution,
                                                  args.min_length, args.max_length, surface,
-                                                 sag_table)
+                                                 sag_table, max_dh_ratio, args.max_anchor_diff_m)
     minutes = pairs * seconds_per_pair / num_processes / 60
     print(f"Estimated {pairs:,.0f} anchor pairs within length constraints, "
           f"~{minutes:.0f} min on {num_processes} processes")
@@ -247,7 +256,8 @@ if __name__ == "__main__":
 
     valid_lines = sh.find_valid_lines(elevation_path, surface_path, anchors_path, len(anchors),
                                       args.resolution, args.min_length, args.max_length,
-                                      args.nmpt, num_processes, sag_table)
+                                      args.nmpt, num_processes, sag_table,
+                                      max_dh_ratio, args.max_anchor_diff_m)
     if not valid_lines:
         sys.exit("No lines found matching elevation requirements.")
 
@@ -292,6 +302,8 @@ if __name__ == "__main__":
         "center": {"lat": center_lat, "lon": center_lon, "northing": northing, "easting": easting},
         "params": {"radius": args.radius, "resolution": args.resolution,
                    "min_length": args.min_length, "max_length": args.max_length,
+                   "max_anchor_diff": args.max_anchor_diff,
+                   "max_anchor_diff_m": args.max_anchor_diff_m,
                    "slope_threshold": args.slope_threshold, "slope_file": args.slope_file,
                    "nmpt": args.nmpt, "group_distance": args.group_distance,
                    "group_by": args.group_by, "model": args.model,
