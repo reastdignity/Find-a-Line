@@ -14,6 +14,7 @@ Run `python findaline.py --help` for all options.
 import argparse
 import os
 import sys
+from datetime import datetime
 
 import numpy as np
 
@@ -21,6 +22,7 @@ import geoportal as gp
 import helpers as sh
 import mapping as mp
 import orthophoto as ortho
+import runs as rn
 
 # Ask before continuing when a run looks this expensive
 CONFIRM_DOWNLOAD_MB = 500
@@ -73,7 +75,12 @@ def parse_args():
                         help="line shown for each group: largest clearance or longest")
     output.add_argument("--all-lines", action="store_true",
                         help="list every line instead of one line per group")
-    output.add_argument("--html", default="findaline_map.html", help="interactive map file")
+    output.add_argument("--runs-dir", default="runs",
+                        help="folder where every run (map, CSV, GeoJSON, parameters) is saved")
+    output.add_argument("--name",
+                        help="name of the run (default: place name from OpenStreetMap)")
+    output.add_argument("--html", default="findaline_map.html",
+                        help="page that opens the map of the latest run")
     output.add_argument("--no-html", action="store_true", help="do not save the interactive map")
     output.add_argument("--no-ortho-cache", action="store_true",
                         help="do not download orthophoto tiles for offline use of the map")
@@ -217,11 +224,12 @@ if __name__ == "__main__":
     # Step 4: Convert pixel coordinates to GPS coordinates
     print("\nStep 4: Converting pixel coordinates to GPS coordinates...")
     results = mp.coordify(valid_lines, grid, args.nmpt)
+    spot_groups = mp.group_lines(results, args.group_distance, args.group_by)
     if args.all_lines:
         groups = [{"rep": r, "members": [r]} for r in results]
         print(f"\nFound {len(results)} valid lines")
     else:
-        groups = mp.group_lines(results, args.group_distance, args.group_by)
+        groups = spot_groups
         shown = "largest clearance" if args.group_by == "clearance" else "longest"
         print(f"\nFound {len(results)} valid lines in {len(groups)} spots "
               f"(lines with both anchors within {args.group_distance:g}m are grouped, "
@@ -238,13 +246,33 @@ if __name__ == "__main__":
         print(f"    Anchor 1: {r['anchor1'][0]:.6f}, {r['anchor1'][1]:.6f}")
         print(f"    Anchor 2: {r['anchor2'][0]:.6f}, {r['anchor2'][1]:.6f}")
 
-    # Step 5: Display results on a map
-    print("\nStep 5: Displaying results on map...")
+    # Step 5: Save the run and display results on a map
+    print("\nStep 5: Saving the run and displaying results on map...")
+    created = datetime.now()
+    name = args.name or rn.place_name(center_lat, center_lon) or f"{center_lat:.5f}, {center_lon:.5f}"
+    run = rn.new_run(args.runs_dir, name, created)
+    meta = {
+        "id": run["id"],
+        "name": name,
+        "created": created.isoformat(timespec="seconds"),
+        "center": {"lat": center_lat, "lon": center_lon, "northing": northing, "easting": easting},
+        "params": {"radius": args.radius, "resolution": args.resolution,
+                   "min_length": args.min_length, "max_length": args.max_length,
+                   "slope_threshold": args.slope_threshold, "slope_file": args.slope_file,
+                   "nmpt": args.nmpt, "group_distance": args.group_distance,
+                   "group_by": args.group_by},
+        "summary": {"lines": len(results), "spots": len(spot_groups),
+                    "clear_spots": sum(not g["rep"]["over_obstacles"] for g in spot_groups)},
+    }
+    meta["description"] = rn.params_summary(meta)
+    rn.save_results(run["path"], spot_groups, meta)
+    print(f"Run \"{name}\" saved to {os.path.abspath(run['path'])}")
+
     if not args.no_html:
         ortho_cache = None
         if not args.no_ortho_cache:
             # Detailed orthophoto only around one line per group (variants lie within the strip)
-            spots = [g["rep"] for g in mp.group_lines(results, args.group_distance, args.group_by)]
+            spots = [g["rep"] for g in spot_groups]
             tiles = ortho.missing_tiles(ortho.tiles_to_cache(spots, center_lat, center_lon,
                                                              args.radius), args.cache_dir)
             minutes = len(tiles) * ORTHO_SECONDS_PER_TILE / 60
@@ -255,9 +283,14 @@ if __name__ == "__main__":
                 tiles = []
             ortho.download(tiles, args.cache_dir)
             ortho_cache = os.path.join(args.cache_dir, "ortho")
-        mp.save_html_map(results, center_lat, center_lon, args.radius, args.html,
-                         args.group_distance, args.group_by, ortho_cache)
-        print(f"Interactive map saved to {os.path.abspath(args.html)} (open it in a web browser)")
+        map_path = os.path.join(run["path"], "map.html")
+        mp.save_html_map(results, center_lat, center_lon, args.radius, map_path,
+                         args.group_distance, args.group_by, ortho_cache, meta, args.runs_dir)
+        rn.write_latest_redirect(args.html, map_path)
+        print(f"Interactive map saved to {os.path.abspath(map_path)}")
+        print(f"Open {os.path.abspath(args.html)} in a web browser to see the latest run")
+    rn.write_index(args.runs_dir)
+    print(f"All runs: {os.path.abspath(os.path.join(args.runs_dir, 'index.html'))}")
     if not args.no_plot:
         mp.mapify([g["rep"] for g in groups], center_lat, center_lon, args.radius)
 

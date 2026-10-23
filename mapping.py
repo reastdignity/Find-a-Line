@@ -353,23 +353,78 @@ GROUPING_SCRIPT = """
 """
 
 
-def _cache_url(cache_path: str, html_path: str) -> str:
-    """URL of a cache folder as seen from the HTML file (relative when possible)."""
+# Panel with the run's parameters and a list of all saved runs (from runs.js).
+# Without runs.js (e.g. the map was moved) only the current run is listed.
+RUNS_SCRIPT = """
+{% macro header(this, kwargs) %}
+<script src="{{ this.runs_js|e }}"></script>
+<style>
+  .fal-run { max-width: 300px; }
+  .fal-run select { max-width: 100%; margin: 2px 0; }
+  .fal-run .fal-params { color: #555; }
+</style>
+{% endmacro %}
+
+{% macro script(this, kwargs) %}
+(function(map) {
+  var current = {{ this.run|tojson }};
+  var runs = (window.FINDALINE_RUNS || [current]).filter(function(r) {
+    return r.has_map !== false || r.id === current.id;
+  });
+  var label = function(r) { return r.created.slice(0, 16).replace("T", " ") + " - " + r.name; };
+  var Panel = L.Control.extend({
+    options: {position: "topleft"},
+    onAdd: function() {
+      var div = L.DomUtil.create("div", "fal-panel fal-run");
+      div.innerHTML = "<b>Run</b> &middot; <a>all runs</a><br>";
+      div.querySelector("a").href = {{ this.index_href|tojson }};
+      var select = document.createElement("select");
+      runs.forEach(function(r) {
+        var option = document.createElement("option");
+        option.value = r.id;
+        option.textContent = label(r);
+        option.selected = r.id === current.id;
+        select.appendChild(option);
+      });
+      select.addEventListener("change", function() {
+        location.href = {{ this.runs_base|tojson }} + encodeURIComponent(select.value) + "/map.html";
+      });
+      div.appendChild(select);
+      var params = document.createElement("div");
+      params.className = "fal-params";
+      params.textContent = current.description;
+      div.appendChild(params);
+      L.DomEvent.disableClickPropagation(div);
+      L.DomEvent.disableScrollPropagation(div);
+      return div;
+    }
+  });
+  new Panel().addTo(map);
+})({{ this._parent.get_name() }});
+{% endmacro %}
+"""
+
+
+def _relative_url(folder: str, html_path: str) -> str:
+    """URL of a folder as seen from the HTML file (relative when possible)."""
     try:
-        return os.path.relpath(cache_path, os.path.dirname(os.path.abspath(html_path))).replace(os.sep, "/")
+        return os.path.relpath(folder, os.path.dirname(os.path.abspath(html_path))).replace(os.sep, "/")
     except ValueError:  # different drive on Windows
-        return Path(os.path.abspath(cache_path)).as_uri()
+        return Path(os.path.abspath(folder)).as_uri()
 
 
 def save_html_map(results: List[Dict], center_lat: float, center_lon: float,
                   radius: float, path: str, group_distance: float = 20,
-                  group_by: str = "clearance", ortho_cache: Optional[str] = None):
+                  group_by: str = "clearance", ortho_cache: Optional[str] = None,
+                  run: Optional[Dict] = None, runs_dir: Optional[str] = None):
     """Save an interactive map (Leaflet) with OpenTopoMap, OSM and geoportal orthophoto.
 
     Lines are grouped in the browser; the panel on the map switches grouping on
     and off and sets the grouping distance and representative line.
     Orthophoto tiles are read from ortho_cache (a {z}/{x}/{y}.jpg folder) when
     present there, and from the geoportal WMS otherwise.
+    With run (its run.json metadata) and runs_dir, the map shows the run's
+    parameters and a list of all runs.
     """
     import folium
     import xyzservices.providers as xyz
@@ -416,7 +471,7 @@ def save_html_map(results: List[Dict], center_lat: float, center_lon: float,
     ortho = OrthophotoLayer(ORTHOPHOTO_WMS, layers="Raster", fmt="image/jpeg", version="1.3.0",
                             name="Orthophoto (geoportal.gov.pl)", attr="GUGiK", max_zoom=MAX_ZOOM,
                             overlay=False, show=False, crs=JsCode("L.CRS.EPSG4326"))
-    ortho.cache_url = _cache_url(ortho_cache, path) if ortho_cache else None
+    ortho.cache_url = _relative_url(ortho_cache, path) if ortho_cache else None
     ortho.add_to(fmap)
 
     folium.GeoJson(_search_area(center_lat, center_lon, radius).__geo_interface__,
@@ -437,6 +492,16 @@ def save_html_map(results: List[Dict], center_lat: float, center_lon: float,
          round(r["elev_a1"], 2), round(r["elev_a2"], 2), r["over_obstacles"]]
         for r in results]
     lines.add_to(fmap)
+
+    if run and runs_dir:
+        runs_panel = MacroElement()
+        runs_panel._template = Template(RUNS_SCRIPT)
+        runs_base = _relative_url(runs_dir, path) + "/"
+        runs_panel.run = run
+        runs_panel.runs_js = runs_base + "runs.js"
+        runs_panel.index_href = runs_base + "index.html"
+        runs_panel.runs_base = runs_base
+        runs_panel.add_to(fmap)
 
     folium.Marker([center_lat, center_lon], tooltip="Search centre").add_to(fmap)
     folium.LayerControl(collapsed=False).add_to(fmap)
