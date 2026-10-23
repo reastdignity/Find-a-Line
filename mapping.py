@@ -161,6 +161,10 @@ GROUPING_SCRIPT = """
   .fal-drag { cursor: move; margin: -6px -6px 6px; padding: 2px 6px; border-radius: 4px;
               background: #eee; color: #888; font-size: 11px; text-align: center; user-select: none; }
   .fal-dragged .leaflet-popup-tip-container { visibility: hidden; }
+  .fal-popup-tools { margin-top: 6px; }
+  .fal-popup-tools button, .fal-show-all { font: inherit; cursor: pointer; }
+  .fal-show-all { display: block; margin: 2px 0 4px; font-weight: bold; }
+  .fal-show-all[hidden] { display: none; }
   .fal-profile { position: absolute; left: 0; right: 0; bottom: 0; height: 270px; z-index: 1000;
                  background: white; box-shadow: 0 -1px 6px rgba(0,0,0,0.35); font: 12px/1.5 sans-serif; }
   .fal-profile-open .leaflet-bottom { bottom: 270px; }
@@ -737,7 +741,31 @@ GROUPING_SCRIPT = """
     });
   }
 
+  // Clicking a line hides all the others (its group's variants stay, thin) until
+  // its popup is closed or "Show all lines" is pressed
+  var focus = {line: null, hidden: []};
+  function focusOn(pl) {
+    if (focus.line === pl) return;
+    unfocus();
+    focus.line = pl;
+    linesLayer.eachLayer(function(other) { if (other !== pl) focus.hidden.push(other); });
+    focus.hidden.forEach(function(other) { linesLayer.removeLayer(other); });
+    showAllButton.hidden = false;
+  }
+  function unfocus() {
+    focus.hidden.forEach(function(other) { linesLayer.addLayer(other); });
+    focus.hidden = [];
+    focus.line = null;
+    if (showAllButton) showAllButton.hidden = true;
+  }
+  function zoomTo(pl) {
+    var bottom = profile.panel && !profile.panel.hidden ? profile.panel.offsetHeight : 0;
+    map.fitBounds(pl.getBounds(), {paddingTopLeft: [60, 60], paddingBottomRight: [60, bottom + 60],
+                                   maxZoom: {{ this.max_zoom|tojson }}});
+  }
+
   function render() {
+    unfocus();
     linesLayer.clearLayers();
     variantsLayer.clearLayers();
     var visible = lines.filter(function(l) { return l.over ? state.showOver : state.showClean; });
@@ -750,8 +778,15 @@ GROUPING_SCRIPT = """
       var pl = polyline(l, {weight: 3, opacity: 0.9});
       pl.bindTooltip(l.len.toFixed(0) + " m, clearance " + l.clr.toFixed(1) + " m" +
                      (g.members.length > 1 ? " (" + g.members.length + " similar lines)" : ""));
-      pl.bindPopup("<div class='fal-drag'>&#10021; drag to move</div>" + groupInfo(g));
-      pl.on("popupopen", function() { showProfile(l); });
+      pl.bindPopup("<div class='fal-drag'>&#10021; drag to move</div>" + groupInfo(g) +
+                   "<div class='fal-popup-tools'><button class='fal-zoom'>Zoom to line</button></div>");
+      pl.on("popupopen", function(e) {
+        focusOn(pl);
+        showProfile(l);
+        var button = e.popup.getElement().querySelector(".fal-zoom");
+        if (button) button.onclick = function() { zoomTo(pl); };
+      });
+      pl.on("popupclose", unfocus);
       if (g.members.length > 1) {
         pl.on("popupopen", function() { showVariants(g); });
         pl.on("popupclose", function() { variantsLayer.clearLayers(); });
@@ -763,6 +798,7 @@ GROUPING_SCRIPT = """
       : "<b>" + visible.length + "</b> lines";
   }
 
+  var showAllButton = null;
   var nClean = lines.filter(function(l) { return !l.over; }).length;
   var nOver = lines.length - nClean;
   var summary;
@@ -772,6 +808,7 @@ GROUPING_SCRIPT = """
       var div = L.DomUtil.create("div", "fal-panel");
       div.innerHTML =
         "<div class='fal-summary'></div>" +
+        "<button class='fal-show-all' hidden>Show all lines</button>" +
         "<label><input type='checkbox' class='fal-group'> Group similar lines</label>" +
         "<div class='fal-opts'>" +
         "Anchors within <input type='range' class='fal-distance' min='5' max='" +
@@ -788,6 +825,8 @@ GROUPING_SCRIPT = """
       L.DomEvent.disableScrollPropagation(div);
 
       summary = div.querySelector(".fal-summary");
+      showAllButton = div.querySelector(".fal-show-all");
+      showAllButton.addEventListener("click", function() { map.closePopup(); unfocus(); });
       var group = div.querySelector(".fal-group"), opts = div.querySelector(".fal-opts");
       var distance = div.querySelector(".fal-distance"), label = div.querySelector(".fal-distance-label");
       group.checked = state.group;
@@ -968,6 +1007,7 @@ def save_html_map(results: List[Dict], center_lat: float, center_lon: float,
          round(r["elev_a1"], 2), round(r["elev_a2"], 2), r["over_obstacles"], r.get("profile")]
         for r in results]
     lines.slope, lines.leash_fall = SLOPE, LEASH_FALL
+    lines.max_zoom = MAX_ZOOM
     lines.model = model
     lines.rigging = dataclasses.asdict(rigging or Rigging())
     lines.add_to(fmap)

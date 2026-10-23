@@ -71,7 +71,7 @@ When it is done, the coordinates of the spots it found are printed (one line per
 Open the `Find-a-Line` folder (in File Explorer or Finder) and double-click **`findaline_map.html`**. It opens the map of your latest search in your web browser:
 
 - **Pink lines** have enough clearance over the terrain and over the trees; **orange lines** clear the terrain but pass too close to trees or buildings.
-- **Click a line** to see its length, the coordinates and heights of both anchors, and the clearance. Drag the box by its grey top bar if it covers the line.
+- **Click a line** to see its length, the coordinates and heights of both anchors, and the clearance. The other lines disappear so you can see this one better; close the box (or press *Show all lines* in the bottom-left corner) to bring them back, and press *Zoom to line* to zoom in on it. Drag the box by its grey top bar if it covers the line.
 - At the same time, a **terrain profile** of the line opens at the bottom: the ground, the trees, the safety limit and how much the webbing sags. Move the mouse over the profile to see the values at that point, where it is on the map, and how the webbing sags with someone standing there. You can change the tension, webbing and weight below the profile.
 - In the **top-right corner** switch the background to **Orthophoto** to see aerial photos (you can zoom in very close to check the rocks and trees). The photos around the found lines also work without internet.
 - In the **bottom-left corner** you can show every single line instead of one per spot, or change how lines are grouped.
