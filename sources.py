@@ -395,20 +395,6 @@ SOURCES: Dict[str, Source] = {s.id: s for s in [
         note="NASADEM is a radar surface model at 30 m: only long lines can be found reliably."),
 ]}
 
-# Cache folders of earlier versions (geoportal.gov.pl data directly in the cache folder)
-LEGACY_FOLDERS = {"nmt": "poland/nmt", "nmpt": "poland/nmpt", "ortho": "poland/ortho"}
-
-
-def migrate_cache(cache_dir: str):
-    """Move cache folders of earlier versions to their current place (no new download)."""
-    for old, new in LEGACY_FOLDERS.items():
-        old_path, new_path = os.path.join(cache_dir, old), os.path.join(cache_dir, *new.split("/"))
-        if os.path.isdir(old_path) and not os.path.exists(new_path):
-            os.makedirs(os.path.dirname(new_path), exist_ok=True)
-            os.replace(old_path, new_path)
-            print(f"Moved cached data {old_path} -> {new_path}")
-
-
 # Rough boxes used when the country cannot be looked up (offline)
 OFFLINE_BOXES = {"mt": (35.78, 36.10, 14.15, 14.60), "pl": (49.0, 54.9, 14.1, 24.2)}
 

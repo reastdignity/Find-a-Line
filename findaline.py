@@ -192,7 +192,6 @@ def main(args):
     else:
         center_lat, center_lon = mp.pl1992_to_wgs84(args.easting, args.northing)
 
-    src.migrate_cache(args.cache_dir)
     try:
         source, reason = src.choose_source(args.source, center_lat, center_lon,
                                            args.elevation_file, args.surface_file)
