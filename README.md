@@ -1,13 +1,14 @@
 # Find a Line
-This is an application that finds topographically valid highlines. It works by extracting DEM data from .tif files and evalutating the potential of each raster pixel by applying a custom "maximum elevation formula". 
+This is an application that finds topographically valid highlines in Poland. It downloads elevation data from [geoportal.gov.pl](https://www.geoportal.gov.pl) (GUGiK) and evaluates the potential of each raster pixel by applying a custom "maximum elevation formula".
 
-Most of the landmass on Earth has been measured by NASA radar systems at a granularity of 30 metres (see *Learn More* below). There are some areas that have a higher granularity available, but 30 metres is good enough for finding lines 100m and longer, smaller lines next to these lines, and general areas that have a high potential.
+The whole of Poland has been scanned with airborne LiDAR and is published by GUGiK as a free terrain model (NMT, 1 metre grid) and a surface model including trees and buildings (NMPT, 0.5 metre grid). This is much more detailed than global datasets (NASADEM is 30 metres), which makes it possible to find short lines as well as long ones.
 
 **Limitations and future scope**
-- This does not take into account vegetation and other factors that make rigging difficult, though this would be possible by analyzing DSM data.
+- Data is only available for Poland. Areas outside the country are treated as "no data" and lines never cross them.
+- Trees and buildings are taken into account only when NMPT is enabled (`--nmpt`). Other factors that make rigging difficult are not.
 - It would be nice to overlay with property maps.
 - The math behind line dynamics is very nuanced, somewhat complex, and generally not available; we are using a simple formula.
-- Becuase our formula always takes into account the elevation of the lowest anchor, the lines may be off-level, or required to be rigged shorter than shown on the map.
+- Because our formula always takes into account the elevation of the lowest anchor, the lines may be off-level, or required to be rigged shorter than shown on the map.
 - Please be aware that our formula **does not** take into account the additional height required for a safe mainline failure.
 
 ## Maximum Elevation Formula
@@ -20,37 +21,83 @@ The formula for safe elevation at any given point on a highline can be described
 - a<sub>1</sub> = anchor 1
 - a<sub>2</sub> = anchor 2
 - c = current point
-- d = distance from the current point to an anchor
-- e = elevation
+- d = distance from the current point to an anchor (metres)
+- e = elevation (metres)
 
 This can also be visualised as a slope below the line that is always exactly 6 metres below the line at maximum deflection.
 <img width="1361" height="224" alt="visualisation" src="https://github.com/user-attachments/assets/5147f16f-768c-4a63-89b6-105c0c6ea8bd" />
 
 ## Algorithm Breakdown
-- We first extract raster pixels of significant slope to use as a starting point for promising anchors.
-- For every promising anchor, we calculate the distance to every other promising anchor. If the distance matches our criteria, it's added to a list of promising lines.
-- For each promising line, we "draw" a line using a DDA (Digital Differential Analyzer) algorithm. This allows us to intercept every raster pixel between the two anchors.
-- For each raster pixel that exists along this line, the maximum acceptable elevation is calculated using our formula, and the pixel's actual elevation is subtracted from this value to retrieve the elevation difference. A **positive** elevation difference implies that the pixel's elevation is **lower** than our required maximum.
-- If every pixel has a positive elevation difference, the line is added to a list of valid lines
-- The list of valid lines is then converted into coordinates and diplayed on a map
+- Elevation data for a circle around the given point is downloaded from the GUGiK WCS service in tiles and resampled to the working resolution (`--resolution`). Tiles are cached, so a second run over the same area does not download anything.
+- Slope is computed from the terrain model (or read from your own slope raster, `--slope-file`). Pixels steeper than `--slope-threshold` degrees become promising anchors.
+- For every promising anchor, we find every other anchor whose distance matches our length criteria (using a KD-tree, so pairs that are too far apart are never considered).
+- For each such pair, we "draw" a line using a DDA (Digital Differential Analyzer) algorithm. This allows us to intercept every raster pixel between the two anchors.
+- For each raster pixel that exists along this line, the maximum acceptable elevation is calculated using our formula, and the pixel's actual elevation is subtracted from this value to retrieve the elevation difference (clearance). A **positive** clearance implies that the pixel's elevation is **lower** than our required maximum.
+- If every pixel has a positive clearance, the line is added to a list of valid lines.
+- With `--nmpt`, the same check is repeated against the surface model (treetops, roofs). In `mark` mode lines that fail it are kept but drawn in orange; in `reject` mode they are dropped.
+- The list of valid lines is then converted into GPS coordinates, printed, and displayed on a map.
 
 ## Getting Started
-Two .tif files are required: slope and elevation. I suggest downloading from the resource linked below (under *Learn More*) as it contains all the NASADEM data. If you are using this resource, select your region and enter the following configurations.
-- Data Output Format: GeoTiff
-- Layer Types: Digital Terrain Model (DTM)
-- Raster Visualization: Slope
+New to the terminal? Follow the [step-by-step setup guide](setup-for-regular-folk.md) for macOS and Windows.
 
-Once downloaded, you will need to enter your configurations within `findaline.py` and run the script using `python findaline.py`.
+Install the requirements (`pip install -r requirements.txt`) and run the script with the centre of the area you want to search:
+
+```
+python findaline.py --lat 49.2320 --lon 19.9817 --radius 2000
+```
+
+No data files are needed; everything is downloaded automatically into the `cache` folder.
+
+The search centre can be given in either of two coordinate systems:
+- **WGS84** (`--lat`, `--lon`), as shown in Google Maps or a GPS. Example: `--lat 49.2320 --lon 19.9817`
+- **PL-1992 / EPSG:2180** (`--northing`, `--easting`), in metres. Note that geoportal.gov.pl labels the northing as **X** and the easting as **Y**. Example: `--northing 152074 --easting 571448`
+
+### Options
+| Option | Default | Description |
+| --- | --- | --- |
+| `--radius` | 20000 | Search radius around the centre, in metres |
+| `--resolution` | 2 | Working resolution in metres (1 is the native NMT resolution) |
+| `--min-length` / `--max-length` | 30 / 1000 | Line length constraints, in metres |
+| `--slope-threshold` | 30 | Minimum terrain slope (degrees) for an anchor |
+| `--slope-file` | | Your own slope raster in degrees (GeoTIFF or ASC) instead of computing it from NMT |
+| `--nmpt` | not used | `mark` or `reject` lines that pass too close to trees or buildings |
+| `--processes` | CPU count - 1 | Number of parallel processes |
+| `--cache-dir` | `cache` | Folder for downloaded data |
+| `--refresh` | | Download data again even if it is cached |
+| `--html` | `findaline_map.html` | Interactive map file |
+| `--no-html` / `--no-plot` | | Skip the interactive map / the matplotlib window |
+| `-y`, `--yes` | | Do not ask for confirmation before long runs |
+
+Run `python findaline.py --help` for the full list.
+
+### Results
+- The coordinates of every line are printed in the terminal (WGS84, latitude and longitude), longest lines first.
+- An interactive map (`findaline_map.html`) can be opened in any web browser. You can switch between OpenTopoMap, OpenStreetMap and the geoportal orthophoto, and click a line to see its length, anchor elevations and clearance.
+- A static map is shown in a separate window (close it to finish the program).
+
+### Run time and data size
+The defaults (20 km radius at 2 m) cover a large area: about 1.5 GB to download for NMT alone (NMPT is several times slower to download), and in steep terrain potentially billions of anchor pairs. Before downloading and before evaluating, the script prints an estimate and asks for confirmation if the run looks long. If it is too slow, compromise by doing at least one of the following:
+- Use a smaller `--radius`
+- Use a coarser `--resolution` (5 or 10 metres is good for a first look at a large area)
+- Raise `--slope-threshold`
+- Change your minimum or maximum line lengths
+
 ### Example Run
-This is how the map looks after valid lines have been found (2500-5000m lines in southern Washington).
+This is how the map looks after valid lines have been found (2500-5000m lines in southern Washington, from an earlier version of this tool that used NASADEM data).
 <img width="1440" height="900" alt="south wa big lines" src="https://github.com/user-attachments/assets/37fa09be-8726-465f-bb57-f1a76d3332a6" />
 
 
 And here is an example of one such location found using this tool.
-<img width="1404" height="356" alt="Screenshot 2025-11-03 at 4 14 58 PM" src="https://github.com/user-attachments/assets/e44f01cf-f3a1-4a7d-b629-f00bec73779e" />
+<img width="1404" height="356" alt="Screenshot 2025-11-03 at 4 14 58 PM" src="https://github.com/user-attachments/assets/e44f01cf-f3a1-4a7d-b629-f00bec73779e" />
+
+## Data
+- Terrain: NMT, WCS service `DigitalTerrainModelFormatTIFF`, height system PL-KRON86-NH.
+- Trees and buildings: NMPT, WCS service `DigitalSurfaceModel`, same height system.
+- Both are downsampled on the server by averaging, so at coarse resolutions small objects such as single trees appear lower than they are.
+- Source: Główny Urząd Geodezji i Kartografii, [geoportal.gov.pl](https://www.geoportal.gov.pl). The data is free to use.
 
 ## Learn More
-- [I'm a non-technical user, how do I run this?](https://github.com/ptarmagain/Find-a-Line/blob/main/setup-for-regular-folk.md)
+- [I'm a non-technical user, how do I run this?](setup-for-regular-folk.md)
 - [ISA calculators](https://www.slackline.app)
 - [BC Tension calculator](https://www.balancecommunity.com/pages/tension-calculator)
-- [A good resource for finding DEM data for this project](https://portal.opentopography.org/raster?opentopoID=OTSDEM.032021.4326.2)
+- [Geoportal elevation data (NMT/NMPT)](https://www.geoportal.gov.pl/pl/dane/numeryczny-model-terenu-nmt/)

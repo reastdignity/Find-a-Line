@@ -1,374 +1,275 @@
-from rasterio.plot import show
-import rasterio as rio
-import numpy as np
-import math as m
-import geopandas as gpd
-from shapely.geometry import Point, LineString
-import matplotlib.pyplot as plt
-import contextily as ctx
-import sys
-from multiprocessing import Pool, cpu_count
-from functools import partial
-from typing import List, Tuple, Optional
+"""
+Terrain analysis: finding promising anchors and evaluating highlines.
+
+All rasters share one working grid (see geoportal.Grid). Pixel coordinates are
+[row, col]; distances and elevations are in metres.
+"""
+
 import time
+from multiprocessing import Pool, cpu_count
+from typing import List, NamedTuple, Optional, Tuple
 
-def find_significant_slopes(slope_file: str, pixel_granularity: int) -> List[List[int]]:
-    """Finds significant slopes from a raster file.
-    
-    Significant slopes are defined as slopes matching our formula.
-    Outputs a list of pixel coords matching criteria.
-    
+import numpy as np
+from scipy.spatial import cKDTree
+
+# Maximum elevation formula: max_elev = min_anchor_elev - SLOPE * distance - LEASH_FALL
+LEASH_FALL = 6.0  # metres below the anchors for a 0 m line
+SLOPE = 0.15      # metres of extra clearance per metre of distance from the nearest anchor
+
+
+class Line(NamedTuple):
+    """A valid highline between two anchors."""
+    a1: Tuple[int, int]            # [row, col] of anchor 1
+    a2: Tuple[int, int]            # [row, col] of anchor 2
+    length: float                  # metres
+    elev_a1: float                 # NMT elevation of anchor 1
+    elev_a2: float                 # NMT elevation of anchor 2
+    clearance: float               # smallest margin below the max elevation over terrain (NMT)
+    clearance_nmpt: Optional[float]  # same, over trees/buildings (NMPT); None if NMPT not used
+
+
+def find_significant_slopes(elevation: np.ndarray, res: float, slope_threshold: float,
+                            center: Tuple[float, float], radius_px: float,
+                            slope: Optional[np.ndarray] = None,
+                            block_rows: int = 512) -> np.ndarray:
+    """Finds pixels steep enough to be promising anchors.
+
+    Slope is computed from the elevation model unless a slope raster (in degrees)
+    is given. Only pixels inside the search circle are returned.
+
     Args:
-        slope_file: Path to the slope raster file
-        pixel_granularity: Pixel resolution in meters (e.g., 30 for NASADEM)
-    
+        elevation: NMT elevation grid
+        res: Pixel size in metres
+        slope_threshold: Minimum slope in degrees
+        center: (row, col) of the search centre
+        radius_px: Search radius in pixels
+        slope: Optional slope grid in degrees, aligned with elevation
+        block_rows: Rows processed at once (keeps memory use bounded)
+
     Returns:
-        List of [row, col] pixel coordinates with significant slopes
+        Array of [row, col] anchor coordinates (int32)
     """
-    with rio.open(slope_file) as slope_dataset:
-        slope_band = slope_dataset.read(1)
-        return np.argwhere(slope_band > pixel_granularity * 1.15 + 6).tolist()
+    height, width = elevation.shape
+    center_row, center_col = center
+    anchors = []
+
+    for r0 in range(0, height, block_rows):
+        r1 = min(height, r0 + block_rows)
+        if slope is None:
+            # One extra row on each side so the gradient is correct at block edges
+            h0, h1 = max(0, r0 - 1), min(height, r1 + 1)
+            z = np.asarray(elevation[h0:h1], dtype=np.float32)
+            gy, gx = np.gradient(z, res)
+            block = np.degrees(np.arctan(np.hypot(gx, gy)))[r0 - h0:r0 - h0 + (r1 - r0)]
+        else:
+            block = np.asarray(slope[r0:r1])
+
+        rows, cols = np.nonzero(block >= slope_threshold)  # NaN compares False
+        rows += r0
+        inside = (rows - center_row) ** 2 + (cols - center_col) ** 2 <= radius_px ** 2
+        anchors.append(np.column_stack([rows[inside], cols[inside]]).astype(np.int32))
+
+    return np.concatenate(anchors) if anchors else np.empty((0, 2), dtype=np.int32)
 
 
-def load_elevation_data(elevation_file: str) -> Tuple[np.ndarray, dict]:
-    """Load elevation data and return it with metadata.
-        
+def evaluate_line(a1: np.ndarray, a2: np.ndarray, elevation: np.ndarray, res: float,
+                  surface: Optional[np.ndarray] = None
+                  ) -> Optional[Tuple[float, float, float, float, Optional[float]]]:
+    """Evaluates clearance along a line between two anchor points.
+
+    Draws a line between the anchors using a DDA algorithm and, for every pixel
+    in between, compares its elevation with the maximum safe elevation.
+
     Args:
-        elevation_file: Path to the elevation raster file
-    
+        a1, a2: [row, col] anchor coordinates
+        elevation: NMT elevation grid
+        res: Pixel size in metres
+        surface: Optional NMPT grid (trees, buildings)
+
     Returns:
-        Tuple of (elevation_band numpy array, rasterio metadata dict)
+        (elev_a1, elev_a2, length, min clearance over NMT, min clearance over NMPT or None),
+        or None if the line has no pixels between the anchors.
+        Positive clearance means the terrain is below the maximum safe elevation.
     """
-    with rio.open(elevation_file) as elevation_dataset:
-        elevation_band = elevation_dataset.read(1)
-        metadata = {
-            'transform': elevation_dataset.transform,
-            'crs': elevation_dataset.crs,
-            'width': elevation_dataset.width,
-            'height': elevation_dataset.height
-        }
-    return elevation_band, metadata
-
-
-def evaluate_line_elevation(anchors: Tuple[List[int], List[int]], 
-                            elevation_band: np.ndarray) -> List[float]:
-    """Evaluates elevation differences along a line between two anchor points.
-        
-    Draws a line between two points using DDA algorithm and determines the 
-    difference between our maximum desired elevation and the actual elevation 
-    of each point in the line.
-    
-    Args:
-        anchors: Tuple of two anchor points [[x1, y1], [x2, y2]]
-        elevation_band: Pre-loaded elevation data as numpy array
-    
-    Returns:
-        List of elevation differences for each pixel along the line
-        Positive values indicate elevation is below maximum safe height
-    """
-    a1, a2 = anchors
-    x_a1, y_a1 = int(a1[0]), int(a1[1])
-    x_a2, y_a2 = int(a2[0]), int(a2[1])
-    
-    # Validate bounds
-    if (x_a1 < 0 or y_a1 < 0 or x_a2 < 0 or y_a2 < 0 or
-        x_a1 >= elevation_band.shape[0] or y_a1 >= elevation_band.shape[1] or
-        x_a2 >= elevation_band.shape[0] or y_a2 >= elevation_band.shape[1]):
-        return []
-
-    # DDA algorithm - draw a line between the two points
-    dx = x_a2 - x_a1
-    dy = y_a2 - y_a1
-    steps = max(abs(dx), abs(dy))
-    
-    if steps == 0:
-        return []
-    
-    x_increment = dx / steps
-    y_increment = dy / steps
-    
-    # Pre-calculate anchor elevations and use numpy for distance calculations
-    elev_a1 = elevation_band[x_a1, y_a1]
-    elev_a2 = elevation_band[x_a2, y_a2]
-    elev_nr_a = min(elev_a1, elev_a2)
-    
-    # Convert anchors to numpy arrays for vectorized distance calculation
-    a1_np = np.array([x_a1, y_a1])
-    a2_np = np.array([x_a2, y_a2])
-    
-    elev_diffs = []
-    x_c = float(x_a1)
-    y_c = float(y_a1)
-
-    for _ in range(steps - 1):
-        x_c += x_increment
-        y_c += y_increment
-        
-        # Round to nearest pixel for indexing
-        x_c_round = int(round(x_c))
-        y_c_round = int(round(y_c))
-        
-        # Bounds check
-        if (x_c_round < 0 or y_c_round < 0 or 
-            x_c_round >= elevation_band.shape[0] or y_c_round >= elevation_band.shape[1]):
-            continue
-        
-        # Vectorized distance calculation using numpy
-        current_point = np.array([x_c, y_c])
-        d1 = np.linalg.norm(current_point - a1_np)
-        d2 = np.linalg.norm(current_point - a2_np)
-        d = min(d1, d2)
-        
-        # Find elevation of current pixel in our line
-        elev_c = elevation_band[x_c_round, y_c_round]
-        
-        # Get difference of max acceptable elevation and current pixel elevation
-        # Formula: max_elev = min_anchor_elev - (0.15 * distance) - 6
-        elev_diff = elev_nr_a - (0.15 * d) - 6 - elev_c
-        elev_diffs.append(elev_diff)
-        
-        # Early exit: if we find a pixel that's too high, stop checking
-        if elev_diff <= 0:
-            break
-    
-    return elev_diffs
-
-
-# Global variable for elevation data (loaded once per worker process)
-_worker_elevation_cache = {}
-
-
-def _worker_init(elevation_file: str):
-    """Initialize worker process - load elevation data once per worker.
-    
-    This is called once when each worker process starts, avoiding the overhead
-    of loading the elevation file for every task.
-    
-    Args:
-        elevation_file: Path to elevation raster file
-    """
-    global _worker_elevation_cache
-    elevation_band, _ = load_elevation_data(elevation_file)
-    _worker_elevation_cache['band'] = elevation_band
-
-
-def _evaluate_line_pair(args: Tuple[List[int], List[int]]) -> Optional[List[List[int]]]:
-    """Helper function for parallel processing.
-    
-    Evaluates a single line pair between two anchor points.
-    This function is designed to be called by multiprocessing workers.
-    
-    Args:
-        args: Tuple of (anchor1, anchor2) pixel coordinates
-    
-    Returns:
-        Valid line pair [a1, a2] if valid, None otherwise
-    """
-    global _worker_elevation_cache
-    a1, a2 = args
-    elevation_band = _worker_elevation_cache.get('band')
-    
-    if elevation_band is None:
+    r1, c1 = int(a1[0]), int(a1[1])
+    r2, c2 = int(a2[0]), int(a2[1])
+    dr, dc = r2 - r1, c2 - c1
+    steps = max(abs(dr), abs(dc))
+    if steps < 2:
         return None
-    
-    # Evaluate line elevation
-    elev_diffs = evaluate_line_elevation((a1, a2), elevation_band)
-    
-    # If all pixels meet our maximum height requirements, return valid line
-    if elev_diffs and all(e > 0 for e in elev_diffs):
-        return [a1, a2]
-    
-    return None
+
+    # DDA: every pixel between the anchors (anchors themselves excluded)
+    t = np.arange(1, steps) / steps
+    rows = np.rint(r1 + dr * t).astype(np.intp)
+    cols = np.rint(c1 + dc * t).astype(np.intp)
+
+    length = float(np.hypot(dr, dc)) * res
+    distance = np.minimum(t, 1 - t) * length  # metres to the nearest anchor
+
+    elev_a1 = float(elevation[r1, c1])
+    elev_a2 = float(elevation[r2, c2])
+    max_elev = min(elev_a1, elev_a2) - SLOPE * distance - LEASH_FALL
+
+    # NaN (no data) makes the clearance NaN, so such lines never pass
+    clearance = float(np.min(max_elev - elevation[rows, cols]))
+
+    clearance_nmpt = None
+    if surface is not None:
+        obstacles = surface[rows, cols]
+        if not np.all(np.isnan(obstacles)):
+            clearance_nmpt = float(np.nanmin(max_elev - obstacles))
+
+    return elev_a1, elev_a2, length, clearance, clearance_nmpt
 
 
-def find_valid_lines(all_points: List[List[int]], 
-                     elevation_file: str, 
-                     min_length: float, 
-                     max_length: float,
-                     num_processes: Optional[int] = None) -> List[List[List[int]]]:
-    """Finds valid line pairs using parallel processing.
-    
-    OPTIMIZED VERSION with the following improvements:
-    - Uses multiprocessing to evaluate line pairs in parallel
-    - Better progress tracking and performance metrics
-    
-    Receives a list of raster pixel points and returns point pairs that are 
-    between a specified distance of each other and match our elevation requirements.
-    
-    Args:
-        all_points: List of anchor point coordinates [[x1, y1], [x2, y2], ...]
-        elevation_file: Path to elevation raster file
-        min_length: Minimum line length in pixels
-        max_length: Maximum line length in pixels
-        num_processes: Number of parallel processes (defaults to CPU count - 1)
-    
-    Returns:
-        List of valid line pairs [[[x1, y1], [x2, y2]], ...]
+def is_valid(result, nmpt_mode: Optional[str]) -> bool:
+    """Decide whether an evaluated line is kept."""
+    if result is None:
+        return False
+    _, _, _, clearance, clearance_nmpt = result
+    if not clearance > 0:
+        return False
+    if nmpt_mode == "reject" and clearance_nmpt is not None and clearance_nmpt <= 0:
+        return False
+    return True
+
+
+# Data shared by each worker process (loaded once per worker)
+_worker = {}
+
+
+def _worker_init(elevation_path: str, surface_path: Optional[str], anchors_path: str,
+                 res: float, min_length: float, max_length: float, nmpt_mode: Optional[str]):
+    """Initialize worker process - memory-map the grids and index the anchors."""
+    anchors = np.load(anchors_path)
+    _worker.update(
+        elevation=np.load(elevation_path, mmap_mode="r"),
+        surface=np.load(surface_path, mmap_mode="r") if surface_path else None,
+        anchors=anchors,
+        tree=cKDTree(anchors * res),
+        res=res, min_length=min_length, max_length=max_length, nmpt_mode=nmpt_mode,
+    )
+
+
+def _search_chunk(bounds: Tuple[int, int]) -> Tuple[int, int, List[Line]]:
+    """Evaluate every line starting at anchors[start:end].
+
+    Each pair is evaluated once (only partners with a higher index are checked).
+    Returns (anchors processed, pairs evaluated, valid lines).
     """
-    start_time = time.time()
-    
-    # Convert to numpy array for faster distance calculations
-    points_array = np.array(all_points)
-    num_points = len(all_points)
-    
-    print(f"Evaluating {num_points} potential anchors...")
-    print(f"Estimated total comparisons: ~{num_points * (num_points - 1) // 2}")
-    
-    # Pre-filter: Generate candidate pairs using vectorized distance calculations
-    print("Generating candidate anchor pairs within length constraints...")
-    candidate_pairs = []
-    
-    # Process in chunks to balance memory usage and speed
-    chunk_size = 500  # Process 500 anchors at a time
-    for i in range(0, num_points, chunk_size):
-        end_i = min(i + chunk_size, num_points)
-        
-        # For each anchor in this chunk, compare with all remaining anchors
-        for j in range(i, end_i):
-            a1 = points_array[j]
-            # Only compare with anchors after this one (avoid duplicates and self-comparisons)
-            remaining_points = points_array[j+1:]
-            
-            if len(remaining_points) > 0:
-                # Vectorized distance calculation
-                distances = np.linalg.norm(remaining_points - a1, axis=1)
-                # Filter by distance constraints
-                valid_mask = (distances > min_length) & (distances < max_length)
-                valid_indices = np.where(valid_mask)[0] + j + 1
-                
-                # Add candidate pairs to list
-                for idx in valid_indices:
-                    candidate_pairs.append((all_points[j], all_points[idx]))
-        
-        if i % 500 == 0 and i > 0:
-            elapsed = time.time() - start_time
-            print(f"  Generated {len(candidate_pairs)} candidate pairs from {end_i}/{num_points} anchors "
-                  f"({elapsed:.1f}s)")
-    
-    print(f"\nFound {len(candidate_pairs)} candidate pairs within length constraints")
-    
-    if len(candidate_pairs) == 0:
-        sys.exit('No anchor pairs found within specified length constraints.')
-    
-    # Setup parallel processing
+    w = _worker
+    start, end = bounds
+    anchors, res = w["anchors"], w["res"]
+    neighbours = w["tree"].query_ball_point(anchors[start:end] * res, r=w["max_length"])
+
+    evaluated = 0
+    lines = []
+    for k, partners in enumerate(neighbours):
+        i = start + k
+        partners = np.asarray(partners, dtype=np.intp)
+        partners = partners[partners > i]
+        if partners.size == 0:
+            continue
+        lengths = np.hypot(*(anchors[partners] - anchors[i]).T) * res
+        partners = partners[lengths >= w["min_length"]]
+        evaluated += partners.size
+
+        for j in partners:
+            result = evaluate_line(anchors[i], anchors[j], w["elevation"], res, w["surface"])
+            if is_valid(result, w["nmpt_mode"]):
+                elev_a1, elev_a2, length, clearance, clearance_nmpt = result
+                lines.append(Line(tuple(map(int, anchors[i])), tuple(map(int, anchors[j])),
+                                  length, elev_a1, elev_a2, clearance, clearance_nmpt))
+    return end - start, evaluated, lines
+
+
+def estimate_search(anchors: np.ndarray, elevation: np.ndarray, res: float,
+                    min_length: float, max_length: float,
+                    surface: Optional[np.ndarray] = None,
+                    sample_size: int = 2000) -> Tuple[float, float]:
+    """Estimate the number of anchor pairs and the time to evaluate one pair.
+
+    Returns:
+        (estimated pairs, seconds per pair on a single core)
+    """
+    if len(anchors) < 2:
+        return 0, 0
+    rng = np.random.default_rng(0)
+    points = anchors * res
+    tree = cKDTree(points)
+    sample = rng.choice(len(anchors), min(len(anchors), sample_size), replace=False)
+    within_max = tree.query_ball_point(points[sample], r=max_length, return_length=True)
+    within_min = tree.query_ball_point(points[sample], r=min_length, return_length=True)
+    pairs = len(anchors) * float(np.mean(within_max - within_min)) / 2
+
+    # Time a handful of real evaluations
+    timed, start = 0, time.perf_counter()
+    for i in sample[:200]:
+        for j in tree.query_ball_point(points[i], r=max_length)[:20]:
+            evaluate_line(anchors[i], anchors[j], elevation, res, surface)
+            timed += 1
+    seconds_per_pair = (time.perf_counter() - start) / timed if timed else 0
+    return pairs, seconds_per_pair
+
+
+def find_valid_lines(elevation_path: str, surface_path: Optional[str], anchors_path: str,
+                     num_anchors: int, res: float, min_length: float, max_length: float,
+                     nmpt_mode: Optional[str] = None,
+                     num_processes: Optional[int] = None) -> List[Line]:
+    """Finds valid lines between anchors using parallel processing.
+
+    Anchor pairs are generated on the fly with a KD-tree (only pairs within the
+    length constraints), so memory use does not grow with the number of pairs.
+
+    Args:
+        elevation_path: .npy file with the NMT grid
+        surface_path: .npy file with the NMPT grid, or None
+        anchors_path: .npy file with [row, col] anchors
+        num_anchors: Number of anchors in anchors_path
+        res: Pixel size in metres
+        min_length, max_length: Line length constraints in metres
+        nmpt_mode: None, "mark" or "reject"
+        num_processes: Number of parallel processes (defaults to CPU count - 1)
+
+    Returns:
+        List of valid lines
+    """
     if num_processes is None:
         num_processes = max(1, cpu_count() - 1)  # Leave one core free for system
-    
-    print(f"Using {num_processes} parallel processes for elevation evaluation...")
-    print(f"Each worker will load elevation data once at startup...")
-    
-    # Use multiprocessing to evaluate candidate pairs in parallel
-    # Each worker loads elevation data once via _worker_init
-    valid_lines = []
-    batch_size = max(1000, len(candidate_pairs) // (num_processes * 4))  # Adaptive batch size
-    
-    with Pool(processes=num_processes, initializer=_worker_init, initargs=(elevation_file,)) as pool:
-        # Process candidate pairs in batches to show progress
-        processed = 0
-        total_batches = (len(candidate_pairs) + batch_size - 1) // batch_size
-        
-        for batch_idx in range(total_batches):
-            batch_start = batch_idx * batch_size
-            batch_end = min(batch_start + batch_size, len(candidate_pairs))
-            batch = candidate_pairs[batch_start:batch_end]
-            
-            # Execute batch in parallel
-            results = pool.map(_evaluate_line_pair, batch)
-            
-            # Collect valid lines (filter out None results)
-            batch_valid = [r for r in results if r is not None]
-            valid_lines.extend(batch_valid)
-            
-            processed += len(batch)
+
+    chunk = max(50, min(2000, num_anchors // (num_processes * 20) or 1))
+    chunks = [(s, min(s + chunk, num_anchors)) for s in range(0, num_anchors, chunk)]
+    print(f"Using {num_processes} parallel processes, {len(chunks)} work chunks...")
+
+    start_time = time.time()
+    last_report = 0.0
+    done_anchors = evaluated = 0
+    valid_lines: List[Line] = []
+
+    initargs = (elevation_path, surface_path, anchors_path, res, min_length, max_length, nmpt_mode)
+    with Pool(processes=num_processes, initializer=_worker_init, initargs=initargs) as pool:
+        for n_anchors, n_pairs, lines in pool.imap_unordered(_search_chunk, chunks):
+            done_anchors += n_anchors
+            evaluated += n_pairs
+            valid_lines.extend(lines)
+
             elapsed = time.time() - start_time
-            progress = 100 * processed / len(candidate_pairs)
-            rate = processed / elapsed if elapsed > 0 else 0
-            
-            print(f"Progress: {progress:.1f}% ({processed}/{len(candidate_pairs)} pairs) - "
-                  f"Found {len(valid_lines)} valid lines - "
-                  f"Rate: {rate:.0f} pairs/s - Elapsed: {elapsed:.1f}s")
-    
+            if elapsed - last_report >= 5 or done_anchors == num_anchors:
+                last_report = elapsed
+                progress = done_anchors / num_anchors
+                eta = elapsed / progress * (1 - progress) if progress else 0
+                print(f"Progress: {100 * progress:.1f}% of anchors - "
+                      f"{evaluated} pairs evaluated - Found {len(valid_lines)} valid lines - "
+                      f"Elapsed: {elapsed:.0f}s - Remaining: ~{eta:.0f}s")
+
     elapsed_total = time.time() - start_time
-    print(f"\n{'='*60}")
+    print(f"\n{'=' * 60}")
     print(f"Completed in {elapsed_total:.2f} seconds")
-    print(f"Evaluated {len(candidate_pairs)} candidate pairs")
-    print(f"Found {len(valid_lines)} valid line pairs")
-    print(f"Average rate: {len(candidate_pairs)/elapsed_total:.0f} pairs/second")
-    print(f"{'='*60}")
-    
-    if len(valid_lines) == 0:
-        sys.exit('No lines found matching elevation requirements.')
-    
+    print(f"Evaluated {evaluated} candidate pairs")
+    print(f"Found {len(valid_lines)} valid lines")
+    if elapsed_total > 0:
+        print(f"Average rate: {evaluated / elapsed_total:.0f} pairs/second")
+    print(f"{'=' * 60}")
+
+    valid_lines.sort(key=lambda line: line.length, reverse=True)
     return valid_lines
-
-def coordify(pixel_pairs: List[List[List[int]]], elevation_file: str) -> List[List[float]]:
-    """Convert pixel coordinates to GPS coordinates (longitude, latitude).
-        
-    Args:
-        pixel_pairs: List of pixel coordinate pairs [[[x1, y1], [x2, y2]], ...]
-        elevation_file: Path to elevation raster file (used for coordinate transform)
-    
-    Returns:
-        List of GPS coordinate pairs [[lon1, lat1], [lon2, lat2], ...]
-    """
-    coord_pairs = []
-    with rio.open(elevation_file) as elevation_dataset:
-        for anchors in pixel_pairs:
-            # Convert pixel coordinates to geographic coordinates
-            coords_a1 = list(elevation_dataset.xy(*anchors[0]))
-            coords_a2 = list(elevation_dataset.xy(*anchors[1]))
-            coords_a1f = [float(c) for c in coords_a1]
-            coords_a2f = [float(c) for c in coords_a2]
-            coord_pairs.append(coords_a1f)
-            coord_pairs.append(coords_a2f)
-    return coord_pairs
-
-
-def mapify(coord_pairs: List[List[float]]):
-    """Visualize coordinate pairs as lines on an interactive map.
-    
-    Creates a map with basemap tiles showing all valid highline segments
-    as thin neon pink lines connecting anchor points.
-    
-    Args:
-        coord_pairs: List of [longitude, latitude] coordinates where
-                     consecutive pairs form line segments (i.e., [0,1], [2,3], etc.)
-    """
-    # Create LineString geometries from consecutive coordinate pairs
-    # coord_pairs contains: [anchor1_lon, anchor1_lat, anchor2_lon, anchor2_lat, ...]
-    # Each line is formed by pairs: (0,1), (2,3), (4,5), etc.
-    lines = []
-    line_midpoints = []
-    for i in range(0, len(coord_pairs), 2):
-        if i + 1 < len(coord_pairs):
-            # Create a line from anchor1 to anchor2
-            anchor1 = coord_pairs[i]  # [lon, lat]
-            anchor2 = coord_pairs[i + 1]  # [lon, lat]
-            line = LineString([(anchor1[0], anchor1[1]), (anchor2[0], anchor2[1])])
-            lines.append(line)
-            line_midpoints.append(line.interpolate(0.5, normalized=True))  # Midpoint of line
-    
-    if not lines:
-        print("No lines to display.")
-        return
-    
-    # Create GeoDataFrame with LineString geometries
-    gdf = gpd.GeoDataFrame(
-        geometry=lines,
-        crs="EPSG:4326"  # WGS84 coordinate system
-    )
-    
-    # Plot the lines
-    fig, ax = plt.subplots(figsize=(10, 10))
-        
-    # Plot lines
-    gdf.plot(ax=ax, color='#FF10F0', linewidth=0.8, alpha=0.9)
-
-    # Show circles at line midpoints
-    gdf_midpoints = gpd.GeoDataFrame(geometry=line_midpoints, crs="EPSG:4326")
-    gdf_midpoints.plot(ax=ax, color='#FF10F0', markersize=100, marker='o', alpha=0.6, zorder=3)
-
-    # Add basemap
-    ctx.add_basemap(ax, crs=gdf.crs, source=ctx.providers.OpenTopoMap)
-
-    plt.show()
