@@ -63,6 +63,13 @@ def parse_args():
     output.add_argument("--cache-dir", default="cache", help="folder for downloaded data")
     output.add_argument("--refresh", action="store_true",
                         help="download data again even if it is cached")
+    output.add_argument("--group-distance", type=float, default=20,
+                        help="group similar lines: both anchors within this many metres "
+                             "(also the initial setting of the interactive map)")
+    output.add_argument("--group-by", choices=["clearance", "longest"], default="clearance",
+                        help="line shown for each group: largest clearance or longest")
+    output.add_argument("--all-lines", action="store_true",
+                        help="list every line instead of one line per group")
     output.add_argument("--html", default="findaline_map.html", help="interactive map file")
     output.add_argument("--no-html", action="store_true", help="do not save the interactive map")
     output.add_argument("--no-plot", action="store_true", help="do not open the matplotlib map")
@@ -85,6 +92,8 @@ def parse_args():
         parser.error("--min-length must be positive and smaller than --max-length")
     if args.radius <= 0:
         parser.error("--radius must be positive")
+    if args.group_distance <= 0:
+        parser.error("--group-distance must be positive (use --all-lines to list every line)")
     if args.slope_file and not os.path.exists(args.slope_file):
         parser.error(f"slope file not found: {args.slope_file}")
     return args
@@ -196,21 +205,35 @@ if __name__ == "__main__":
     # Step 4: Convert pixel coordinates to GPS coordinates
     print("\nStep 4: Converting pixel coordinates to GPS coordinates...")
     results = mp.coordify(valid_lines, grid, args.nmpt)
-    print(f"\nFound {len(results)} valid lines")
+    if args.all_lines:
+        groups = [{"rep": r, "members": [r]} for r in results]
+        print(f"\nFound {len(results)} valid lines")
+    else:
+        groups = mp.group_lines(results, args.group_distance, args.group_by)
+        shown = "largest clearance" if args.group_by == "clearance" else "longest"
+        print(f"\nFound {len(results)} valid lines in {len(groups)} spots "
+              f"(lines with both anchors within {args.group_distance:g}m are grouped, "
+              f"showing the one with the {shown}; use --all-lines to list every line)")
     print("GPS Coordinates (lat, lon):")
-    for n, r in enumerate(results, 1):
+    for n, g in enumerate(groups, 1):
+        r, members = g["rep"], g["members"]
         flag = "  [over trees/buildings]" if r["over_obstacles"] else ""
-        print(f"  Line {n}: {r['length']:.0f}m, min. clearance {r['clearance']:.1f}m{flag}")
+        label = "Line" if args.all_lines else "Spot"
+        print(f"  {label} {n}: {r['length']:.0f}m, min. clearance {r['clearance']:.1f}m{flag}")
+        if len(members) > 1:
+            lengths = [m["length"] for m in members]
+            print(f"    {len(members)} similar lines, {min(lengths):.0f}-{max(lengths):.0f}m")
         print(f"    Anchor 1: {r['anchor1'][0]:.6f}, {r['anchor1'][1]:.6f}")
         print(f"    Anchor 2: {r['anchor2'][0]:.6f}, {r['anchor2'][1]:.6f}")
 
     # Step 5: Display results on a map
     print("\nStep 5: Displaying results on map...")
     if not args.no_html:
-        mp.save_html_map(results, center_lat, center_lon, args.radius, args.html)
+        mp.save_html_map(results, center_lat, center_lon, args.radius, args.html,
+                         args.group_distance, args.group_by)
         print(f"Interactive map saved to {os.path.abspath(args.html)} (open it in a web browser)")
     if not args.no_plot:
-        mp.mapify(results, center_lat, center_lon, args.radius)
+        mp.mapify([g["rep"] for g in groups], center_lat, center_lon, args.radius)
 
     print("\n" + "=" * 60)
     print("Analysis complete!")

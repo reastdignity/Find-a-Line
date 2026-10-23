@@ -50,6 +50,9 @@ def coordify(lines: List[Line], grid: Grid, nmpt_mode: Optional[str]) -> List[Di
         results.append({
             "anchor1": (float(lat[2 * k]), float(lon[2 * k])),
             "anchor2": (float(lat[2 * k + 1]), float(lon[2 * k + 1])),
+            # PL-1992 (easting, northing) in metres, used for grouping
+            "a1_xy": (float(easting[2 * k]), float(northing[2 * k])),
+            "a2_xy": (float(easting[2 * k + 1]), float(northing[2 * k + 1])),
             "length": line.length,
             "elev_a1": line.elev_a1,
             "elev_a2": line.elev_a2,
@@ -58,6 +61,48 @@ def coordify(lines: List[Line], grid: Grid, nmpt_mode: Optional[str]) -> List[Di
             "over_obstacles": over_obstacles,
         })
     return results
+
+
+def _rank(by: str):
+    """Sort key: best representative first (with reverse=True)."""
+    if by == "longest":
+        return lambda r: (r["length"], r["clearance"])
+    return lambda r: (r["clearance"], r["length"])
+
+
+def group_lines(results: List[Dict], distance: float, by: str = "clearance") -> List[Dict]:
+    """Group near-identical lines (both anchors within `distance` metres).
+
+    Greedy grouping around a representative: the best remaining line (by length
+    or clearance) takes every remaining line whose anchors are close to its own,
+    so no member is further than `distance` from the representative. Lines over
+    trees/buildings are grouped separately from clear lines.
+    The same algorithm runs in the interactive map (see GROUPING_SCRIPT).
+
+    Returns:
+        Groups, clear lines first and best first: {"rep": result, "members": [results]}
+    """
+    rank = _rank(by)
+    d2 = distance ** 2
+    groups = []
+    for over in (False, True):
+        lines = sorted((r for r in results if r["over_obstacles"] == over), key=rank, reverse=True)
+        if not lines:
+            continue
+        a1 = np.array([r["a1_xy"] for r in lines])
+        a2 = np.array([r["a2_xy"] for r in lines])
+        free = np.ones(len(lines), dtype=bool)
+        for i in range(len(lines)):
+            if not free[i]:
+                continue
+            same = (((a1 - a1[i]) ** 2).sum(1) <= d2) & (((a2 - a2[i]) ** 2).sum(1) <= d2)
+            flipped = (((a1 - a2[i]) ** 2).sum(1) <= d2) & (((a2 - a1[i]) ** 2).sum(1) <= d2)
+            members = np.flatnonzero(free & (same | flipped))
+            free[members] = False
+            groups.append({"rep": lines[i], "members": [lines[k] for k in members]})
+    # Clear lines first, then lines over trees/buildings; best first within each
+    groups.sort(key=lambda g: (not g["rep"]["over_obstacles"], rank(g["rep"])), reverse=True)
+    return groups
 
 
 def _search_area(center_lat: float, center_lon: float, radius: float):
@@ -100,11 +145,183 @@ def mapify(results: List[Dict], center_lat: float, center_lon: float, radius: fl
     plt.show()
 
 
+# Draws the lines on the interactive map and adds a panel to group them.
+# groupLines() mirrors group_lines() above.
+GROUPING_SCRIPT = """
+{% macro header(this, kwargs) %}
+<style>
+  .fal-panel { background: white; padding: 8px 10px; border-radius: 5px; line-height: 1.6;
+               box-shadow: 0 1px 5px rgba(0,0,0,0.4); font: 12px/1.6 sans-serif; }
+  .fal-panel input[type=range] { width: 140px; vertical-align: middle; }
+  .fal-panel .fal-dim { color: #999; }
+  .fal-swatch { display: inline-block; width: 14px; height: 3px; vertical-align: middle; }
+</style>
+{% endmacro %}
+
+{% macro script(this, kwargs) %}
+(function(map) {
+  var COLORS = {clean: {{ this.color_valid|tojson }}, over: {{ this.color_obstacle|tojson }}};
+  var lines = {{ this.lines|tojson }}.map(function(d) {
+    return {lat1: d[0], lon1: d[1], lat2: d[2], lon2: d[3], x1: d[4], y1: d[5], x2: d[6], y2: d[7],
+            len: d[8], clr: d[9], clrN: d[10], e1: d[11], e2: d[12], over: d[13]};
+  });
+  var state = {group: true, distance: {{ this.distance|tojson }}, by: {{ this.by|tojson }},
+               showClean: true, showOver: true};
+  var renderer = L.canvas({padding: 0.5});
+  var linesLayer = L.layerGroup().addTo(map);
+  var variantsLayer = L.layerGroup().addTo(map);
+
+  function sq(ax, ay, bx, by) { var dx = ax - bx, dy = ay - by; return dx * dx + dy * dy; }
+  function near(a, b, d2) {
+    return (sq(a.x1, a.y1, b.x1, b.y1) <= d2 && sq(a.x2, a.y2, b.x2, b.y2) <= d2) ||
+           (sq(a.x1, a.y1, b.x2, b.y2) <= d2 && sq(a.x2, a.y2, b.x1, b.y1) <= d2);
+  }
+  function compare(by) {
+    return by === "longest" ? function(a, b) { return (b.len - a.len) || (b.clr - a.clr); }
+                            : function(a, b) { return (b.clr - a.clr) || (b.len - a.len); };
+  }
+  function groupLines(visible, distance, by) {
+    var d2 = distance * distance, groups = [];
+    [false, true].forEach(function(over) {
+      var sorted = visible.filter(function(l) { return l.over === over; }).sort(compare(by));
+      var used = new Uint8Array(sorted.length);
+      for (var i = 0; i < sorted.length; i++) {
+        if (used[i]) continue;
+        var rep = sorted[i], members = [rep];
+        used[i] = 1;
+        for (var j = i + 1; j < sorted.length; j++) {
+          if (!used[j] && near(rep, sorted[j], d2)) { used[j] = 1; members.push(sorted[j]); }
+        }
+        groups.push({rep: rep, members: members});
+      }
+    });
+    return groups;
+  }
+
+  function range(values, digits, unit) {
+    var lo = Math.min.apply(null, values), hi = Math.max.apply(null, values);
+    return lo.toFixed(digits) === hi.toFixed(digits) ? lo.toFixed(digits) + unit
+                                                     : lo.toFixed(digits) + "&ndash;" + hi.toFixed(digits) + unit;
+  }
+  function lineInfo(l) {
+    var html = "<b>Length:</b> " + l.len.toFixed(0) + " m<br>" +
+      "<b>Anchor 1:</b> " + l.lat1.toFixed(6) + ", " + l.lon1.toFixed(6) + " (" + l.e1.toFixed(1) + " m)<br>" +
+      "<b>Anchor 2:</b> " + l.lat2.toFixed(6) + ", " + l.lon2.toFixed(6) + " (" + l.e2.toFixed(1) + " m)<br>" +
+      "<b>Min. clearance over terrain:</b> " + l.clr.toFixed(1) + " m";
+    if (l.clrN !== null) html += "<br><b>Min. clearance over trees/buildings:</b> " + l.clrN.toFixed(1) + " m";
+    return html;
+  }
+  function groupInfo(g) {
+    if (g.members.length === 1) return lineInfo(g.rep);
+    return "<b>" + g.members.length + " similar lines</b> (shown thin)<br>" +
+      "<b>Lengths:</b> " + range(g.members.map(function(m) { return m.len; }), 0, " m") + "<br>" +
+      "<b>Clearances:</b> " + range(g.members.map(function(m) { return m.clr; }), 1, " m") + "<br>" +
+      "<hr style='margin:4px 0'><i>Shown line (" +
+      (state.by === "longest" ? "longest" : "largest clearance") + "):</i><br>" + lineInfo(g.rep);
+  }
+  function polyline(l, options) {
+    return L.polyline([[l.lat1, l.lon1], [l.lat2, l.lon2]], Object.assign({
+      color: l.over ? COLORS.over : COLORS.clean, renderer: renderer, bubblingMouseEvents: false
+    }, options));
+  }
+  function showVariants(g) {
+    variantsLayer.clearLayers();
+    g.members.forEach(function(m) {
+      if (m !== g.rep) polyline(m, {weight: 1, opacity: 0.8, interactive: false}).addTo(variantsLayer);
+    });
+  }
+
+  function render() {
+    linesLayer.clearLayers();
+    variantsLayer.clearLayers();
+    var visible = lines.filter(function(l) { return l.over ? state.showOver : state.showClean; });
+    var groups = state.group ? groupLines(visible, state.distance, state.by)
+                             : visible.map(function(l) { return {rep: l, members: [l]}; });
+    // Draw lines over trees/buildings first, so clear lines stay on top
+    groups.sort(function(a, b) { return b.rep.over - a.rep.over; });
+    groups.forEach(function(g) {
+      var l = g.rep;
+      var pl = polyline(l, {weight: 3, opacity: 0.9});
+      pl.bindTooltip(l.len.toFixed(0) + " m, clearance " + l.clr.toFixed(1) + " m" +
+                     (g.members.length > 1 ? " (" + g.members.length + " similar lines)" : ""));
+      pl.bindPopup(groupInfo(g));
+      if (g.members.length > 1) {
+        pl.on("popupopen", function() { showVariants(g); });
+        pl.on("popupclose", function() { variantsLayer.clearLayers(); });
+      }
+      pl.addTo(linesLayer);
+    });
+    summary.innerHTML = state.group
+      ? "<b>" + groups.length + "</b> spots (" + visible.length + " lines)"
+      : "<b>" + visible.length + "</b> lines";
+  }
+
+  var nClean = lines.filter(function(l) { return !l.over; }).length;
+  var nOver = lines.length - nClean;
+  var summary;
+  var Panel = L.Control.extend({
+    options: {position: "bottomleft"},
+    onAdd: function() {
+      var div = L.DomUtil.create("div", "fal-panel");
+      div.innerHTML =
+        "<div class='fal-summary'></div>" +
+        "<label><input type='checkbox' class='fal-group'> Group similar lines</label>" +
+        "<div class='fal-opts'>" +
+        "Anchors within <input type='range' class='fal-distance' min='5' max='100' step='1'> " +
+        "<span class='fal-distance-label'></span><br>" +
+        "Show per group: <label><input type='radio' name='fal-by' value='clearance'> largest clearance</label> " +
+        "<label><input type='radio' name='fal-by' value='longest'> longest</label></div>" +
+        (nOver ? "<label><input type='checkbox' class='fal-clean' checked> " +
+                 "<span class='fal-swatch' style='background:" + COLORS.clean + "'></span> Clear lines (" + nClean + ")</label><br>" +
+                 "<label><input type='checkbox' class='fal-over' checked> " +
+                 "<span class='fal-swatch' style='background:" + COLORS.over + "'></span> Over trees/buildings (" + nOver + ")</label>"
+               : "");
+      L.DomEvent.disableClickPropagation(div);
+      L.DomEvent.disableScrollPropagation(div);
+
+      summary = div.querySelector(".fal-summary");
+      var group = div.querySelector(".fal-group"), opts = div.querySelector(".fal-opts");
+      var distance = div.querySelector(".fal-distance"), label = div.querySelector(".fal-distance-label");
+      group.checked = state.group;
+      distance.value = state.distance;
+      label.textContent = state.distance + " m";
+      div.querySelector("input[value='" + state.by + "']").checked = true;
+
+      group.addEventListener("change", function() {
+        state.group = group.checked;
+        opts.classList.toggle("fal-dim", !state.group);
+        render();
+      });
+      distance.addEventListener("input", function() { label.textContent = distance.value + " m"; });
+      distance.addEventListener("change", function() { state.distance = +distance.value; render(); });
+      div.querySelectorAll("input[name='fal-by']").forEach(function(radio) {
+        radio.addEventListener("change", function() { state.by = radio.value; render(); });
+      });
+      if (nOver) {
+        div.querySelector(".fal-clean").addEventListener("change", function(e) { state.showClean = e.target.checked; render(); });
+        div.querySelector(".fal-over").addEventListener("change", function(e) { state.showOver = e.target.checked; render(); });
+      }
+      return div;
+    }
+  });
+  new Panel().addTo(map);
+  render();
+})({{ this._parent.get_name() }});
+{% endmacro %}
+"""
+
+
 def save_html_map(results: List[Dict], center_lat: float, center_lon: float,
-                  radius: float, path: str):
-    """Save an interactive map (Leaflet) with OpenTopoMap, OSM and geoportal orthophoto."""
+                  radius: float, path: str, group_distance: float = 20,
+                  group_by: str = "clearance"):
+    """Save an interactive map (Leaflet) with OpenTopoMap, OSM and geoportal orthophoto.
+
+    Lines are grouped in the browser; the panel on the map switches grouping on
+    and off and sets the grouping distance and representative line.
+    """
     import folium
     import xyzservices.providers as xyz
+    from branca.element import MacroElement
     from folium.template import Template
     from folium.utilities import JsCode
 
@@ -132,43 +349,22 @@ def save_html_map(results: List[Dict], center_lat: float, center_lon: float,
                    style_function=lambda _: {"color": "black", "weight": 1,
                                              "dashArray": "6", "fill": False}).add_to(fmap)
 
-    groups = [
-        ("Lines", [r for r in results if not r["over_obstacles"]], COLOR_VALID),
-        ("Lines over trees/buildings (NMPT)", [r for r in results if r["over_obstacles"]],
-         COLOR_OBSTACLE),
-    ]
-    for name, group, color in groups:
-        if not group:
-            continue
-        features = [_line_feature(r) for r in group]
-        folium.GeoJson(
-            {"type": "FeatureCollection", "features": features},
-            name=f"{name} ({len(group)})",
-            style_function=lambda _, c=color: {"color": c, "weight": 3, "opacity": 0.9},
-            highlight_function=lambda _: {"weight": 6},
-            tooltip=folium.GeoJsonTooltip(fields=["length_m", "clearance_m"],
-                                          aliases=["Length [m]", "Min. clearance [m]"]),
-            popup=folium.GeoJsonPopup(fields=["info"], labels=False),
-        ).add_to(fmap)
+    lines = MacroElement()
+    lines._template = Template(GROUPING_SCRIPT)
+    lines.color_valid, lines.color_obstacle = COLOR_VALID, COLOR_OBSTACLE
+    lines.distance, lines.by = group_distance, group_by
+    # Values used for grouping are not rounded, so the browser groups exactly like group_lines()
+    lines.lines = [
+        [round(r["anchor1"][0], 7), round(r["anchor1"][1], 7),
+         round(r["anchor2"][0], 7), round(r["anchor2"][1], 7),
+         *r["a1_xy"], *r["a2_xy"], r["length"], r["clearance"],
+         None if r["clearance_nmpt"] is None else round(r["clearance_nmpt"], 2),
+         round(r["elev_a1"], 2), round(r["elev_a2"], 2), r["over_obstacles"]]
+        for r in results]
+    lines.add_to(fmap)
 
     folium.Marker([center_lat, center_lon], tooltip="Search centre").add_to(fmap)
     folium.LayerControl(collapsed=False).add_to(fmap)
     fmap.fit_bounds(_search_area(center_lat, center_lon, radius).total_bounds[[1, 0, 3, 2]]
                     .reshape(2, 2).tolist())
     fmap.save(path)
-
-
-def _line_feature(r: Dict) -> Dict:
-    (lat1, lon1), (lat2, lon2) = r["anchor1"], r["anchor2"]
-    info = (f"<b>Length:</b> {r['length']:.0f} m<br>"
-            f"<b>Anchor 1:</b> {lat1:.6f}, {lon1:.6f} ({r['elev_a1']:.1f} m)<br>"
-            f"<b>Anchor 2:</b> {lat2:.6f}, {lon2:.6f} ({r['elev_a2']:.1f} m)<br>"
-            f"<b>Min. clearance over terrain:</b> {r['clearance']:.1f} m")
-    if r["clearance_nmpt"] is not None:
-        info += f"<br><b>Min. clearance over trees/buildings:</b> {r['clearance_nmpt']:.1f} m"
-    return {
-        "type": "Feature",
-        "geometry": {"type": "LineString", "coordinates": [[lon1, lat1], [lon2, lat2]]},
-        "properties": {"length_m": round(r["length"]), "clearance_m": round(r["clearance"], 1),
-                       "info": info},
-    }

@@ -64,6 +64,9 @@ The search centre can be given in either of two coordinate systems:
 | `--processes` | CPU count - 1 | Number of parallel processes |
 | `--cache-dir` | `cache` | Folder for downloaded data |
 | `--refresh` | | Download data again even if it is cached |
+| `--group-distance` | 20 | Group similar lines: both anchors within this many metres |
+| `--group-by` | `clearance` | Line shown for each group: `clearance` (largest) or `longest` |
+| `--all-lines` | | List every line instead of one line per group |
 | `--html` | `findaline_map.html` | Interactive map file |
 | `--no-html` / `--no-plot` | | Skip the interactive map / the matplotlib window |
 | `-y`, `--yes` | | Do not ask for confirmation before long runs |
@@ -71,9 +74,11 @@ The search centre can be given in either of two coordinate systems:
 Run `python findaline.py --help` for the full list.
 
 ### Results
-- The coordinates of every line are printed in the terminal (WGS84, latitude and longitude), longest lines first.
-- An interactive map (`findaline_map.html`) can be opened in any web browser. You can switch between OpenTopoMap, OpenStreetMap and the geoportal orthophoto, and click a line to see its length, anchor elevations and clearance.
-- A static map is shown in a separate window (close it to finish the program).
+A steep rock face produces many near-identical lines (anchors shifted by a metre or two). Such lines are grouped into one spot: two lines belong to the same group when both of their anchors are within `--group-distance` metres of each other. Each group is shown as one line, the one with the largest clearance (or the longest one, `--group-by longest`). Lines over trees/buildings are grouped separately from clear lines.
+
+- The coordinates are printed in the terminal (WGS84, latitude and longitude), one line per group with the number of similar lines. Use `--all-lines` to list every line.
+- An interactive map (`findaline_map.html`) can be opened in any web browser. You can switch between OpenTopoMap, OpenStreetMap and the geoportal orthophoto, and click a line to see its length, anchor elevations and clearance. The panel in the bottom-left corner turns grouping on and off, sets the grouping distance and the line shown for each group. Clicking a group shows all of its lines.
+- A static map is shown in a separate window (close it to finish the program), with one line per group.
 
 ### Run time and data size
 The defaults (20 km radius at 2 m) cover a large area: about 1.5 GB to download for NMT alone (NMPT is several times slower to download), and in steep terrain potentially billions of anchor pairs. Before downloading and before evaluating, the script prints an estimate and asks for confirmation if the run looks long. If it is too slow, compromise by doing at least one of the following:
