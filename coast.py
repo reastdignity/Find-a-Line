@@ -121,6 +121,10 @@ def sea_mask(grid: Grid, cache_dir: str, mode: str, copernicus_sea: np.ndarray,
 
     Returns (mask, description of the source, warning or None).
     """
+    if not copernicus_sea.any():
+        # Inland: the mask shows no sea anywhere in the area. Its shoreline is off by
+        # about 100 m at most, so at worst a thin strip at the edge of the area is missed
+        return copernicus_sea, "no sea in the area", None
     if mode == "world":
         import geopandas as gpd
         shapefile = _world_polygons(cache_dir, refresh)
