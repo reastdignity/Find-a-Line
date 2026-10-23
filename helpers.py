@@ -12,6 +12,8 @@ from typing import List, NamedTuple, Optional, Tuple
 import numpy as np
 from scipy.spatial import cKDTree
 
+from progress import progress
+
 # Maximum elevation formula: max_elev = min_anchor_elev - SLOPE * distance - LEASH_FALL
 LEASH_FALL = 6.0  # metres below the anchors for a 0 m line
 SLOPE = 0.15      # metres of extra clearance per metre of distance from the nearest anchor
@@ -53,6 +55,7 @@ def find_significant_slopes(elevation: np.ndarray, res: float, slope_threshold: 
     center_row, center_col = center
     anchors = []
 
+    progress.compute.start("finding anchors", height, unit="row")
     for r0 in range(0, height, block_rows):
         r1 = min(height, r0 + block_rows)
         if slope is None:
@@ -68,7 +71,8 @@ def find_significant_slopes(elevation: np.ndarray, res: float, slope_threshold: 
         rows += r0
         inside = (rows - center_row) ** 2 + (cols - center_col) ** 2 <= radius_px ** 2
         anchors.append(np.column_stack([rows[inside], cols[inside]]).astype(np.int32))
-
+        progress.compute.update(r1 - r0)
+    progress.compute.finish()
     return np.concatenate(anchors) if anchors else np.empty((0, 2), dtype=np.int32)
 
 
@@ -334,26 +338,18 @@ def find_valid_lines(elevation_path: str, surface_path: Optional[str], anchors_p
     print(f"Using {num_processes} parallel processes, {len(chunks)} work chunks...")
 
     start_time = time.time()
-    last_report = 0.0
-    done_anchors = evaluated = 0
+    evaluated = 0
     valid_lines: List[Line] = []
+    progress.compute.start("anchor pairs", num_anchors, unit="anchor")
 
     initargs = (elevation_path, surface_path, anchors_path, res, min_length, max_length, nmpt_mode,
                 sag_table, max_dh_ratio, max_dh)
     with Pool(processes=num_processes, initializer=_worker_init, initargs=initargs) as pool:
         for n_anchors, n_pairs, lines in pool.imap_unordered(_search_chunk, chunks):
-            done_anchors += n_anchors
             evaluated += n_pairs
             valid_lines.extend(lines)
-
-            elapsed = time.time() - start_time
-            if elapsed - last_report >= 5 or done_anchors == num_anchors:
-                last_report = elapsed
-                progress = done_anchors / num_anchors
-                eta = elapsed / progress * (1 - progress) if progress else 0
-                print(f"Progress: {100 * progress:.1f}% of anchors - "
-                      f"{evaluated} pairs evaluated - Found {len(valid_lines)} valid lines - "
-                      f"Elapsed: {elapsed:.0f}s - Remaining: ~{eta:.0f}s")
+            progress.compute.update(n_anchors, pairs=f"{evaluated:,}", lines=len(valid_lines))
+    progress.compute.finish(f"{len(valid_lines)} lines")
 
     elapsed_total = time.time() - start_time
     print(f"\n{'=' * 60}")

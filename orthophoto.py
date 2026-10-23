@@ -19,6 +19,8 @@ from shapely.geometry import LineString, Point, box
 from shapely.ops import unary_union
 from shapely.prepared import prep
 
+from progress import progress
+
 WMS_URL = "https://mapy.geoportal.gov.pl/wss/service/PZGIK/ORTO/WMS/HighResolution"
 TILE_PX = 256
 OVERVIEW_ZOOMS = range(10, 17)  # whole search area
@@ -111,28 +113,25 @@ def _download_tile(z: int, x: int, y: int, path: str):
     with open(path + ".part", "wb") as f:
         f.write(response.content)
     os.replace(path + ".part", path)
+    return len(response.content)
 
 
 def download(tiles: List[Tile], cache_dir: str):
     """Download tiles (in parallel) into the cache. Failed tiles are skipped."""
     if not tiles:
         return
-    start = time.time()
-    last_report = 0.0
     errors = []
+    received = 0
+    progress.download.start("orthophoto tiles", len(tiles), unit="tile")
     with ThreadPoolExecutor(max_workers=DOWNLOAD_THREADS) as pool:
         futures = [pool.submit(_download_tile, *t, tile_path(cache_dir, *t)) for t in tiles]
-        for done, future in enumerate(as_completed(futures), 1):
+        for future in as_completed(futures):
             try:
-                future.result()
+                received += future.result()
             except RuntimeError as e:
                 errors.append(e)
-            elapsed = time.time() - start
-            if elapsed - last_report >= 10 or done == len(tiles):
-                last_report = elapsed
-                eta = elapsed / done * (len(tiles) - done)
-                print(f"  Downloaded {done}/{len(tiles)} orthophoto tiles - "
-                      f"elapsed {elapsed:.0f}s, remaining ~{eta:.0f}s")
+            progress.download.update(1, MB=f"{received / 1e6:.0f}", failed=len(errors))
+    progress.download.finish(f"{received / 1e6:.0f} MB")
     if errors:
         print(f"  {len(errors)} tiles failed (e.g. {str(errors[0])[:200]})")
         print("  The map loads them online instead; run again to retry them.")

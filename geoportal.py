@@ -22,6 +22,8 @@ from rasterio.io import MemoryFile
 from rasterio.transform import from_origin
 from rasterio.warp import Resampling, reproject
 
+from progress import progress
+
 CRS = "EPSG:2180"  # PL-1992, used by all GUGiK elevation services
 WCS_BASE = "https://mapy.geoportal.gov.pl/wss/service/PZGIK"
 
@@ -189,6 +191,7 @@ def _download_tile(layer: str, res: float, i: int, j: int, path: str):
                   compress="deflate", predictor=3, tiled=True) as dst:
         dst.write(band, 1)
     os.replace(tmp_path, path)
+    return len(data)
 
 
 def download_tiles(layer: str, tiles: List[Tuple[int, int]], cache_dir: str,
@@ -202,16 +205,15 @@ def download_tiles(layer: str, tiles: List[Tuple[int, int]], cache_dir: str,
     if not todo:
         return
 
-    start = time.time()
+    progress.download.start(f"{layer.upper()} tiles", len(todo), unit="tile")
+    received = 0
     with ThreadPoolExecutor(max_workers=DOWNLOAD_THREADS) as pool:
         futures = {pool.submit(_download_tile, layer, res, i, j,
                                tile_path(cache_dir, layer, res, i, j)): (i, j) for i, j in todo}
-        for done, future in enumerate(as_completed(futures), 1):
-            future.result()
-            elapsed = time.time() - start
-            eta = elapsed / done * (len(todo) - done)
-            print(f"  Downloaded {done}/{len(todo)} tiles - "
-                  f"elapsed {elapsed:.0f}s, remaining ~{eta:.0f}s")
+        for future in as_completed(futures):
+            received += future.result()
+            progress.download.update(1, MB=f"{received / 1e6:.0f}")
+    progress.download.finish(f"{received / 1e6:.0f} MB")
 
 
 def build_mosaic(layer: str, tiles: List[Tuple[int, int]], cache_dir: str,
@@ -222,7 +224,9 @@ def build_mosaic(layer: str, tiles: List[Tuple[int, int]], cache_dir: str,
                                        shape=(grid.height, grid.width))
     mosaic[:] = np.nan
 
+    progress.compute.start(f"stitching {layer.upper()} tiles", len(tiles), unit="tile")
     for i, j in tiles:
+        progress.compute.update(1)
         with rio.open(tile_path(cache_dir, layer, grid.res, i, j)) as src:
             row_off = int(round((grid.top - src.bounds.top) / grid.res))
             col_off = int(round((src.bounds.left - grid.left) / grid.res))
@@ -235,6 +239,7 @@ def build_mosaic(layer: str, tiles: List[Tuple[int, int]], cache_dir: str,
             mosaic[r0:r1, c0:c1] = src.read(1, window=window)
 
     mosaic.flush()
+    progress.compute.finish()
     return mosaic
 
 

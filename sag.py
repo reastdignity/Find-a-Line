@@ -19,6 +19,8 @@ from typing import List, Optional, Sequence, Tuple
 
 import numpy as np
 
+from progress import progress
+
 G = 9.80665
 ENVELOPE_POINTS = 40  # athlete positions along the line (interior points)
 
@@ -210,9 +212,12 @@ class EnvelopeTable:
         self.spans = min_span * self.SPAN_STEP ** np.arange(n)
         self.fractions = np.linspace(0, 1, ENVELOPE_POINTS + 2)
         self.sag = np.empty((len(self.spans), len(self.RATIOS), len(self.fractions)))
+        progress.compute.start("sag estimator table", len(self.spans), unit="length")
         for i, span in enumerate(self.spans):
             for j, ratio in enumerate(self.RATIOS):
                 self.sag[i, j] = envelope(span, ratio * span, rig)[1]
+            progress.compute.update(1)
+        progress.compute.finish()
 
     def __call__(self, span: float, dh: float, t: np.ndarray) -> np.ndarray:
         """Sag below the chord at fractions t of a line with this span and height difference."""

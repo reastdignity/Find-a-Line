@@ -13,6 +13,7 @@ from pyproj import Transformer
 from geoportal import CRS, Grid
 from helpers import LEASH_FALL, SLOPE, Line
 from orthophoto import WMS_URL as ORTHOPHOTO_WMS
+from progress import progress
 from sag import Rigging
 
 MAX_ZOOM = 21  # about 5 cm per pixel, the detail of the best geoportal orthophotos
@@ -90,6 +91,7 @@ def group_lines(results: List[Dict], distance: float, by: str = "clearance") -> 
     rank = _rank(by)
     d2 = distance ** 2
     groups = []
+    progress.compute.start("grouping lines", len(results), unit="line")
     for over in (False, True):
         lines = sorted((r for r in results if r["over_obstacles"] == over), key=rank, reverse=True)
         if not lines:
@@ -105,6 +107,8 @@ def group_lines(results: List[Dict], distance: float, by: str = "clearance") -> 
             members = np.flatnonzero(free & (same | flipped))
             free[members] = False
             groups.append({"rep": lines[i], "members": [lines[k] for k in members]})
+            progress.compute.update(len(members), spots=len(groups))
+    progress.compute.finish(f"{len(groups)} spots")
     # Clear lines first, then lines over trees/buildings; best first within each
     groups.sort(key=lambda g: (not g["rep"]["over_obstacles"], rank(g["rep"])), reverse=True)
     return groups

@@ -99,6 +99,9 @@ A steep rock face produces many near-identical lines (anchors shifted by a metre
 - Orthophoto tiles for the map are saved in `cache/ortho`, so the aerial photos also work without internet: the whole search area up to zoom 16, and a 30 m strip around each group's line up to the maximum zoom (21). Elsewhere the map loads the orthophoto online. The first run in an area can download a couple of thousand tiles (for example about 1700 tiles, 26 MB and 8 minutes for 66 spots within 1 km); later runs reuse them. Maps find the tiles through a relative path, so keep the `runs` and `cache` folders where they are; a map moved elsewhere loads everything online.
 - A static map is shown in a separate window (close it to finish the program), with one line per group.
 
+### Progress
+While the script runs, two progress bars at the bottom of the terminal show downloads (elevation and orthophoto tiles) and computations (stitching tiles, finding anchors, evaluating anchor pairs, profiles, grouping), each with the current stage, speed and remaining time. When the output is written to a file instead of a terminal, a line of text with the progress is printed every 10 seconds. Set `FINDALINE_PROGRESS=bars` or `FINDALINE_PROGRESS=text` to force one of the two.
+
 ### Run time and data size
 With the defaults (1 km radius at 2 m, NMPT on) the first run downloads about 100 MB and takes a minute or two, mostly downloading NMPT, which is much slower than NMT. Larger areas grow quickly: a 20 km radius at 2 m is about 1.5 GB for NMT alone, and in steep terrain potentially billions of anchor pairs. Before downloading and before evaluating, the script prints an estimate and asks for confirmation if the run looks long. If it is too slow, compromise by doing at least one of the following:
 - Use a smaller `--radius`

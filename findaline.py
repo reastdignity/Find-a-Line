@@ -23,6 +23,7 @@ import geoportal as gp
 import helpers as sh
 import mapping as mp
 import orthophoto as ortho
+from progress import progress
 import runs as rn
 import sag as sg
 
@@ -153,14 +154,13 @@ def confirm(reasons, assume_yes):
 def ask(question):
     """Ask a yes/no question; anything but yes (or no terminal) means no."""
     try:
-        answer = input(question)
+        answer = progress.ask(question)
     except EOFError:
         answer = ""
     return answer.strip().lower() in ("y", "yes", "t", "tak")
 
 
-if __name__ == "__main__":
-    args = parse_args()
+def main(args):
 
     if args.lat is not None:
         center_lat, center_lon = args.lat, args.lon
@@ -265,9 +265,12 @@ if __name__ == "__main__":
     print("\nStep 4: Converting pixel coordinates to GPS coordinates...")
     results = mp.coordify(valid_lines, grid, args.nmpt)
     if not args.no_html:
+        progress.compute.start("line profiles", len(results), unit="line")
         for r, line in zip(results, valid_lines):
             r["profile"] = sh.line_profile(line.a1, line.a2, elevation, args.resolution, surface,
                                            sag_table=sag_table)
+            progress.compute.update(1)
+        progress.compute.finish()
     spot_groups = mp.group_lines(results, args.group_distance, args.group_by)
     if args.all_lines:
         groups = [{"rep": r, "members": [r]} for r in results]
@@ -345,3 +348,8 @@ if __name__ == "__main__":
     print("\n" + "=" * 60)
     print("Analysis complete!")
     print("=" * 60)
+
+
+if __name__ == "__main__":
+    with progress.bars():
+        main(parse_args())
