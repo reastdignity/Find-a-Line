@@ -49,7 +49,7 @@ Anchors are taken at ground level, as with the formula. With the default values 
 ## Getting Started
 New to the terminal? Follow the [step-by-step setup guide](setup-for-regular-folk.md) for macOS and Windows.
 
-Get the code and install the requirements (Python 3.10 or newer):
+Get the code and install the requirements (Python 3.12 or newer):
 
 ```
 git clone https://github.com/reastdignity/Find-a-Line.git
