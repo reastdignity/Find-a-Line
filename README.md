@@ -1,13 +1,21 @@
 # Find a Line
 This is an application that finds topographically valid highlines. It downloads elevation data for the area you choose and evaluates the potential of each raster pixel by applying a custom "maximum elevation formula" (or a physical sag estimate of the webbing).
 
-Where a country publishes airborne LiDAR data, the tool uses it: a terrain model (ground only) and a surface model including trees and buildings, at 1 metre or better. This is built in for Poland ([geoportal.gov.pl](https://www.geoportal.gov.pl)) and Malta, and other countries can be added (see *Data sources*). Everywhere else in Europe (and the world) it uses 30 m global models, which is enough for long lines only. NASADEM and your own raster files are supported too.
+Where a country publishes airborne LiDAR data, the tool uses it: a terrain model (ground only) and a surface model including trees and buildings. Built in, and picked automatically from the location of the search:
+
+| Country | Data | Grid |
+| --- | --- | --- |
+| Poland | GUGiK NMT / NMPT ([geoportal.gov.pl](https://www.geoportal.gov.pl)) | 1 m (0.5 m for NMPT) |
+| Malta | Planning Authority LiDAR 2018 (2012 on request) | 1 m |
+| Spain, incl. the Balearic and Canary Islands | IGN MDT05 / MDS05 (PNOA-LiDAR) | 5 m |
+
+Other countries can be added (see *Data sources*). Everywhere else in Europe (and the world) the tool uses 30 m global models (FABDEM and Copernicus DEM), which is enough for long lines only. NASADEM and your own raster files are supported too. The sea and lakes are filled in where the data has none, so lines between sea cliffs are found as well.
 
 **Limitations and future scope**
-- High-resolution data is built in for Poland and Malta only; elsewhere the 30 m models find long lines only. Areas without data (for example the sea) are treated as "no data" and lines never cross them.
+- High-resolution data is built in for Poland, Malta and Spain only; elsewhere the 30 m models find long lines only, and at 5 m (Spain) lines shorter than about 30 m are not reliable.
 - Trees and buildings are taken into account through NMPT (on by default, `--nmpt off` to skip it). Other factors that make rigging difficult are not.
 - It would be nice to overlay with property maps.
-- The math behind line dynamics is very nuanced, somewhat complex, and generally not available; we are using a simple formula.
+- The math behind line dynamics is very nuanced and somewhat complex. By default we use a simple formula; the sag estimator (`--model sag`) models the webbing physically, but still with anchors at ground level.
 - Because our formula always takes into account the elevation of the lowest anchor, the lines may be off-level, or required to be rigged shorter than shown on the map.
 - Please be aware that our formula **does not** take into account the additional height required for a safe mainline failure.
 
