@@ -5,7 +5,8 @@ the elevation data has none (see sources.fill_water).
 Three ways to get it (--coastline):
 - overpass:   OpenStreetMap coastline for the search area from the Overpass API
               (small, cached). If Overpass does not answer, the Copernicus water
-              body mask is used instead, with a warning about its accuracy.
+              body mask is used instead, with a warning about its accuracy. If the
+              world file (below) has been downloaded, it is used instead of Overpass.
 - world:      OpenStreetMap water polygons of the whole world (osmdata.openstreetmap.de,
               about 900 MB zipped), downloaded once into the cache.
 - copernicus: the Copernicus water body mask (30 m). Measured at the Maltese
@@ -91,10 +92,15 @@ def _sea_from_coastline(lines, grid: Grid, copernicus_sea: np.ndarray) -> np.nda
     return _rasterize(sea, grid)
 
 
+def world_file(cache_dir: str) -> str:
+    """Where the OSM water polygons shapefile of the whole world is kept."""
+    return os.path.join(cache_dir, "osm", "water-polygons", "water-polygons-split-4326", "water_polygons.shp")
+
+
 def _world_polygons(cache_dir: str, refresh: bool) -> str:
     """Path of the OSM water polygons shapefile, downloading it once (about 900 MB)."""
     folder = os.path.join(cache_dir, "osm", "water-polygons")
-    shapefile = os.path.join(folder, "water-polygons-split-4326", "water_polygons.shp")
+    shapefile = world_file(cache_dir)
     if os.path.exists(shapefile) and not refresh:
         return shapefile
     os.makedirs(folder, exist_ok=True)
@@ -125,9 +131,11 @@ def sea_mask(grid: Grid, cache_dir: str, mode: str, copernicus_sea: np.ndarray,
         # Inland: the mask shows no sea anywhere in the area. Its shoreline is off by
         # about 100 m at most, so at worst a thin strip at the edge of the area is missed
         return copernicus_sea, "no sea in the area", None
-    if mode == "world":
+    # The world file holds the same OpenStreetMap data: once downloaded, Overpass is not needed
+    downloaded = mode == "overpass" and os.path.exists(world_file(cache_dir))
+    if mode == "world" or downloaded:
         import geopandas as gpd
-        shapefile = _world_polygons(cache_dir, refresh)
+        shapefile = world_file(cache_dir) if downloaded else _world_polygons(cache_dir, refresh)
         water = gpd.read_file(shapefile, bbox=_grid_bbox_wgs84(grid)).to_crs(grid.crs)
         return _rasterize(water.geometry, grid), "OpenStreetMap water polygons (world file)", None
 

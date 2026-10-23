@@ -67,7 +67,7 @@ Anchors are taken at ground level, as with the formula. With the default values 
 ### Sea, lakes and gaps in the data
 LiDAR models usually have no data over water. Without it, lines across the sea between cliffs are never found, and neither are the cliff edges themselves (their slope needs the pixels next to them). By default (`--water fill`):
 - **The sea** gets 0 m where the elevation data has none. Where the sea is comes from `--coastline`:
-  - `overpass` (default): the OpenStreetMap coastline of the search area from the Overpass API (cached in `cache/osm`). If Overpass does not answer, the Copernicus mask is used instead and a warning is printed.
+  - `overpass` (default): the OpenStreetMap coastline of the search area from the Overpass API (cached in `cache/osm`). If Overpass does not answer, the Copernicus mask is used instead and a warning is printed. Once the world file below has been downloaded, it is used instead of Overpass (same OpenStreetMap data, no waiting for the server).
   - `world`: the OpenStreetMap water polygons of the whole world, downloaded once (about 900 MB) into `cache/osm`; no Overpass needed afterwards.
   - `copernicus`: the Copernicus DEM water body mask (30 m).
 
