@@ -49,7 +49,15 @@ Anchors are taken at ground level, as with the formula. With the default values 
 ## Getting Started
 New to the terminal? Follow the [step-by-step setup guide](setup-for-regular-folk.md) for macOS and Windows.
 
-Install the requirements (`pip install -r requirements.txt`) and run the script with the centre of the area you want to search:
+Get the code and install the requirements (Python 3.10 or newer):
+
+```
+git clone https://github.com/reastdignity/Find-a-Line.git
+cd Find-a-Line
+pip install -r requirements.txt
+```
+
+Then run the script with the centre of the area you want to search:
 
 ```
 python findaline.py --lat 49.2320 --lon 19.9817
@@ -109,12 +117,85 @@ With the defaults (1 km radius at 2 m, NMPT on) the first run downloads about 10
 - Raise `--slope-threshold`
 - Change your minimum or maximum line lengths
 
-### Example Run
-This is how the map looks after valid lines have been found (2500-5000m lines in southern Washington, from an earlier version of this tool that used NASADEM data).
+## Examples
+### Żabi Koń, Dolina Kobylańska
+Żabi Koń is a limestone rock in Dolina Kobylańska near Kraków. Searching within 1 km of it with the default settings (2 m grid, slope ≥45°, lines 30–1000 m, anchors at most 5% / 50 m apart in height, NMPT marking, maximum elevation formula):
+
+```
+python findaline.py --lat 50.1559508 --lon 19.7562722
+```
+
+The terminal shows the settings, the progress of every step and finally the spots found (shortened):
+
+```
+Centre: 50.155951, 19.756272 (WGS84) / N 254576, E 554008 (PL-1992)
+Radius: 1000m, resolution: 2m (1001 x 1001 px)
+Length constraints: 30m - 1000m
+Anchor height difference: at most 5% of the length and 50m
+Slope threshold: 45 degrees
+NMPT (trees/buildings): mark
+Clearance model: maximum elevation formula
+...
+Found 8371 potential anchors to evaluate
+Estimated 17,370,267 anchor pairs within length constraints, ~0 min on 23 processes
+...
+Found 691 valid lines in 66 spots (lines with both anchors within 20m are grouped, ...)
+GPS Coordinates (lat, lon):
+  Spot 1: 102m, min. clearance 4.6m
+    38 similar lines, 95-103m
+    Anchor 1: 50.156485, 19.755093
+    Anchor 2: 50.155991, 19.756290
+  Spot 2: 169m, min. clearance 3.8m
+    22 similar lines, 168-174m
+    Anchor 1: 50.155290, 19.756279
+    Anchor 2: 50.154057, 19.754887
+  ...
+Run "Żabi Koń, Gaj Kobylański" saved to ...
+uns6-10-23_174205_Zabi-Kon-Gaj-Kobylanski
+```
+
+On a 24-core PC the 17 million anchor pairs took about 30 seconds; the first run in an area also downloads about 100 MB of elevation data and a few thousand orthophoto tiles.
+
+Of the 66 spots, 16 have clearance over the trees as well (pink); the other 50 only over the terrain (orange). The interactive map (`findaline_map.html`) shows them all:
+
+![Map of the lines around Żabi Koń](docs/images/zabi-kon-overview.jpg)
+
+Clicking a line opens its details and the terrain profile. Spot 1 is a 102 m line from the slope north-west of the rock to the top of Żabi Koń, with 4.6 m to spare below the safety limit (dashed red). The sag estimator shows the webbing would sag about 5.6 m below the straight line between the anchors with an 80 kg athlete in the middle (2.5 kN pretension):
+
+![Profile of the 102 m line to Żabi Koń](docs/images/zabi-kon-profile.png)
+
+With the geoportal orthophoto you can check the rocks and trees at the anchors (zoomed in to a 10 m scale):
+
+![Orthophoto around Żabi Koń](docs/images/zabi-kon-ortho.jpg)
+
+The same results are in `runs/2026-10-23_174205_Zabi-Kon-Gaj-Kobylanski/lines.csv`, one row per line, for example (selected columns):
+
+| group | representative | group_size | length_m | clearance_m | clearance_nmpt_m | anchor1_lat | anchor1_lon | anchor2_lat | anchor2_lon |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 1 | True | 38 | 101.5 | 4.56 | 4.55 | 50.156485 | 19.7550932 | 50.1559914 | 19.7562897 |
+| 2 | True | 22 | 169.3 | 3.78 | 1.86 | 50.1552897 | 19.7562786 | 50.1540572 | 19.7548869 |
+
+### More examples
+```
+# The same place, but checked with the sag estimator for your own setup
+python findaline.py --lat 50.1559508 --lon 19.7562722 --model sag --pretension 3 --stretch 4 --athlete-mass 75 --fall-zone 4
+
+# Centre given in PL-1992 coordinates (as shown on geoportal.gov.pl: X = northing, Y = easting)
+python findaline.py --northing 254576 --easting 554008
+
+# A first look at a larger area: coarser grid, only long lines, no NMPT
+python findaline.py --lat 50.17332 --lon 19.74092 --radius 5000 --resolution 5 --min-length 100 --nmpt off
+
+# Every pixel (1 m), steep rock only, short lines too, with your own name for the run
+python findaline.py --lat 50.1528584 --lon 19.7846212 --resolution 1 --slope-threshold 60 --min-length 15 --name "Brama Bolechowicka"
+```
+
+### Earlier version
+Before switching to geoportal.gov.pl data, this tool used 30 m NASADEM data. This is how the map looked for 2500-5000m lines in southern Washington:
 <img width="1440" height="900" alt="south wa big lines" src="https://github.com/user-attachments/assets/37fa09be-8726-465f-bb57-f1a76d3332a6" />
 
 
-And here is an example of one such location found using this tool.
+And here is an example of one such location found using it.
 <img width="1404" height="356" alt="Screenshot 2025-11-03 at 4 14 58 PM" src="https://github.com/user-attachments/assets/e44f01cf-f3a1-4a7d-b629-f00bec73779e" />
 
 ## Data
