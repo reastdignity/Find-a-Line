@@ -2,6 +2,8 @@
 Converting results to GPS coordinates and displaying them on maps.
 """
 
+import os
+from pathlib import Path
 from typing import Dict, List, Optional
 
 import numpy as np
@@ -9,8 +11,7 @@ from pyproj import Transformer
 
 from geoportal import CRS, Grid
 from helpers import Line
-
-ORTHOPHOTO_WMS = "https://mapy.geoportal.gov.pl/wss/service/PZGIK/ORTO/WMS/HighResolution"
+from orthophoto import WMS_URL as ORTHOPHOTO_WMS
 
 MAX_ZOOM = 21  # about 5 cm per pixel, the detail of the best geoportal orthophotos
 
@@ -352,13 +353,23 @@ GROUPING_SCRIPT = """
 """
 
 
+def _cache_url(cache_path: str, html_path: str) -> str:
+    """URL of a cache folder as seen from the HTML file (relative when possible)."""
+    try:
+        return os.path.relpath(cache_path, os.path.dirname(os.path.abspath(html_path))).replace(os.sep, "/")
+    except ValueError:  # different drive on Windows
+        return Path(os.path.abspath(cache_path)).as_uri()
+
+
 def save_html_map(results: List[Dict], center_lat: float, center_lon: float,
                   radius: float, path: str, group_distance: float = 20,
-                  group_by: str = "clearance"):
+                  group_by: str = "clearance", ortho_cache: Optional[str] = None):
     """Save an interactive map (Leaflet) with OpenTopoMap, OSM and geoportal orthophoto.
 
     Lines are grouped in the browser; the panel on the map switches grouping on
     and off and sets the grouping distance and representative line.
+    Orthophoto tiles are read from ortho_cache (a {z}/{x}/{y}.jpg folder) when
+    present there, and from the geoportal WMS otherwise.
     """
     import folium
     import xyzservices.providers as xyz
@@ -366,11 +377,27 @@ def save_html_map(results: List[Dict], center_lat: float, center_lon: float,
     from folium.template import Template
     from folium.utilities import JsCode
 
-    class Wgs84WmsTileLayer(folium.WmsTileLayer):
-        # Same as WmsTileLayer, but options may contain JavaScript (the crs object)
+    class OrthophotoLayer(folium.WmsTileLayer):
+        # WMS layer whose options may contain JavaScript (the crs object) and which
+        # tries the local tile cache first, falling back to the WMS for missing tiles
         _template = Template("""
             {% macro script(this, kwargs) %}
-                var {{ this.get_name() }} = L.tileLayer.wms(
+                var {{ this.get_name() }} = new (L.TileLayer.WMS.extend({
+                    createTile: function(coords, done) {
+                        var layer = this, cache = {{ this.cache_url|tojson }}, online = !cache;
+                        var tile = document.createElement("img");
+                        tile.alt = "";
+                        tile.setAttribute("role", "presentation");
+                        L.DomEvent.on(tile, "load", L.Util.bind(this._tileOnLoad, this, done, tile));
+                        L.DomEvent.on(tile, "error", function(e) {
+                            if (!online) { online = true; tile.src = layer.getTileUrl(coords); }
+                            else layer._tileOnError(done, tile, e);
+                        });
+                        tile.src = online ? this.getTileUrl(coords)
+                                          : cache + "/" + coords.z + "/" + coords.x + "/" + coords.y + ".jpg";
+                        return tile;
+                    }
+                }))(
                     {{ this.url|tojson }},
                     {{ this.options|tojavascript }}
                 );
@@ -386,9 +413,11 @@ def save_html_map(results: List[Dict], center_lat: float, center_lon: float,
                      max_native_zoom=xyz.OpenStreetMap.Mapnik["max_zoom"]).add_to(fmap)
     # The geoportal WMS does not support Web Mercator, so tiles are requested in WGS84.
     # WMS renders at any scale, so the orthophoto stays sharp up to MAX_ZOOM.
-    Wgs84WmsTileLayer(ORTHOPHOTO_WMS, layers="Raster", fmt="image/jpeg", version="1.3.0",
-                      name="Orthophoto (geoportal.gov.pl)", attr="GUGiK", max_zoom=MAX_ZOOM,
-                      overlay=False, show=False, crs=JsCode("L.CRS.EPSG4326")).add_to(fmap)
+    ortho = OrthophotoLayer(ORTHOPHOTO_WMS, layers="Raster", fmt="image/jpeg", version="1.3.0",
+                            name="Orthophoto (geoportal.gov.pl)", attr="GUGiK", max_zoom=MAX_ZOOM,
+                            overlay=False, show=False, crs=JsCode("L.CRS.EPSG4326"))
+    ortho.cache_url = _cache_url(ortho_cache, path) if ortho_cache else None
+    ortho.add_to(fmap)
 
     folium.GeoJson(_search_area(center_lat, center_lon, radius).__geo_interface__,
                    name="Search area", interactive=False,

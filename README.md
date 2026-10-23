@@ -68,6 +68,7 @@ The search centre can be given in either of two coordinate systems:
 | `--group-by` | `clearance` | Line shown for each group: `clearance` (largest) or `longest` |
 | `--all-lines` | | List every line instead of one line per group |
 | `--html` | `findaline_map.html` | Interactive map file |
+| `--no-ortho-cache` | | Do not download orthophoto tiles for offline use of the map |
 | `--no-html` / `--no-plot` | | Skip the interactive map / the matplotlib window |
 | `-y`, `--yes` | | Do not ask for confirmation before long runs |
 
@@ -78,6 +79,7 @@ A steep rock face produces many near-identical lines (anchors shifted by a metre
 
 - The coordinates are printed in the terminal (WGS84, latitude and longitude), one line per group with the number of similar lines. Use `--all-lines` to list every line.
 - An interactive map (`findaline_map.html`) can be opened in any web browser. You can switch between OpenTopoMap, OpenStreetMap and the geoportal orthophoto, and click a line to see its length, anchor elevations and clearance. The panel in the bottom-left corner turns grouping on and off, sets the grouping distance and the line shown for each group. Clicking a group shows all of its lines. A popup can be moved off the line by dragging its top bar.
+- Orthophoto tiles for the map are saved in `cache/ortho`, so the aerial photos also work without internet: the whole search area up to zoom 16, and a 100 m strip around each group's line up to the maximum zoom (21). Elsewhere the map loads the orthophoto online. The first run in an area downloads a few thousand tiles (tens of MB, roughly 20 minutes for a 1 km radius in a busy area); later runs reuse them. Keep the HTML file next to the `cache` folder, otherwise it loads everything online.
 - A static map is shown in a separate window (close it to finish the program), with one line per group.
 
 ### Run time and data size

@@ -40,6 +40,7 @@ Next time you open PowerShell, just run `cd Find-a-Line` and `.\venv\Scripts\Act
 
 - The elevation data is downloaded automatically from geoportal.gov.pl (only the first time for a given area) and the search starts.
 - When it is done, the coordinates of the lines are printed, a map opens in a new window, and an interactive map is saved as `findaline_map.html` in the project folder. Open it in your web browser, click a line to see its details, and switch to the orthophoto (aerial photos) in the top-right corner.
+- Aerial photos around the found lines are saved too, so you can look at them later without internet. The first time this can take a while; add `--no-ortho-cache` to skip it.
 - Similar lines in the same spot are shown as one line. Use the panel in the bottom-left corner of the map to change how they are grouped or to show every line.
 
 Lines that pass too close to trees or buildings are shown in orange. To leave them out instead, add `--nmpt reject`; to skip this check (faster, less to download), add `--nmpt off`. To see all options, run `python findaline.py --help`.

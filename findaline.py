@@ -20,11 +20,13 @@ import numpy as np
 import geoportal as gp
 import helpers as sh
 import mapping as mp
+import orthophoto as ortho
 
 # Ask before continuing when a run looks this expensive
 CONFIRM_DOWNLOAD_MB = 500
 CONFIRM_DISK_GB = 4
 CONFIRM_MINUTES = 30
+ORTHO_SECONDS_PER_TILE = 0.3  # measured download rate with orthophoto.DOWNLOAD_THREADS
 
 
 def parse_args():
@@ -73,6 +75,8 @@ def parse_args():
                         help="list every line instead of one line per group")
     output.add_argument("--html", default="findaline_map.html", help="interactive map file")
     output.add_argument("--no-html", action="store_true", help="do not save the interactive map")
+    output.add_argument("--no-ortho-cache", action="store_true",
+                        help="do not download orthophoto tiles for offline use of the map")
     output.add_argument("--no-plot", action="store_true", help="do not open the matplotlib map")
     output.add_argument("-y", "--yes", action="store_true",
                         help="do not ask for confirmation before long runs")
@@ -112,12 +116,17 @@ def confirm(reasons, assume_yes):
     print("Consider a smaller --radius or a coarser --resolution.")
     if assume_yes:
         return
+    if not ask("Continue? [y/N] "):
+        sys.exit("Stopped. Use --yes to skip this question.")
+
+
+def ask(question):
+    """Ask a yes/no question; anything but yes (or no terminal) means no."""
     try:
-        answer = input("Continue? [y/N] ")
+        answer = input(question)
     except EOFError:
         answer = ""
-    if answer.strip().lower() not in ("y", "yes", "t", "tak"):
-        sys.exit("Stopped. Use --yes to skip this question.")
+    return answer.strip().lower() in ("y", "yes", "t", "tak")
 
 
 if __name__ == "__main__":
@@ -232,8 +241,22 @@ if __name__ == "__main__":
     # Step 5: Display results on a map
     print("\nStep 5: Displaying results on map...")
     if not args.no_html:
+        ortho_cache = None
+        if not args.no_ortho_cache:
+            # Detailed orthophoto only around one line per group (variants lie within the strip)
+            spots = [g["rep"] for g in mp.group_lines(results, args.group_distance, args.group_by)]
+            tiles = ortho.missing_tiles(ortho.tiles_to_cache(spots, center_lat, center_lon,
+                                                             args.radius), args.cache_dir)
+            minutes = len(tiles) * ORTHO_SECONDS_PER_TILE / 60
+            print(f"Orthophoto for offline use: {len(tiles)} tiles to download "
+                  f"(~{len(tiles) * ortho.APPROX_TILE_KB / 1000:.0f} MB, ~{minutes:.0f} min)")
+            if minutes > CONFIRM_MINUTES and not args.yes and not ask(
+                    "Download now? Otherwise the map loads the orthophoto online. [y/N] "):
+                tiles = []
+            ortho.download(tiles, args.cache_dir)
+            ortho_cache = os.path.join(args.cache_dir, "ortho")
         mp.save_html_map(results, center_lat, center_lon, args.radius, args.html,
-                         args.group_distance, args.group_by)
+                         args.group_distance, args.group_by, ortho_cache)
         print(f"Interactive map saved to {os.path.abspath(args.html)} (open it in a web browser)")
     if not args.no_plot:
         mp.mapify([g["rep"] for g in groups], center_lat, center_lon, args.radius)
