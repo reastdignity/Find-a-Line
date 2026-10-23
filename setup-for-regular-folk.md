@@ -104,7 +104,26 @@ To see all options, run `python findaline.py --help`.
 - **Malta** works the same way as Poland, with detailed data and aerial photos.
 - **Elsewhere** the script uses Europe-wide data with a 30 m grid. It finds long lines (roughly 100 m and more) reliably, short ones not. These data are free for non-commercial use only. Aerial photos are shown online (choose *Esri World Imagery* in the top-right corner).
 - If you have your own elevation file (for example NASADEM from [OpenTopography](https://portal.opentopography.org)), use it with `--elevation-file path/to/file.tif`.
-- To download NASADEM automatically, create a free account at [opentopography.org](https://portal.opentopography.org/myopentopo), request an API key there, and run with `--source nasadem --opentopo-key YOUR_KEY`.
+- To download NASADEM automatically (`--source nasadem`), you need a free OpenTopography API key, see below.
+
+### Getting an OpenTopography API key (optional)
+Only needed for `--source nasadem`.
+
+1. Go to [portal.opentopography.org](https://portal.opentopography.org) and click **Register** in the top-right corner. Fill in your e-mail, name and password, and say briefly what you use the data for (for example "personal, recreation"). Confirm your e-mail address with the link you receive.
+2. Log in and open **[MyOpenTopo](https://portal.opentopography.org/myopentopo)** (your account page).
+3. Click **Request API Key**. The key, a long string of letters and digits, appears on the page straight away. Copy it.
+4. Save it on your computer, so you don't have to type it every time:
+   - **Windows (PowerShell):** `setx OPENTOPOGRAPHY_API_KEY "YOUR_KEY"`
+   - **macOS (Terminal):** `echo 'export OPENTOPOGRAPHY_API_KEY="YOUR_KEY"' >> ~/.zshrc`
+
+   Then close the window and open a new one; the script finds the key by itself. (Instead you can add `--opentopo-key YOUR_KEY` to each command.)
+5. Search with NASADEM:
+
+   ```
+   python findaline.py --lat 39.7217 --lon 21.6306 --source nasadem --min-length 100
+   ```
+
+The key allows a limited number of downloads per day. Each request downloads one tile of about 100 × 100 km, which is kept in the `cache` folder, so a few searches use only a few requests. Keep the key to yourself; anyone who has it can use your daily limit.
 
 ## Next time
 Open PowerShell or the Terminal and run:
