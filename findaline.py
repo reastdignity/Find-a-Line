@@ -224,6 +224,9 @@ if __name__ == "__main__":
     # Step 4: Convert pixel coordinates to GPS coordinates
     print("\nStep 4: Converting pixel coordinates to GPS coordinates...")
     results = mp.coordify(valid_lines, grid, args.nmpt)
+    if not args.no_html:
+        for r, line in zip(results, valid_lines):
+            r["profile"] = sh.line_profile(line.a1, line.a2, elevation, args.resolution, surface)
     spot_groups = mp.group_lines(results, args.group_distance, args.group_by)
     if args.all_lines:
         groups = [{"rep": r, "members": [r]} for r in results]

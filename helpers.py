@@ -122,6 +122,55 @@ def evaluate_line(a1: np.ndarray, a2: np.ndarray, elevation: np.ndarray, res: fl
     return elev_a1, elev_a2, length, clearance, clearance_nmpt
 
 
+def line_profile(a1: Tuple[int, int], a2: Tuple[int, int], elevation: np.ndarray, res: float,
+                 surface: Optional[np.ndarray] = None, max_points: int = 200) -> dict:
+    """Terrain (and NMPT) profile along a line, for the profile chart of the map.
+
+    Every pixel between the anchors is sampled (as in evaluate_line), then the
+    profile is thinned to at most max_points, always keeping both anchors and the
+    points of the smallest clearance.
+
+    Returns:
+        {"d": distances from anchor 1 [m], "z": NMT [m], "s": NMPT [m] or None,
+         "min": [distance, clearance] over NMT, "min_nmpt": [distance, clearance] or None}
+    """
+    r1, c1 = a1
+    r2, c2 = a2
+    dr, dc = r2 - r1, c2 - c1
+    steps = max(abs(dr), abs(dc))
+    t = np.arange(steps + 1) / steps  # anchors included
+    rows = np.rint(r1 + dr * t).astype(np.intp)
+    cols = np.rint(c1 + dc * t).astype(np.intp)
+
+    length = float(np.hypot(dr, dc)) * res
+    distance = t * length
+    terrain = np.asarray(elevation[rows, cols], dtype=np.float64)
+    obstacles = None if surface is None else np.asarray(surface[rows, cols], dtype=np.float64)
+
+    # Same formula as evaluate_line, anchors excluded from the minimum
+    max_elev = min(terrain[0], terrain[-1]) - SLOPE * np.minimum(distance, length - distance) - LEASH_FALL
+    inner = slice(1, steps)
+    i_min = 1 + int(np.nanargmin((max_elev - terrain)[inner]))
+    keep = {0, steps, i_min}
+    profile = {"min": [round(distance[i_min], 1), round(float(max_elev[i_min] - terrain[i_min]), 2)],
+               "min_nmpt": None}
+    if obstacles is not None and not np.all(np.isnan(obstacles[inner])):
+        j_min = 1 + int(np.nanargmin((max_elev - obstacles)[inner]))
+        keep.add(j_min)
+        profile["min_nmpt"] = [round(distance[j_min], 1),
+                               round(float(max_elev[j_min] - obstacles[j_min]), 2)]
+
+    keep |= set(np.linspace(0, steps, min(max_points, steps + 1)).round().astype(int).tolist())
+    idx = sorted(keep)
+
+    def rounded(values):
+        return [None if np.isnan(v) else round(float(v), 2) for v in values[idx]]
+
+    profile.update(d=[round(float(v), 1) for v in distance[idx]], z=rounded(terrain),
+                   s=None if obstacles is None else rounded(obstacles))
+    return profile
+
+
 def is_valid(result, nmpt_mode: Optional[str]) -> bool:
     """Decide whether an evaluated line is kept."""
     if result is None:

@@ -10,7 +10,7 @@ import numpy as np
 from pyproj import Transformer
 
 from geoportal import CRS, Grid
-from helpers import Line
+from helpers import LEASH_FALL, SLOPE, Line
 from orthophoto import WMS_URL as ORTHOPHOTO_WMS
 
 MAX_ZOOM = 21  # about 5 cm per pixel, the detail of the best geoportal orthophotos
@@ -161,6 +161,15 @@ GROUPING_SCRIPT = """
   .fal-drag { cursor: move; margin: -6px -6px 6px; padding: 2px 6px; border-radius: 4px;
               background: #eee; color: #888; font-size: 11px; text-align: center; user-select: none; }
   .fal-dragged .leaflet-popup-tip-container { visibility: hidden; }
+  .fal-profile { position: absolute; left: 0; right: 0; bottom: 0; height: 240px; z-index: 1000;
+                 background: white; box-shadow: 0 -1px 6px rgba(0,0,0,0.35); font: 12px/1.5 sans-serif; }
+  .fal-profile-open .leaflet-bottom { bottom: 240px; }
+  .fal-profile-head { display: flex; justify-content: space-between; align-items: center;
+                      gap: 8px; padding: 4px 10px; border-bottom: 1px solid #eee; }
+  .fal-profile-head button { font: inherit; cursor: pointer; }
+  .fal-profile-legend span { margin-left: 10px; white-space: nowrap; color: #555; }
+  .fal-profile-chart svg { display: block; }
+  .fal-profile-readout { padding: 0 10px; color: #333; min-height: 18px; }
 </style>
 {% endmacro %}
 
@@ -169,7 +178,7 @@ GROUPING_SCRIPT = """
   var COLORS = {clean: {{ this.color_valid|tojson }}, over: {{ this.color_obstacle|tojson }}};
   var lines = {{ this.lines|tojson }}.map(function(d) {
     return {lat1: d[0], lon1: d[1], lat2: d[2], lon2: d[3], x1: d[4], y1: d[5], x2: d[6], y2: d[7],
-            len: d[8], clr: d[9], clrN: d[10], e1: d[11], e2: d[12], over: d[13]};
+            len: d[8], clr: d[9], clrN: d[10], e1: d[11], e2: d[12], over: d[13], prof: d[14]};
   });
   var state = {group: true, distance: {{ this.distance|tojson }}, by: {{ this.by|tojson }},
                showClean: true, showOver: true};
@@ -273,6 +282,186 @@ GROUPING_SCRIPT = """
     if (e.popup.getElement()) L.DomUtil.removeClass(e.popup.getElement(), "fal-dragged");
   });
 
+  // Terrain profile of the clicked line, in a panel along the bottom of the map
+  var SLOPE = {{ this.slope|tojson }}, LEASH_FALL = {{ this.leash_fall|tojson }};
+  var PROFILE = {terrain: "#8a7656", terrainFill: "#e3d8c3", trees: "#3f8f35",
+                 treesFill: "rgba(76,153,60,0.45)", limit: "#d62728"};
+  var profile = {panel: null, line: null, equal: false, marker: null};
+
+  function svg(tag, attrs, text) {
+    var s = "<" + tag;
+    for (var k in attrs) s += " " + k + "='" + attrs[k] + "'";
+    return text === undefined ? s + "/>" : s + ">" + text + "</" + tag + ">";
+  }
+  function niceStep(span, count) {
+    var raw = span / count, mag = Math.pow(10, Math.floor(Math.log10(raw)));
+    var steps = [1, 2, 5, 10];
+    for (var i = 0; i < steps.length; i++) if (steps[i] * mag >= raw) return steps[i] * mag;
+    return 10 * mag;
+  }
+  function safetyLimit(l, d) {
+    return Math.min(l.e1, l.e2) - SLOPE * Math.min(d, l.len - d) - LEASH_FALL;
+  }
+
+  function showProfile(l) {
+    if (!l.prof) return;
+    profile.line = l;
+    if (!profile.panel) createProfilePanel();
+    profile.panel.hidden = false;
+    L.DomUtil.addClass(map.getContainer(), "fal-profile-open");
+    drawProfile();
+  }
+  function hideProfile() {
+    profile.panel.hidden = true;
+    L.DomUtil.removeClass(map.getContainer(), "fal-profile-open");
+    if (profile.marker) { map.removeLayer(profile.marker); profile.marker = null; }
+  }
+  function createProfilePanel() {
+    var div = L.DomUtil.create("div", "fal-profile", map.getContainer());
+    div.innerHTML =
+      "<div class='fal-profile-head'><div><b class='fal-profile-title'></b>" +
+      "<span class='fal-profile-legend'>" +
+      "<span><span class='fal-swatch' style='height:8px;background:" + PROFILE.terrainFill +
+      ";border:1px solid " + PROFILE.terrain + "'></span> terrain</span>" +
+      "<span><span class='fal-swatch' style='height:8px;background:" + PROFILE.treesFill +
+      "'></span> trees/buildings</span>" +
+      "<span><span class='fal-swatch fal-tape'></span> webbing</span>" +
+      "<span><span class='fal-swatch' style='border-top:2px dashed " + PROFILE.limit +
+      ";height:0'></span> safety limit</span></span></div>" +
+      "<div><button class='fal-scale'></button> <button class='fal-close' title='Close'>&times;</button></div></div>" +
+      "<div class='fal-profile-chart'></div><div class='fal-profile-readout'></div>";
+    L.DomEvent.disableClickPropagation(div);
+    L.DomEvent.disableScrollPropagation(div);
+    div.querySelector(".fal-close").addEventListener("click", hideProfile);
+    div.querySelector(".fal-scale").addEventListener("click", function() {
+      profile.equal = !profile.equal;
+      drawProfile();
+    });
+    window.addEventListener("resize", function() { if (!div.hidden) drawProfile(); });
+    profile.panel = div;
+  }
+
+  function drawProfile() {
+    var l = profile.line, p = l.prof, panel = profile.panel;
+    var chart = panel.querySelector(".fal-profile-chart");
+    var W = chart.clientWidth || 800, H = 170, m = {l: 58, r: 20, t: 18, b: 24};
+    var pw = W - m.l - m.r, ph = H - m.t - m.b;
+    var color = l.over ? COLORS.over : COLORS.clean;
+    var limitMid = safetyLimit(l, l.len / 2);
+
+    var values = p.z.concat(p.s || [], [l.e1, l.e2, limitMid]).filter(function(v) { return v !== null; });
+    var zmin = Math.min.apply(null, values), zmax = Math.max.apply(null, values);
+    var pad = Math.max((zmax - zmin) * 0.08, 1);
+    zmin -= pad; zmax += pad;
+    var sx = pw / l.len, sy = ph / (zmax - zmin), xoff = 0;
+    if (profile.equal) {  // same metres per pixel on both axes
+      sx = sy = Math.min(sx, sy);
+      xoff = (pw - l.len * sx) / 2;
+    }
+    var zmid = (zmin + zmax) / 2;
+    var X = function(d) { return m.l + xoff + d * sx; };
+    var Y = function(z) { return m.t + ph / 2 - (z - zmid) * sy; };
+    var visibleMin = zmid - ph / 2 / sy, visibleMax = zmid + ph / 2 / sy;
+    var pt = function(d, z) { return X(d).toFixed(1) + "," + Y(z).toFixed(1); };
+
+    var out = "";
+    // Grid and axis labels
+    var yStep = niceStep(visibleMax - visibleMin, 4);
+    for (var z = Math.ceil(visibleMin / yStep) * yStep; z <= visibleMax; z += yStep) {
+      out += svg("line", {x1: m.l, x2: W - m.r, y1: Y(z), y2: Y(z), stroke: "#eee"});
+      out += svg("text", {x: m.l - 6, y: Y(z) + 4, "text-anchor": "end", fill: "#777"}, z.toFixed(0) + " m");
+    }
+    var xStep = niceStep(l.len, 6);
+    for (var d = 0; d <= l.len + 0.01; d += xStep) {
+      out += svg("text", {x: X(d), y: H - 6, "text-anchor": "middle", fill: "#777"}, d.toFixed(0) + " m");
+    }
+
+    // Terrain (NMT) and trees/buildings (NMPT)
+    var ground = [], top = [], bottom = [], i;
+    for (i = 0; i < p.d.length; i++) if (p.z[i] !== null) ground.push(pt(p.d[i], p.z[i]));
+    if (p.s) {
+      for (i = 0; i < p.d.length; i++) {
+        if (p.s[i] === null || p.z[i] === null) continue;
+        top.push(pt(p.d[i], Math.max(p.s[i], p.z[i])));
+        bottom.unshift(pt(p.d[i], p.z[i]));
+      }
+      out += svg("polygon", {points: top.concat(bottom).join(" "), fill: PROFILE.treesFill, stroke: "none"});
+    }
+    out += svg("polygon", {points: ground.concat([X(l.len).toFixed(1) + "," + (H - m.b),
+                                                  X(0).toFixed(1) + "," + (H - m.b)]).join(" "),
+                           fill: PROFILE.terrainFill, stroke: PROFILE.terrain, "stroke-width": 1});
+
+    // Safety limit (formula) and the webbing between anchors
+    out += svg("polyline", {points: [pt(0, safetyLimit(l, 0)), pt(l.len / 2, limitMid),
+                                     pt(l.len, safetyLimit(l, l.len))].join(" "),
+                            fill: "none", stroke: PROFILE.limit, "stroke-width": 1.5, "stroke-dasharray": "6 4"});
+    out += svg("line", {x1: X(0), y1: Y(l.e1), x2: X(l.len), y2: Y(l.e2), stroke: color, "stroke-width": 2.5});
+
+    // Smallest clearance over terrain and over trees/buildings
+    function minMarker(min, stroke, label, below) {
+      var top = safetyLimit(l, min[0]), bottom = top - min[1];
+      out += svg("line", {x1: X(min[0]), x2: X(min[0]), y1: Y(top), y2: Y(bottom), stroke: stroke,
+                          "stroke-width": 2});
+      var right = min[0] > l.len / 2;  // label on the inner side, so it is not cut off
+      out += svg("text", {x: X(min[0]) + (right ? -4 : 4), y: (below ? Y(bottom) + 12 : Y(top) - 4),
+                          fill: stroke, "text-anchor": right ? "end" : "start"},
+                 label + " " + min[1].toFixed(1) + " m");
+    }
+    minMarker(p.min, PROFILE.terrain, "min. clearance", true);
+    if (p.min_nmpt && p.min_nmpt[1] < p.min[1] - 0.05) minMarker(p.min_nmpt, PROFILE.trees, "over trees", false);
+
+    // Anchors
+    [[0, l.e1, "A1", "start"], [l.len, l.e2, "A2", "end"]].forEach(function(a) {
+      out += svg("circle", {cx: X(a[0]), cy: Y(a[1]), r: 4, fill: color});
+      out += svg("text", {x: X(a[0]) + (a[3] === "start" ? 6 : -6), y: Y(a[1]) - 7, "text-anchor": a[3],
+                          "font-weight": "bold"}, a[2] + " " + a[1].toFixed(1) + " m");
+    });
+
+    // Hover readout
+    out += svg("line", {"class": "fal-cursor", y1: m.t, y2: H - m.b, stroke: "#333", "stroke-dasharray": "2 2",
+                        visibility: "hidden"});
+    out += svg("rect", {"class": "fal-hover", x: m.l, y: m.t, width: pw, height: ph, fill: "transparent"});
+    chart.innerHTML = "<svg width='" + W + "' height='" + H + "' font-size='11'>" + out + "</svg>";
+
+    var dh = Math.abs(l.e1 - l.e2);
+    panel.querySelector(".fal-profile-title").textContent =
+      "Profile: " + l.len.toFixed(0) + " m, A1 " + l.e1.toFixed(1) + " m \\u2192 A2 " + l.e2.toFixed(1) +
+      " m (\\u0394h " + dh.toFixed(1) + " m), min. clearance " + l.clr.toFixed(1) + " m";
+    panel.querySelector(".fal-tape").style.background = color;
+    panel.querySelector(".fal-scale").textContent =
+      profile.equal ? "Auto scale" : "1:1 scale (now vertical \\u00d7" + (sy / sx).toFixed(1) + ")";
+    panel.querySelector(".fal-profile-readout").textContent = "";
+
+    var cursor = chart.querySelector(".fal-cursor"), hover = chart.querySelector(".fal-hover");
+    hover.addEventListener("mousemove", function(e) {
+      var box = chart.querySelector("svg").getBoundingClientRect();
+      var d = Math.max(0, Math.min(l.len, (e.clientX - box.left - m.l - xoff) / sx));
+      var lo = 0, hi = p.d.length - 1;  // nearest sample
+      while (hi - lo > 1) { var mid = (lo + hi) >> 1; if (p.d[mid] < d) lo = mid; else hi = mid; }
+      var k = (d - p.d[lo] < p.d[hi] - d) ? lo : hi;
+      cursor.setAttribute("x1", X(p.d[k]));
+      cursor.setAttribute("x2", X(p.d[k]));
+      cursor.setAttribute("visibility", "visible");
+      var limit = safetyLimit(l, p.d[k]), text = p.d[k].toFixed(0) + " m from A1";
+      if (p.z[k] !== null) text += " \\u00b7 terrain " + p.z[k].toFixed(1) + " m";
+      if (p.s && p.s[k] !== null) text += " \\u00b7 trees/buildings " + p.s[k].toFixed(1) + " m";
+      text += " \\u00b7 safety limit " + limit.toFixed(1) + " m";
+      if (p.z[k] !== null) text += " \\u00b7 clearance " + (limit - p.z[k]).toFixed(1) + " m";
+      if (p.s && p.s[k] !== null) text += " (over trees/buildings " + (limit - Math.max(p.s[k], p.z[k])).toFixed(1) + " m)";
+      panel.querySelector(".fal-profile-readout").textContent = text;
+
+      var t = p.d[k] / l.len, at = [l.lat1 + (l.lat2 - l.lat1) * t, l.lon1 + (l.lon2 - l.lon1) * t];
+      if (!profile.marker) {
+        profile.marker = L.circleMarker(at, {radius: 6, color: "#000", weight: 2, fillColor: "#fff",
+                                             fillOpacity: 1, interactive: false}).addTo(map);
+      } else profile.marker.setLatLng(at);
+    });
+    hover.addEventListener("mouseleave", function() {
+      cursor.setAttribute("visibility", "hidden");
+      if (profile.marker) { map.removeLayer(profile.marker); profile.marker = null; }
+    });
+  }
+
   function render() {
     linesLayer.clearLayers();
     variantsLayer.clearLayers();
@@ -287,6 +476,7 @@ GROUPING_SCRIPT = """
       pl.bindTooltip(l.len.toFixed(0) + " m, clearance " + l.clr.toFixed(1) + " m" +
                      (g.members.length > 1 ? " (" + g.members.length + " similar lines)" : ""));
       pl.bindPopup("<div class='fal-drag'>&#10021; drag to move</div>" + groupInfo(g));
+      pl.on("popupopen", function() { showProfile(l); });
       if (g.members.length > 1) {
         pl.on("popupopen", function() { showVariants(g); });
         pl.on("popupclose", function() { variantsLayer.clearLayers(); });
@@ -489,8 +679,9 @@ def save_html_map(results: List[Dict], center_lat: float, center_lon: float,
          round(r["anchor2"][0], 7), round(r["anchor2"][1], 7),
          *r["a1_xy"], *r["a2_xy"], r["length"], r["clearance"],
          None if r["clearance_nmpt"] is None else round(r["clearance_nmpt"], 2),
-         round(r["elev_a1"], 2), round(r["elev_a2"], 2), r["over_obstacles"]]
+         round(r["elev_a1"], 2), round(r["elev_a2"], 2), r["over_obstacles"], r.get("profile")]
         for r in results]
+    lines.slope, lines.leash_fall = SLOPE, LEASH_FALL
     lines.add_to(fmap)
 
     if run and runs_dir:
