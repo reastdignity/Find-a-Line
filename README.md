@@ -5,7 +5,7 @@ The whole of Poland has been scanned with airborne LiDAR and is published by GUG
 
 **Limitations and future scope**
 - Data is only available for Poland. Areas outside the country are treated as "no data" and lines never cross them.
-- Trees and buildings are taken into account only when NMPT is enabled (`--nmpt`). Other factors that make rigging difficult are not.
+- Trees and buildings are taken into account through NMPT (on by default, `--nmpt off` to skip it). Other factors that make rigging difficult are not.
 - It would be nice to overlay with property maps.
 - The math behind line dynamics is very nuanced, somewhat complex, and generally not available; we are using a simple formula.
 - Because our formula always takes into account the elevation of the lowest anchor, the lines may be off-level, or required to be rigged shorter than shown on the map.
@@ -34,7 +34,7 @@ This can also be visualised as a slope below the line that is always exactly 6 m
 - For each such pair, we "draw" a line using a DDA (Digital Differential Analyzer) algorithm. This allows us to intercept every raster pixel between the two anchors.
 - For each raster pixel that exists along this line, the maximum acceptable elevation is calculated using our formula, and the pixel's actual elevation is subtracted from this value to retrieve the elevation difference (clearance). A **positive** clearance implies that the pixel's elevation is **lower** than our required maximum.
 - If every pixel has a positive clearance, the line is added to a list of valid lines.
-- With `--nmpt`, the same check is repeated against the surface model (treetops, roofs). In `mark` mode lines that fail it are kept but drawn in orange; in `reject` mode they are dropped.
+- The same check is repeated against the surface model (treetops, roofs), unless `--nmpt off`. In `mark` mode lines that fail it are kept but drawn in orange; in `reject` mode they are dropped.
 - The list of valid lines is then converted into GPS coordinates, printed, and displayed on a map.
 
 ## Getting Started
@@ -43,7 +43,7 @@ New to the terminal? Follow the [step-by-step setup guide](setup-for-regular-fol
 Install the requirements (`pip install -r requirements.txt`) and run the script with the centre of the area you want to search:
 
 ```
-python findaline.py --lat 49.2320 --lon 19.9817 --radius 2000
+python findaline.py --lat 49.2320 --lon 19.9817
 ```
 
 No data files are needed; everything is downloaded automatically into the `cache` folder.
@@ -55,12 +55,12 @@ The search centre can be given in either of two coordinate systems:
 ### Options
 | Option | Default | Description |
 | --- | --- | --- |
-| `--radius` | 20000 | Search radius around the centre, in metres |
+| `--radius` | 1000 | Search radius around the centre, in metres |
 | `--resolution` | 2 | Working resolution in metres (1 is the native NMT resolution) |
 | `--min-length` / `--max-length` | 30 / 1000 | Line length constraints, in metres |
-| `--slope-threshold` | 30 | Minimum terrain slope (degrees) for an anchor |
+| `--slope-threshold` | 45 | Minimum terrain slope (degrees) for an anchor |
 | `--slope-file` | | Your own slope raster in degrees (GeoTIFF or ASC) instead of computing it from NMT |
-| `--nmpt` | not used | `mark` or `reject` lines that pass too close to trees or buildings |
+| `--nmpt` | `mark` | `mark` or `reject` lines that pass too close to trees or buildings; `off` skips the check and the NMPT download |
 | `--processes` | CPU count - 1 | Number of parallel processes |
 | `--cache-dir` | `cache` | Folder for downloaded data |
 | `--refresh` | | Download data again even if it is cached |
@@ -81,7 +81,7 @@ A steep rock face produces many near-identical lines (anchors shifted by a metre
 - A static map is shown in a separate window (close it to finish the program), with one line per group.
 
 ### Run time and data size
-The defaults (20 km radius at 2 m) cover a large area: about 1.5 GB to download for NMT alone (NMPT is several times slower to download), and in steep terrain potentially billions of anchor pairs. Before downloading and before evaluating, the script prints an estimate and asks for confirmation if the run looks long. If it is too slow, compromise by doing at least one of the following:
+With the defaults (1 km radius at 2 m, NMPT on) the first run downloads about 100 MB and takes a minute or two, mostly downloading NMPT, which is much slower than NMT. Larger areas grow quickly: a 20 km radius at 2 m is about 1.5 GB for NMT alone, and in steep terrain potentially billions of anchor pairs. Before downloading and before evaluating, the script prints an estimate and asks for confirmation if the run looks long. If it is too slow, compromise by doing at least one of the following:
 - Use a smaller `--radius`
 - Use a coarser `--resolution` (5 or 10 metres is good for a first look at a large area)
 - Raise `--slope-threshold`

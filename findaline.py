@@ -42,20 +42,21 @@ def parse_args():
                           help="PL-1992 (EPSG:2180) easting in metres; geoportal shows it as Y")
 
     search = parser.add_argument_group("search")
-    search.add_argument("--radius", type=float, default=20000,
+    search.add_argument("--radius", type=float, default=1000,
                         help="search radius around the centre in metres")
     search.add_argument("--resolution", type=float, default=2,
                         help="working resolution in metres (data is downsampled to it); min 1")
     search.add_argument("--min-length", type=float, default=30, help="minimum line length in metres")
     search.add_argument("--max-length", type=float, default=1000, help="maximum line length in metres")
-    search.add_argument("--slope-threshold", type=float, default=30,
+    search.add_argument("--slope-threshold", type=float, default=45,
                         help="minimum terrain slope in degrees for a pixel to be an anchor")
     search.add_argument("--slope-file",
                         help="use your own slope raster (degrees, GeoTIFF/ASC) "
                              "instead of computing slope from NMT")
-    search.add_argument("--nmpt", choices=["mark", "reject"],
+    search.add_argument("--nmpt", choices=["mark", "reject", "off"], default="mark",
                         help="also check clearance over trees/buildings (NMPT): "
-                             "'mark' shows such lines in orange, 'reject' drops them")
+                             "'mark' shows such lines in orange, 'reject' drops them, "
+                             "'off' skips the check (and the NMPT download)")
     search.add_argument("--processes", type=int,
                         help="number of parallel processes (default: CPU count - 1)")
 
@@ -96,6 +97,8 @@ def parse_args():
         parser.error("--group-distance must be positive (use --all-lines to list every line)")
     if args.slope_file and not os.path.exists(args.slope_file):
         parser.error(f"slope file not found: {args.slope_file}")
+    if args.nmpt == "off":
+        args.nmpt = None
     return args
 
 
