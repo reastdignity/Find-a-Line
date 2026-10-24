@@ -47,5 +47,5 @@ Finds possible highlines in elevation data: anchors on steep pixels, every pair 
 ## Conventions
 - Code, comments, docs and commit messages in English; conversation with the user in Polish.
 - Match the existing style (docstrings, comment density). Commit messages end with the `Co-Authored-By` line.
-- Work happens on the `feature/geoportal` branch; nothing is pushed unless the user asks.
+- Work happens on the `rework-webui-websources` branch (local, ahead of `main`); nothing is pushed unless the user asks.
 - Generated data (`cache/`, `runs/`, `findaline_map.html`) is git-ignored. The user is the only user: no migration or backward-compatibility code for old caches or runs.

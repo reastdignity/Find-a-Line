@@ -5,6 +5,7 @@ Planned features and the decisions already made for them. Nothing here is implem
 1. **Several points at once**: lines from several places shown together on one map.
 2. **Irregular search areas**: e.g. the whole coast of Malta within 100 m of the shore, or a polygon drawn on the map.
 3. **Running searches from the browser**: no terminal needed, built so it can later become a public website.
+4. **Cache layout and updates**: versions and metadata for cached data, updating it when the services publish new data, a local OpenStreetMap copy.
 
 ## Decisions
 | Topic | Decision |
@@ -53,6 +54,48 @@ Planned features and the decisions already made for them. Nothing here is implem
 ## Stage 4: public website (later)
 - Docker Compose: reverse proxy with TLS (Caddy), API, worker(s), Postgres, Redis, object storage for results.
 - Accounts (to be decided: invitations, OAuth, or anonymous with a quota), per-user quotas, admin view of jobs.
+
+## Cache layout and updates
+The top level of `cache/` stays one folder per country or per global dataset, so a user can free space by deleting a folder. Everything about that country or dataset, its metadata included, is inside it.
+
+**Decisions**
+| Topic | Decision |
+| --- | --- |
+| Location | `cache/`, `runs/` and `work/` stay in the repository folder; `FINDALINE_DATA` moves all three together (maps reach cached orthophoto tiles by a relative path from `runs/`). |
+| Path | `<country or global dataset>/<dataset>/<edition>/<tiling>/<tile>`. |
+| Edition | Versioned releases use their version (`2018`, `2023_1`, `v1-2`): content never changes, a new release goes into a new folder. Services that always serve the current state (geoportal.gov.pl, IGN, WMS orthophotos) use `live`: an update overwrites the tile, its dates are kept in the index. |
+| Tiling | CRS, resolution, tile size and format (e.g. `epsg2180-1m-2000px-tif`); a format change matters because IGN GeoTIFFs are whole metres and ASCII grids keep centimetres. Corrections applied when tiles are placed on the grid (`MALTA_2012_SHIFT`) are not part of it. |
+| Metadata | `index.sqlite` in every top-level folder: status (`ok`, `missing`, `error`), fetched/checked/last-used times, ETag, Last-Modified, sha256, date of the source data, processing version. Replaces the `.missing` files. URLs are stored without secrets (no OpenTopography key). A row without a file means missing; a file without a row is adopted. |
+| Updates | Never during a search. `--update stale|all` or `findaline cache update [folder] [--point/--bbox]`; `findaline cache status` lists folders with size, last use and stale tiles. Missing tiles are re-checked by `update` like any other (after 90 days). Checks never stop a search: offline or on errors the cached data is used with a warning. |
+| OSM | Themes (coastline, cliffs, crags...) in `osm/themes/<theme>/<tile>.fgb` on a fixed 0.25° grid, filled from Overpass by default. `findaline osm download <country>` adds a Geofabrik extract in `<country>/osm-extract/`; when present, themes are built from it and `findaline osm update` applies the daily diffs. Fallbacks as today: world water polygons, then Overpass, then the Copernicus mask. |
+| Runs | Each run records the datasets, editions and tile dates it used; `cache status` lists runs computed on data that has changed since. |
+
+**Layout**
+```
+cache/
+  LAYOUT                                   # layout version; a mismatch tells the user to delete the cache
+  poland/        index.sqlite, nmt/live/..., nmpt/live/..., ortho/live/wm256/{z}/{x}/{y}.jpg, osm-extract/
+  malta/         index.sqlite, dtm/2018/..., dtm/2012/..., dsm/..., ortho/2018/...
+  spain/         index.sqlite, mdt05/live/epsg25830-.../, mdt05/live/epsg4083-.../, mds05/live/..., ortho/live/...
+  copernicus30/  index.sqlite, 2023_1/dem/, 2023_1/wbm/
+  fabdem/        index.sqlite, v1-2/
+  nasadem/       index.sqlite, v1/
+  osm/           index.sqlite, water-polygons/<date>/, themes/<theme>/<tile>.fgb, nominatim.sqlite
+runs/
+work/<job-id>/                             # per job, deleted afterwards
+```
+
+**How each dataset is checked**
+| Policy | Datasets | Check |
+| --- | --- | --- |
+| `static` | Malta 2012/2018, FABDEM, Copernicus, NASADEM (OpenTopography allows 50 calls/day) | never; a new release is a code change |
+| `conditional` | world water polygons, S3/HTTP files | `If-None-Match` / `If-Modified-Since` |
+| `sheet-index` | geoportal.gov.pl NMT/NMPT/orthophoto, possibly IGN | sheet index dates for the tile's bbox (attributes to be checked) |
+| `ttl` | WMS without dates, Overpass tiles, `missing` | age of the last check |
+
+When a server gives no dates, the tile is downloaded again and only its check time changes if the sha256 is the same.
+
+**Moving to it**: the existing folders are moved by hand once (no migration code), `cache/osm/coastline` is deleted, saved maps get the new orthophoto paths. README, regression-tests.md (`--update` instead of `--refresh`) and setup-for-regular-folk.md are updated.
 
 ## Installation and platforms
 The goal is Windows, Linux and macOS (Intel and Apple Silicon), installable by people with little technical knowledge.
