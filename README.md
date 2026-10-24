@@ -59,7 +59,7 @@ Anchors are taken at ground level, as with the formula. With the default values 
 ## Data sources
 | `--source` | Where | Terrain (DTM) | Surface (DSM, trees/buildings) | Orthophoto (cached) |
 | --- | --- | --- | --- | --- |
-| `geoportal` | Poland | GUGiK NMT, LiDAR 1 m | GUGiK NMPT 0.5 m | geoportal.gov.pl |
+| `geoportal` | Poland | GUGiK NMT 1 m, newest survey (mostly LiDAR) | GUGiK NMPT 0.5 m | geoportal.gov.pl |
 | `malta` | Malta | MSDI DTM 2018, LiDAR 1 m (heights in whole metres) | MSDI DSM 2018, 1 m | MSDI 2018 |
 | `malta2012` | Malta | MSDI DTM 2012, centimetre heights, gaps filled from 2018 | MSDI DSM 2012 | MSDI 2018 |
 | `spain` | Spain (peninsula, Balearic Islands) | IGN MDT05, PNOA-LiDAR 5 m | IGN MDS05, 5 m | PNOA (IGN) |
@@ -69,7 +69,7 @@ Anchors are taken at ground level, as with the formula. With the default values 
 | `files` | your files | `--elevation-file` | `--surface-file` (optional) | – |
 
 - With the default `--source auto`, the country of the search centre is looked up in OpenStreetMap: Poland uses `geoportal`, Malta uses `malta` (2018), Spain uses `spain` (or `spain_canarias` on the Canary Islands), anywhere else uses `europe`. Giving `--elevation-file` selects `files`.
-- Every source has its own folder in `cache` (`cache/poland`, `cache/malta`, `cache/fabdem`, `cache/copernicus30`, `cache/nasadem`), so switching between sources (or back) never downloads again what is already there. National WCS data is cached in tiles of 2 km (Poland: per working resolution, because the server downsamples), the 30 m models in 1°×1° tiles.
+- Every source has its own folder in `cache` (`cache/poland`, `cache/malta`, `cache/fabdem`, `cache/copernicus30`, `cache/nasadem`), so switching between sources (or back) never downloads again what is already there. National WCS data is cached in tiles of 2000 × 2000 pixels at native resolution (Poland: 2 km of NMT, 1 km of NMPT; Spain: 10 km), used for every working resolution; the 30 m models in 1°×1° tiles. Polish tiles are large to download (about 75 MB each, the service only offers ASCII grids), so the first search in a new place takes a few minutes.
 - The default `--resolution` is 2 m for the LiDAR sources, 30 m for `europe` and `nasadem`, and the file's own resolution for `files`. The grouping distance follows it (twice the resolution, at least 20 m).
 - Esri World Imagery is available as an online background layer everywhere; it is not cached, because Esri's terms do not allow downloading tiles for offline use.
 - **NASADEM**: `--source nasadem` needs a free API key from [opentopography.org](https://portal.opentopography.org/myopentopo), given with `--opentopo-key` or in the `OPENTOPOGRAPHY_API_KEY` environment variable (step-by-step: [getting an API key](setup-for-regular-folk.md#getting-an-opentopography-api-key-optional)). Alternatively download a NASADEM GeoTIFF (or a slope raster) from the [OpenTopography portal](https://portal.opentopography.org/raster?opentopoID=OTSDEM.032021.4326.2), as in the original version of this tool, and use `--elevation-file` (and `--slope-file`).
@@ -103,7 +103,7 @@ Source(
     ortho=OrthoService("Orthophoto Austria", "https://.../wms", "layer", "austria/ortho", "BEV"))
 ```
 
-- `crs` is the service's coordinate system (metric), `axes` the axis labels the service expects in `SUBSET` (see its DescribeCoverage), and `fetch_res` the resolution of the cached tiles (usually the native resolution; leave it out to let the server downsample to the working resolution, as for Poland).
+- `crs` is the service's coordinate system (metric), `axes` the axis labels the service expects in `SUBSET` (see its DescribeCoverage), and `fetch_res` the resolution of the cached tiles (usually the native resolution; leaving it out lets the server downsample to the working resolution, which some services do badly: check the coverage at coarse resolutions).
 - `countries` holds the ISO codes for which `--source auto` picks it.
 - Services that publish files instead of WCS can use `DegreeTiles` with a function returning the URL of a tile, as for FABDEM and Copernicus.
 
@@ -266,7 +266,7 @@ And here is an example of one such location found using it.
 <img width="1404" height="356" alt="Screenshot 2025-11-03 at 4 14 58 PM" src="https://github.com/user-attachments/assets/e44f01cf-f3a1-4a7d-b629-f00bec73779e" />
 
 ## Data
-- **Poland**: terrain NMT (WCS `DigitalTerrainModelFormatTIFF`) and trees/buildings NMPT (WCS `DigitalSurfaceModel`), both in height system PL-KRON86-NH, downsampled on the server by averaging, so at coarse resolutions small objects such as single trees appear lower than they are. Source: Główny Urząd Geodezji i Kartografii, [geoportal.gov.pl](https://www.geoportal.gov.pl).
+- **Poland**: terrain NMT (WCS `DigitalTerrainModel`) and trees/buildings NMPT (WCS `DigitalSurfaceModel`), both in height system PL-EVRF2007-NH, which holds the newest survey of each sheet (the PL-KRON86-NH coverages stop at 2019). Some newer sheets come from aerial photos instead of laser scanning. Both are downloaded at native resolution (1 m, 0.5 m) and averaged locally to the working resolution (the server's own downsampling loses data at coarse resolutions), so at coarse resolutions small objects such as single trees appear lower than they are. Source: Główny Urząd Geodezji i Kartografii, [geoportal.gov.pl](https://www.geoportal.gov.pl).
 - **Malta**: DTM and DSM from the Planning Authority's LiDAR surveys (ERDF156), [Malta Spatial Data Infrastructure](https://msdi.data.gov.mt/geonetwork/srv/api/records/2269ab80-81a5-4f30-b8ce-2b16292b345d), WCS at `malta.coverage.wetransform.eu`, UTM 33N. Downloaded at 1 m and averaged locally.
 - **Sea**: OpenStreetMap coastline (© OpenStreetMap contributors, ODbL) via Overpass or [osmdata.openstreetmap.de](https://osmdata.openstreetmap.de/data/water-polygons.html); Copernicus DEM water body mask.
 - **Europe-wide**: FABDEM V1-2 (University of Bristol / Fathom; tiles from a public mirror on Hugging Face) and Copernicus DEM GLO-30 (ESA / Copernicus, AWS open data), reprojected to the UTM zone of the search centre.

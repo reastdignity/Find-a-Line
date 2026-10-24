@@ -140,8 +140,7 @@ class WcsTiles(Layer):
     """Square tiles from a WCS 2.0 service, on a fixed grid in the service CRS.
 
     fetch_res=None requests tiles at the working resolution (the server
-    downsamples, as for geoportal.gov.pl whose native data would be too big to
-    download); a number requests tiles at that resolution, cached independently
+    downsamples); a number requests tiles at that resolution, cached independently
     of the working resolution and downsampled locally.
     """
 
@@ -418,13 +417,17 @@ def _malta(year: int, note: str = "") -> Source:
 SOURCES: Dict[str, Source] = {s.id: s for s in [
     Source(
         id="geoportal", name="geoportal.gov.pl",
-        description="GUGiK (Poland) LiDAR: NMT 1 m and NMPT 0.5 m, PL-KRON86-NH",
-        nmt=WcsTiles("NMT (digital terrain model)", f"{GEOPORTAL}/NMT/GRID1/WCS/DigitalTerrainModelFormatTIFF",
-                     "DTM_PL-KRON86-NH_TIFF", "EPSG:2180", "poland/nmt", native_res=1.0, tile_px=2000,
-                     interpolation="AVERAGE", zero_is_nodata=True),
+        description="GUGiK (Poland): NMT 1 m and NMPT 0.5 m, newest surveys, PL-EVRF2007-NH",
+        # The PL-KRON86-NH coverages hold surveys up to 2019 only; the EVRF2007 ones exist
+        # only as ASCII grid. Tiles are fetched at native resolution and downsampled locally:
+        # the server's downsampling loses data at coarse resolutions (Tatras at 5 m) and is
+        # not faster, because generating the ASCII grid takes most of the time.
+        nmt=WcsTiles("NMT (digital terrain model)", f"{GEOPORTAL}/NMT/GRID1/WCS/DigitalTerrainModel",
+                     "DTM_PL-EVRF2007-NH", "EPSG:2180", "poland/nmt", native_res=1.0, tile_px=2000,
+                     fmt="image/x-aaigrid", fetch_res=1.0, zero_is_nodata=True, bytes_per_px=19),
         nmpt=WcsTiles("NMPT (digital surface model: trees, buildings)", f"{GEOPORTAL}/NMPT/GRID1/WCS/DigitalSurfaceModel",
-                      "DSM_PL-KRON86-NH", "EPSG:2180", "poland/nmpt", native_res=0.5, tile_px=1000,
-                      fmt="image/x-aaigrid", interpolation="AVERAGE", zero_is_nodata=True, bytes_per_px=17),
+                      "DSM_PL-EVRF2007-NH", "EPSG:2180", "poland/nmpt", native_res=0.5, tile_px=2000,
+                      fmt="image/x-aaigrid", fetch_res=0.5, zero_is_nodata=True, bytes_per_px=19),
         countries=("pl",), crs="EPSG:2180", default_resolution=2,
         ortho=OrthoService("Orthophoto (geoportal.gov.pl)", f"{GEOPORTAL}/ORTO/WMS/HighResolution",
                            "Raster", "poland/ortho", "GUGiK")),
