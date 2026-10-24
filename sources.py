@@ -21,6 +21,7 @@ Malta entries) and its country code to `countries`; see README, "Data sources".
 
 import glob
 import io
+import json
 import math
 import os
 import re
@@ -356,8 +357,13 @@ class SheetTiles(Layer):
     (ASCII grid or XYZ, sometimes zipped). For every sheet name (godło) only the newest
     sheet is used, and the sheets are ordered newest first, so where sheets of
     different series overlap the newest data wins in the mosaic. Each sheet is cached
-    as a GeoTIFF named after its file. Without the index (offline) the cached sheets
-    over the area are used.
+    as a GeoTIFF named after its file.
+
+    The index answers are cached too, per 0.25° tile (osm.tiles) in
+    <top folder>/sheet-index/<prefix>/<tile>.json with every sheet version and its
+    extent (EPSG:2180), so a search in a known place asks the index nothing. Without
+    the index (offline) and without its cached answer, the cached sheets over the
+    area are used.
     """
 
     def __init__(self, description: str, index_url: str, prefix: str, folder: str,
@@ -368,6 +374,7 @@ class SheetTiles(Layer):
         self.folder, self.native_res, self.min_res, self._bytes = folder, native_res, min_res, bytes_per_tile
         self._years: Optional[List[str]] = None
         self._listed: Dict[tuple, list] = {}
+        self._cache_dir: Optional[str] = None  # set by the methods that get it (tiles() does not)
 
     def _wfs(self, **params) -> str:
         response = requests.get(self.index_url, timeout=300, headers=HEADERS,
@@ -381,13 +388,13 @@ class SheetTiles(Layer):
             self._years = sorted(set(names))
         return self._years
 
-    def _query(self, grid: Grid) -> list:
-        west, south, east, north = transform_bounds(grid.crs, "EPSG:4326", *grid.bounds)
-        newest: Dict[str, Sheet] = {}
+    def _fetch_tile(self, lat: float, lon: float, path: str):
+        """Every usable sheet version of the index in one 0.25° tile, saved as JSON."""
+        sheets = []
         for layer in self._year_layers():
-            text = self._wfs(REQUEST="GetFeature", TYPENAMES=layer, COUNT=5000,
-                             PROPERTYNAME="godlo,akt_rok,char_przestrz,format,uklad_xy,url_do_pobrania",
-                             BBOX=f"{south},{west},{north},{east},urn:ogc:def:crs:EPSG::4326")
+            text = self._wfs(REQUEST="GetFeature", TYPENAMES=layer, COUNT=10000,
+                             PROPERTYNAME="godlo,akt_rok,char_przestrz,format,uklad_xy,url_do_pobrania,msGeometry",
+                             BBOX=f"{lat},{lon},{lat + osm.TILE_DEG},{lon + osm.TILE_DEG},urn:ogc:def:crs:EPSG::4326")
             for member in text.split("<wfs:member>")[1:]:
                 f = dict(re.findall(r"<gugik:(\w+)>([^<]*)</gugik:\1>", member))
                 res = re.match(r"[\d.]+", f.get("char_przestrz", ""))
@@ -396,8 +403,40 @@ class SheetTiles(Layer):
                     continue
                 if not self.min_res - 1e-6 <= float(res.group()) <= self.native_res + 1e-6:
                     continue
-                sheet = Sheet(int(f["akt_rok"]), re.sub(r"(\.[a-z]+)+$", "", url.rsplit("/", 1)[-1], flags=re.I),
-                              f.get("godlo", ""), url, SHEET_CRS[f["uklad_xy"]], float(res.group()))
+                # Extent from the sheet outline; EPSG:2180 lists northing before easting
+                values = [float(v) for v in " ".join(re.findall(r"<gml:posList[^>]*>([^<]*)<", member)).split()]
+                north, east = values[0::2], values[1::2]
+                if not north:
+                    continue
+                sheets.append({"year": int(f["akt_rok"]), "godlo": f.get("godlo", ""), "url": url,
+                               "crs": SHEET_CRS[f["uklad_xy"]], "res": float(res.group()),
+                               "extent": [min(east), min(north), max(east), max(north)]})
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        tmp = _part(path)
+        with open(tmp, "w", encoding="utf-8") as out:
+            json.dump({"layers": self._year_layers(), "sheets": sheets}, out)
+        os.replace(tmp, path)
+
+    def _query(self, grid: Grid, cache_dir: str) -> list:
+        """The newest sheet per godło over the grid, newest first."""
+        west, south, east, north = transform_bounds(grid.crs, "EPSG:4326", *grid.bounds)
+        g_left, g_bottom, g_right, g_top = transform_bounds(grid.crs, "EPSG:2180", *grid.bounds)
+        top = self.folder.split("/")[0]
+        newest: Dict[str, Sheet] = {}
+        for lat, lon in osm.tiles(west, south, east, north):
+            path = os.path.join(cache_dir, top, "sheet-index", self.prefix, f"{osm.tile_name(lat, lon)}.json")
+            if cache.state(cache_dir, path) is None:
+                self._fetch_tile(lat, lon, path)
+                cache.record(cache_dir, path, url=self.index_url)
+            with open(path, encoding="utf-8") as f:
+                listed = json.load(f)["sheets"]
+            for item in listed:
+                left, bottom, right, top_ = item["extent"]
+                if not (left < g_right and right > g_left and bottom < g_top and top_ > g_bottom):
+                    continue
+                url = item["url"]
+                sheet = Sheet(item["year"], re.sub(r"(\.[a-z]+)+$", "", url.rsplit("/", 1)[-1], flags=re.I),
+                              item["godlo"], url, item["crs"], item["res"])
                 old = newest.get(sheet.godlo)
                 if old is None or _sheet_order(sheet) > _sheet_order(old):
                     newest[sheet.godlo] = sheet
@@ -419,7 +458,7 @@ class SheetTiles(Layer):
         key = (grid.crs, tuple(grid.bounds))
         if key not in self._listed:
             try:
-                self._listed[key] = self._query(grid)
+                self._listed[key] = self._query(grid, self._cache_dir)
             except requests.RequestException as e:
                 print(f"{self.description}: sheet index not available ({type(e).__name__}); "
                       "using the cached sheets")
@@ -427,20 +466,24 @@ class SheetTiles(Layer):
         return self._listed[key]
 
     def missing(self, grid: Grid, cache_dir: str, refresh: bool) -> list:
+        self._cache_dir = cache_dir
         if self.tiles(grid) is None:
             return []
         return super().missing(grid, cache_dir, refresh)
 
     def estimate(self, grid: Grid, cache_dir: str, refresh: bool) -> Tuple[int, int, float]:
+        self._cache_dir = cache_dir
         if self.tiles(grid) is None:
             return len(self._cached(grid, cache_dir)), 0, 0.0
         return super().estimate(grid, cache_dir, refresh)
 
     def download(self, grid: Grid, cache_dir: str, refresh: bool, label: str):
+        self._cache_dir = cache_dir
         if self.tiles(grid) is not None:
             super().download(grid, cache_dir, refresh, label)
 
     def files(self, grid: Grid, cache_dir: str) -> List[str]:
+        self._cache_dir = cache_dir
         if self.tiles(grid) is None:
             return [self.tile_path(cache_dir, s) for s in self._cached(grid, cache_dir)]
         return super().files(grid, cache_dir)

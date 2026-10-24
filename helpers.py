@@ -180,9 +180,9 @@ def line_profile(a1: Tuple[int, int], a2: Tuple[int, int], elevation: np.ndarray
     idx = sorted(keep)
 
     def rounded(values):
-        return [None if np.isnan(v) else round(float(v), 2) for v in values[idx]]
+        return [None if v != v else round(v, 2) for v in values[idx].tolist()]  # v != v: NaN
 
-    profile.update(d=[round(float(v), 1) for v in distance[idx]], z=rounded(terrain),
+    profile.update(d=[round(v, 1) for v in distance[idx].tolist()], z=rounded(terrain),
                    s=None if obstacles is None else rounded(obstacles))
     for mask, flags, metres in ((water, "w", "water_m"), (filled, "g", "filled_m")):
         profile[flags], profile[metres] = None, 0.0

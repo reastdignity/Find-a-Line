@@ -5,7 +5,7 @@ Converting results to GPS coordinates and displaying them on maps.
 import dataclasses
 import os
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 from pyproj import Transformer
@@ -93,12 +93,26 @@ def group_lines(results: List[Dict], distance: float, by: str = "clearance") -> 
         a1 = np.array([r["a1_xy"] for r in lines])
         a2 = np.array([r["a2_xy"] for r in lines])
         free = np.ones(len(lines), dtype=bool)
+        # Lines by the cell (of size `distance`) of their first anchor: a member's first
+        # anchor lies within `distance` of one of the representative's anchors, so in
+        # one of the 3 x 3 cells around it
+        cells: Dict[Tuple[int, int], List[int]] = {}
+        for k, cell in enumerate(map(tuple, np.floor(a1 / distance).astype(np.int64).tolist())):
+            cells.setdefault(cell, []).append(k)
+
+        def near(point) -> List[int]:
+            cx, cy = (int(v) for v in np.floor(point / distance))
+            return [k for dx in (-1, 0, 1) for dy in (-1, 0, 1) for k in cells.get((cx + dx, cy + dy), ())]
+
         for i in range(len(lines)):
             if not free[i]:
                 continue
-            same = (((a1 - a1[i]) ** 2).sum(1) <= d2) & (((a2 - a2[i]) ** 2).sum(1) <= d2)
-            flipped = (((a1 - a2[i]) ** 2).sum(1) <= d2) & (((a2 - a1[i]) ** 2).sum(1) <= d2)
-            members = np.flatnonzero(free & (same | flipped))
+            candidates = np.unique(np.array(near(a1[i]) + near(a2[i]), dtype=np.int64))
+            candidates = candidates[free[candidates]]
+            c1, c2 = a1[candidates], a2[candidates]
+            same = (((c1 - a1[i]) ** 2).sum(1) <= d2) & (((c2 - a2[i]) ** 2).sum(1) <= d2)
+            flipped = (((c1 - a2[i]) ** 2).sum(1) <= d2) & (((c2 - a1[i]) ** 2).sum(1) <= d2)
+            members = candidates[same | flipped]
             free[members] = False
             groups.append({"rep": lines[i], "members": [lines[k] for k in members]})
             progress.compute.update(len(members), spots=len(groups))
