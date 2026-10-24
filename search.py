@@ -122,6 +122,7 @@ def _print(kind: str, text: str):
 def plan_search(params: SearchParams, paths: Paths, on_event: Optional[OnEvent] = None) -> Plan:
     """Choose the source and the grid, and describe the search."""
     emit = on_event or _print
+    src.used_data.clear()  # several searches may run in one process
     if params.lat is not None:
         center_lat, center_lon = params.lat, params.lon
     else:

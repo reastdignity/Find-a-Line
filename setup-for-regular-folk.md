@@ -88,6 +88,12 @@ For example, only longer lines over cliffs, within 2 km:
 uv run findaline.py --lat 50.15595 --lon 19.75627 --radius 2000 --min-length 100 --slope-threshold 60
 ```
 
+To search several places in one go, give each as `--point latitude,longitude` (with an optional name after a second comma); each place gets its own search and map:
+
+```
+uv run findaline.py --point 50.15595,19.75627,"Zabi Kon" --point 50.17332,19.74092
+```
+
 To see all options, run `uv run findaline.py --help`.
 
 ## Outside Poland

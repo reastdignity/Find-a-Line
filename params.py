@@ -11,7 +11,7 @@ Fields marked cli_only (file paths, the API key) must not come from the web.
 import argparse
 import os
 import typing
-from typing import Literal, Optional
+from typing import List, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 from pydantic_core import PydanticUndefined
@@ -19,7 +19,7 @@ from pydantic_core import PydanticUndefined
 import sources as src
 
 GROUPS = {
-    "centre": "search centre (give either --lat/--lon or --northing/--easting)",
+    "centre": "search centre (give --point, possibly several times, or --lat/--lon, or --northing/--easting)",
     "data": "elevation data",
     "search": "search",
     "rigging": "clearance model (the sag estimator is also shown in the profile of the map)",
@@ -157,6 +157,10 @@ class SearchParams(BaseModel):
 
 
 class CliOptions(BaseModel):
+    point: Optional[List[str]] = field(None, "LAT,LON[,NAME]: search around this point (WGS84), with an "
+                                             "optional name for the run; repeat for several points, each "
+                                             "searched with the same options and saved as its own run",
+                                       "centre")
     data_dir: Optional[str] = field(None, "folder holding cache/ (downloaded data), runs/ (saved runs) and "
                                           "work/ (working grids)", "output",
                                     default_text="FINDALINE_DATA, else the folder of the script")
@@ -178,6 +182,9 @@ def _argument(name: str, info) -> tuple:
     default = info.default if info.default is not PydanticUndefined else None
     if kind is bool:
         kwargs.update(action="store_true")
+        return flags, kwargs
+    if typing.get_origin(kind) is list:  # repeatable option
+        kwargs.update(action="append", type=typing.get_args(kind)[0], metavar=name.upper())
         return flags, kwargs
     if typing.get_origin(kind) is Literal:
         kwargs["choices"] = list(typing.get_args(kind))
@@ -203,13 +210,35 @@ def build_parser(description: str) -> argparse.ArgumentParser:
     return parser
 
 
+def _point(text: str) -> dict:
+    """{"lat", "lon"[, "name"]} from "LAT,LON[,NAME]"."""
+    parts = [p.strip() for p in text.split(",", 2)]
+    try:
+        point = {"lat": float(parts[0]), "lon": float(parts[1])}
+    except (ValueError, IndexError):
+        raise ValueError(f"--point {text!r}: expected LAT,LON or LAT,LON,NAME")
+    if len(parts) == 3 and parts[2]:
+        point["name"] = parts[2]
+    return point
+
+
 def parse_cli(argv=None, description: str = "") -> tuple:
-    """(SearchParams, CliOptions) from the command line; errors end in parser.error."""
+    """([SearchParams, one per point], CliOptions) from the command line; errors end in parser.error."""
     parser = build_parser(description)
     values = vars(parser.parse_args(argv))
     given = lambda model: {k: v for k, v in values.items() if k in model.model_fields and v is not None}
     try:
-        return SearchParams(**given(SearchParams)), CliOptions(**given(CliOptions))
+        options = CliOptions(**given(CliOptions))
+        common = given(SearchParams)
+        if not options.point:
+            return [SearchParams(**common)], options
+        if any(k in common for k in ("lat", "lon", "northing", "easting")):
+            raise ValueError("give the search centre as either --point or --lat/--lon or --northing/--easting")
+        if "name" in common and len(options.point) > 1:
+            raise ValueError("--name is for a single point; give each point its name: --point LAT,LON,NAME")
+        return [SearchParams(**{**common, **_point(text)}) for text in options.point], options
     except ValidationError as e:
         error = e.errors()[0]
         parser.error(str(error.get("ctx", {}).get("error") or error["msg"]))
+    except ValueError as e:
+        parser.error(str(e))

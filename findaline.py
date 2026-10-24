@@ -94,6 +94,7 @@ def print_lines(lines: search.Lines, group_distance: float, group_by: str, all_l
 
 
 def main(params: pm.SearchParams, options: pm.CliOptions, paths: search.Paths):
+    """One search; a search.SearchError ends it with its message."""
     confirm = confirmer(options.yes)
     try:
         plan = search.plan_search(params, paths, print_event)
@@ -125,20 +126,31 @@ if __name__ == "__main__":
     # Output redirected to a file gets the Windows code page, which has no "²" and the like
     for stream in (sys.stdout, sys.stderr):
         stream.reconfigure(encoding="utf-8", errors="replace")
-    params, options = pm.parse_cli(description=DESCRIPTION)
+    searches, options = pm.parse_cli(description=DESCRIPTION)
     data_dir = cache.data_dir(options.data_dir)
-    paths = search.Paths(data_dir, cache.new_work(data_dir))
-    failed = True
-    try:
-        with progress.bars():
-            main(params, options, paths)
-        failed = False
-    except SystemExit as e:  # a stop with a message (no lines found, bad input...) is not a failure
-        failed = e.code not in (None, 0) and not isinstance(e.code, str)
-        raise
-    finally:
-        if failed:
-            print(f"The working grids are kept in {paths.work} (delete the folder when done)")
-        else:
-            gc.collect()  # close the memory-mapped grids before deleting them (Windows)
-            cache.remove_work(paths.work)
+    stopped = []
+    for n, params in enumerate(searches, 1):
+        if len(searches) > 1:
+            print(f"\n{'#' * 60}\nPoint {n} of {len(searches)}: {params.lat}, {params.lon}"
+                  + (f" ({params.name})" if params.name else "") + f"\n{'#' * 60}")
+        paths = search.Paths(data_dir, cache.new_work(data_dir))
+        failed = True
+        try:
+            with progress.bars():
+                main(params, options, paths)
+            failed = False
+        except SystemExit as e:  # a stop with a message (no lines found, bad input...) is not a failure
+            failed = e.code not in (None, 0) and not isinstance(e.code, str)
+            if failed or len(searches) == 1:
+                raise
+            print(e.code)
+            stopped.append(n)
+        finally:
+            if failed:
+                print(f"The working grids are kept in {paths.work} (delete the folder when done)")
+            else:
+                gc.collect()  # close the memory-mapped grids before deleting them (Windows)
+                cache.remove_work(paths.work)
+    if stopped:
+        sys.exit(f"Stopped without a run: point{'s' if len(stopped) > 1 else ''} "
+                 f"{', '.join(map(str, stopped))} of {len(searches)}")

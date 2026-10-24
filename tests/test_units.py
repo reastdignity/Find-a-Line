@@ -42,9 +42,20 @@ def test_params_validation(values, message):
 
 
 def test_params_defaults_and_cli():
-    params, options = pm.parse_cli(["--lat", "50", "--lon", "19", "--nmpt", "off", "-y"])
+    [params], options = pm.parse_cli(["--lat", "50", "--lon", "19", "--nmpt", "off", "-y"])
     assert params.radius == 1000 and params.nmpt_mode is None and options.yes
     assert pm.SearchParams(lat=50, lon=19).nmpt_mode == "mark"
+
+
+def test_points():
+    searches, _ = pm.parse_cli(["--point", "50.1,19.7,Żabi Koń, Kobylany", "--point", "35.85,14.38",
+                                "--radius", "500"])
+    assert [(p.lat, p.lon, p.name, p.radius) for p in searches] == [
+        (50.1, 19.7, "Żabi Koń, Kobylany", 500), (35.85, 14.38, None, 500)]
+    with pytest.raises(SystemExit):
+        pm.parse_cli(["--point", "50.1,19.7", "--lat", "50"])
+    with pytest.raises(SystemExit):
+        pm.parse_cli(["--point", "50.1"])
 
 
 def test_progress_listener():

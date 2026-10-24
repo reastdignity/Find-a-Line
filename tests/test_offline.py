@@ -87,3 +87,21 @@ def test_zabi_kon_clip(tmp_path):
     }
     assert found == ZABI_KON, output
     assert "[Download]" not in output  # nothing fetched (and requests would fail anyway)
+
+
+def test_two_points(tmp_path):
+    """Two --point searches in one call: one run each, with its own name and data record."""
+    env = {**os.environ, **OFFLINE_ENV}
+    result = subprocess.run(
+        [sys.executable, "findaline.py", "--elevation-file", os.path.join(DATA, "zabi_kon_nmt.tif"),
+         "--point", "50.15624,19.75569,West", "--point", "50.15600,19.75630,East", "--radius", "100",
+         "--water", "off", "--fill-gaps", "off", "--no-plot", "--yes", "--data-dir", str(tmp_path)],
+        cwd=REPO, env=env, capture_output=True, text=True, encoding="utf-8", timeout=600)
+    assert result.returncode == 0, result.stdout + result.stderr
+    runs = sorted(glob.glob(str(tmp_path / "runs" / "*" / "run.json")))
+    assert len(runs) == 2, result.stdout
+    import json
+    metas = [json.load(open(path, encoding="utf-8")) for path in runs]
+    assert {m["name"] for m in metas} == {"West", "East"}
+    assert all(len(m["data"]) == 1 for m in metas)  # each run records only its own data
+    assert not os.listdir(tmp_path / "work")       # both work folders deleted
