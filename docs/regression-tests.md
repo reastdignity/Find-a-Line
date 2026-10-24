@@ -13,7 +13,7 @@ uv run tests/regression.py --all          # everything (about 4 min with a fille
 uv run tests/regression.py R1 --update --write-doc   # store new results, rewrite the table below
 ```
 
-- The data cache (`cache/`) is shared; pass `--cache-dir <temp>/cache` (and run a single search with `--refresh`) only when testing download code.
+- Each test gets its own temporary data folder whose `cache` links to the real cache; `--cache <temp>/cache` uses another one (an empty folder tests the downloads).
 - Compared: the source name, `Found N potential anchors`, `Anchors with an open direction: N`, `Checked pixel by pixel: N`, the lines and spots of `lines.csv`, `Filled ... km²` with its source, `sea X km²`, and lines/spots with `water_m > 0`; only the values stored for a test are checked.
 - The table below is generated from `tests/regression.json` (`--write-doc`); edit the JSON, not the table. Each test's log stays in the folder printed at the end.
 - The offline tests (`uv run pytest`, ~25 s) need no network and no cache: a synthetic canyon and a 600 × 600 m clip of Żabi Koń (`tests/data`, cut by `make_fixture.py`).
@@ -42,13 +42,13 @@ Baseline: 2026-10-23, commit `26c02a3`; open anchors and checked pairs from the 
 | R10 | Los Gigantes, Tenerife: Canary Islands source, sea at 0 m in the data | `--lat 28.2640 --lon -16.8460 --radius 800 --min-length 40` | 14 711 | 11 654 / 196 868 | 34 697 / 2 050 | source `IGN Canary Islands (MDT05/MDS05)`; 15 002 lines with `water_m > 0` |
 | R11 | Meteora, Greece: Europe-wide FABDEM + Copernicus, 30 m | `--lat 39.7217 --lon 21.6306 --radius 2000 --min-length 60` | 257 | 257 / 887 | 451 / 82 | grouping distance 60 m |
 | R12 | Meteora with NASADEM (needs `OPENTOPOGRAPHY_API_KEY`) | R11 + `--source nasadem` | 433 | 433 / 2 137 | 930 / 159 |  |
-| R13 | Quick smoke test, Kasprowy Wierch (~15 s with cache) | `--northing 152074 --easting 571448 --radius 500 --resolution 5 --slope-threshold 50 --min-length 50 --max-length 400` | 2 796 | 2 396 / 8 628 | 562 / 138 | `Filled 0.03 km² ... from FABDEM + Copernicus DEM`; PL-1992 input; the filled gaps are on the Slovak side; with `--refresh --cache-dir <temp>/cache` it also tests the geoportal sheet download (index WFS, ASCII grid sheets, NMPT at 0.5 m) |
+| R13 | Quick smoke test, Kasprowy Wierch (~15 s with cache) | `--northing 152074 --easting 571448 --radius 500 --resolution 5 --slope-threshold 50 --min-length 50 --max-length 400` | 2 796 | 2 396 / 8 628 | 562 / 138 | `Filled 0.03 km² ... from FABDEM + Copernicus DEM`; PL-1992 input; the filled gaps are on the Slovak side; with `--cache` on an empty folder it also tests the geoportal sheet download (index WFS, ASCII grid sheets, NMPT at 0.5 m) |
 <!-- regression-table:end -->
 
 Suggested sets:
 - Any change: R13.
 - Line search, clearance, grouping: R1, R2, R3.
-- Data sources, download, mosaics: R1, R7, R9, R10, R11 (and R13 with `--refresh`).
+- Data sources, download, mosaics: R1, R7, R9, R10, R11, R13 (with `--cache` on an empty folder for download code).
 - Water, coastline, gap filling: R6, R7, R8, R10, R13.
 
 ## Component checks

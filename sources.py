@@ -24,11 +24,12 @@ import io
 import math
 import os
 import re
+import threading
 import time
 import zipfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
-from typing import Callable, Dict, List, Optional, Tuple
+from typing import Callable, Dict, List, NamedTuple, Optional, Tuple
 
 import numpy as np
 import rasterio as rio
@@ -39,6 +40,8 @@ from rasterio.transform import from_origin
 from rasterio.warp import Resampling, reproject, transform_bounds
 from rasterio.windows import from_bounds
 
+import cache
+import osm
 from grid import Grid, utm_crs
 from progress import progress
 
@@ -66,15 +69,33 @@ def _get(url: str, params=None, timeout: int = 300, binary_types=("image", "octe
     raise RuntimeError(str(last_error))
 
 
+def _part(path: str) -> str:
+    """A temporary name next to path, unique per process and thread (searches may run in parallel)."""
+    return f"{path}.{os.getpid()}-{threading.get_ident()}.part"
+
+
 def _write_tile(path: str, band: np.ndarray, crs: str, transform):
     """Save a float32 tile as a compressed GeoTIFF (atomically)."""
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    tmp = path + ".part"
+    tmp = _part(path)
     with rio.open(tmp, "w", driver="GTiff", height=band.shape[0], width=band.shape[1], count=1,
                   dtype="float32", crs=crs, transform=transform, nodata=np.nan,
                   compress="deflate", predictor=3, tiled=True) as dst:
         dst.write(band.astype(np.float32), 1)
     os.replace(tmp, path)
+
+
+class Fetched(NamedTuple):
+    """What a tile download got: bytes received (0: the service has no data there) and the source."""
+    received: int
+    url: Optional[str] = None
+    etag: Optional[str] = None
+    last_modified: Optional[str] = None
+
+    @staticmethod
+    def of(response, url: Optional[str] = None) -> "Fetched":
+        return Fetched(len(response.content), url or response.url, response.headers.get("ETag"),
+                       response.headers.get("Last-Modified"))
 
 
 def _clean(band: np.ndarray, zero_is_nodata: bool = False) -> np.ndarray:
@@ -86,11 +107,14 @@ def _clean(band: np.ndarray, zero_is_nodata: bool = False) -> np.ndarray:
 
 
 class Layer:
-    """One elevation model of a source."""
+    """One elevation model of a source, cached in cache/<folder> (see cache.py)."""
     description = ""
+    folder = ""
     # Correction (east, north) in metres of the layer CRS for data whose service is
     # georeferenced wrongly; applied when tiles are placed on the grid
     shift: Tuple[float, float] = (0.0, 0.0)
+    # Version of what download_tile does with the data; tiles made by another version are fetched again
+    processing = 1
 
     def tiles(self, grid: Grid) -> list:
         raise NotImplementedError
@@ -103,16 +127,15 @@ class Layer:
 
     def missing(self, grid: Grid, cache_dir: str, refresh: bool) -> list:
         return [t for t in self.tiles(grid)
-                if refresh or not (os.path.exists(self.tile_path(cache_dir, t))
-                                   or os.path.exists(self.tile_path(cache_dir, t) + ".missing"))]
+                if refresh or cache.state(cache_dir, self.tile_path(cache_dir, t), self.processing) is None]
 
     def estimate(self, grid: Grid, cache_dir: str, refresh: bool) -> Tuple[int, int, float]:
         """(tiles, tiles to download, MB to download)."""
         missing = self.missing(grid, cache_dir, refresh)
         return len(self.tiles(grid)), len(missing), len(missing) * self.bytes_per_tile() / 1e6
 
-    def download_tile(self, tile, path: str) -> int:
-        """Download one tile to path; return bytes received (0 if the tile does not exist)."""
+    def download_tile(self, tile, path: str) -> Fetched:
+        """Download one tile to path (received 0 and no file if the service has no data there)."""
         raise NotImplementedError
 
     def download(self, grid: Grid, cache_dir: str, refresh: bool, label: str):
@@ -124,21 +147,32 @@ class Layer:
         progress.download.start(f"{label} tiles", len(todo), unit="tile")
         received = 0
         with ThreadPoolExecutor(max_workers=DOWNLOAD_THREADS) as pool:
-            futures = {pool.submit(self._download_or_mark, t, self.tile_path(cache_dir, t)): t for t in todo}
+            futures = {pool.submit(self._download_and_record, t, cache_dir): t for t in todo}
             for future in as_completed(futures):
                 received += future.result()
                 progress.download.update(1, MB=f"{received / 1e6:.0f}")
         progress.download.finish(f"{received / 1e6:.0f} MB")
 
-    def _download_or_mark(self, tile, path: str) -> int:
-        received = self.download_tile(tile, path)
-        if not os.path.exists(path):  # tile outside the data (e.g. sea): remember it
-            os.makedirs(os.path.dirname(path), exist_ok=True)
-            open(path + ".missing", "w").close()
-        return received
+    def _download_and_record(self, tile, cache_dir: str) -> int:
+        path = self.tile_path(cache_dir, tile)
+        fetched = self.download_tile(tile, path)
+        # A tile outside the data (e.g. sea) is remembered as missing
+        cache.record(cache_dir, path, "ok" if os.path.exists(path) else "missing", fetched.url,
+                     fetched.etag, fetched.last_modified, self.source_date(tile), self.processing)
+        return fetched.received
+
+    def source_date(self, tile) -> Optional[str]:
+        """Date (or year) of the survey in the tile, when the service says it."""
+        return None
 
     def files(self, grid: Grid, cache_dir: str) -> List[str]:
         return [p for p in (self.tile_path(cache_dir, t) for t in self.tiles(grid)) if os.path.exists(p)]
+
+    def used(self, grid: Grid, cache_dir: str) -> Dict:
+        """What a run records about the data it used (see runs.py)."""
+        files = self.files(grid, cache_dir)
+        return {"layer": self.description, "folder": self.folder, "files": len(files),
+                "fetched": cache.touch(cache_dir, files)}
 
 
 class WcsTiles(Layer):
@@ -149,13 +183,13 @@ class WcsTiles(Layer):
     of the working resolution and downsampled locally.
     """
 
-    def __init__(self, description: str, url: str, coverage: str, crs: str, cache_name: str,
+    def __init__(self, description: str, url: str, coverage: str, crs: str, folder: str,
                  native_res: float, tile_px: int = 2000, fmt: str = "image/tiff",
                  axes: Tuple[str, str] = ("x", "y"), fetch_res: Optional[float] = None,
                  interpolation: Optional[str] = None, zero_is_nodata: bool = False,
                  bytes_per_px: float = 4, shift: Tuple[float, float] = (0.0, 0.0)):
         self.description, self.url, self.coverage, self.crs = description, url, coverage, crs
-        self.cache_name, self.native_res, self.tile_px, self.fmt = cache_name, native_res, tile_px, fmt
+        self.folder, self.native_res, self.tile_px, self.fmt = folder, native_res, tile_px, fmt
         self.axes, self.fetch_res, self.interpolation = axes, fetch_res, interpolation
         self.zero_is_nodata, self.bytes_per_px, self.shift = zero_is_nodata, bytes_per_px, shift
         self._res = None
@@ -180,12 +214,15 @@ class WcsTiles(Layer):
 
     def tile_path(self, cache_dir: str, tile) -> str:
         res, i, j = tile
-        return os.path.join(cache_dir, self.cache_name, f"{res:g}m", f"{i}_{j}.tif")
+        # The tiling in the path: tiles of another CRS, size or format never mix
+        fmt = "asc" if re.search(r"aaigrid|asc", self.fmt) else "tif"
+        tiling = f"{self.crs.lower().replace(':', '')}-{res:g}m-{self.tile_px}px-{fmt}"
+        return os.path.join(cache_dir, self.folder, tiling, f"{i}_{j}.tif")
 
     def bytes_per_tile(self) -> float:
         return self.tile_px ** 2 * self.bytes_per_px
 
-    def download_tile(self, tile, path: str) -> int:
+    def download_tile(self, tile, path: str) -> Fetched:
         res, i, j = tile
         size, px = self.tile_px * res, self.tile_px
         left, bottom = i * size, j * size
@@ -203,7 +240,7 @@ class WcsTiles(Layer):
         except RuntimeError as e:
             raise RuntimeError(f"Could not download {self.description} tile {i}_{j}: {e}")
         if response is None:
-            return 0
+            return Fetched(0, self.url)
         data = response.content
         content_type = response.headers.get("content-type", "")
         if "multipart" in content_type:
@@ -222,7 +259,7 @@ class WcsTiles(Layer):
                       src_nodata=np.nan, dst_nodata=np.nan, resampling=Resampling.nearest)
             band = resampled
         _write_tile(path, _clean(band, self.zero_is_nodata), self.crs, dst_transform)
-        return len(data)
+        return Fetched.of(response)
 
 
 def _extract_multipart(content: bytes, content_type: str) -> bytes:
@@ -244,9 +281,9 @@ def _hemi(value: int, positive: str, negative: str, digits: int) -> str:
 class DegreeTiles(Layer):
     """1°×1° tiles in WGS84, downloaded whole at native resolution."""
 
-    def __init__(self, description: str, cache_name: str, url: Callable[[int, int], str],
+    def __init__(self, description: str, folder: str, url: Callable[[int, int], str],
                  native_res: float = 30, bytes_per_tile: float = 15e6):
-        self.description, self.cache_name, self.url = description, cache_name, url
+        self.description, self.folder, self.url = description, folder, url
         self.native_res, self._bytes = native_res, bytes_per_tile
 
     def tiles(self, grid: Grid):
@@ -256,24 +293,26 @@ class DegreeTiles(Layer):
 
     def tile_path(self, cache_dir: str, tile) -> str:
         lat, lon = tile
-        return os.path.join(cache_dir, self.cache_name, f"{_hemi(lat, 'N', 'S', 2)}{_hemi(lon, 'E', 'W', 3)}.tif")
+        return os.path.join(cache_dir, self.folder, f"{_hemi(lat, 'N', 'S', 2)}{_hemi(lon, 'E', 'W', 3)}.tif")
 
     def bytes_per_tile(self) -> float:
         return self._bytes
 
-    def download_tile(self, tile, path: str) -> int:
+    def download_tile(self, tile, path: str) -> Fetched:
         lat, lon = tile
+        url = self.url(lat, lon)
         try:
-            response = _get(self.url(lat, lon))
+            response = _get(url)
         except RuntimeError as e:
             raise RuntimeError(f"Could not download {self.description} tile {lat},{lon}: {e}")
         if response is None:  # no tile there (sea)
-            return 0
+            return Fetched(0, url)
         os.makedirs(os.path.dirname(path), exist_ok=True)
-        with open(path + ".part", "wb") as f:
+        tmp = _part(path)
+        with open(tmp, "wb") as f:
             f.write(response.content)
-        os.replace(path + ".part", path)
-        return len(response.content)
+        os.replace(tmp, path)
+        return Fetched.of(response, url)
 
 
 class OpenTopographyTiles(DegreeTiles):
@@ -281,8 +320,8 @@ class OpenTopographyTiles(DegreeTiles):
     API = "https://portal.opentopography.org/API/globaldem"
     api_key: Optional[str] = None
 
-    def __init__(self, description: str, cache_name: str, demtype: str, native_res: float = 30):
-        super().__init__(description, cache_name, self._url, native_res, bytes_per_tile=8e6)
+    def __init__(self, description: str, folder: str, demtype: str, native_res: float = 30):
+        super().__init__(description, folder, self._url, native_res, bytes_per_tile=8e6)
         self.demtype = demtype
 
     def _url(self, lat: int, lon: int) -> str:
@@ -321,12 +360,12 @@ class SheetTiles(Layer):
     over the area are used.
     """
 
-    def __init__(self, description: str, index_url: str, prefix: str, cache_name: str,
+    def __init__(self, description: str, index_url: str, prefix: str, folder: str,
                  native_res: float, min_res: float = 0.5, bytes_per_tile: float = 30e6):
         """Sheets with a resolution between min_res and native_res are used (finer ones
         are huge as text: a 0.15 m sheet is about 2 GB)."""
         self.description, self.index_url, self.prefix = description, index_url, prefix
-        self.cache_name, self.native_res, self.min_res, self._bytes = cache_name, native_res, min_res, bytes_per_tile
+        self.folder, self.native_res, self.min_res, self._bytes = folder, native_res, min_res, bytes_per_tile
         self._years: Optional[List[str]] = None
         self._listed: Dict[tuple, list] = {}
 
@@ -367,7 +406,7 @@ class SheetTiles(Layer):
     def _cached(self, grid: Grid, cache_dir: str) -> list:
         """Cached sheets over the grid, newest first (when the index cannot be reached)."""
         sheets = []
-        for path in glob.glob(os.path.join(cache_dir, self.cache_name, "*.tif")):
+        for path in glob.glob(os.path.join(cache_dir, self.folder, "*.tif")):
             with rio.open(path) as src:
                 left, bottom, right, top = transform_bounds(src.crs, grid.crs, *src.bounds)
             g_left, g_bottom, g_right, g_top = grid.bounds
@@ -407,18 +446,27 @@ class SheetTiles(Layer):
         return super().files(grid, cache_dir)
 
     def tile_path(self, cache_dir: str, tile) -> str:
-        return os.path.join(cache_dir, self.cache_name, f"{tile.year}_{tile.name}.tif")
+        return os.path.join(cache_dir, self.folder, f"{tile.year}_{tile.name}.tif")
+
+    def source_date(self, tile) -> Optional[str]:
+        return str(tile.year)
+
+    def used(self, grid: Grid, cache_dir: str) -> Dict:
+        info = super().used(grid, cache_dir)
+        years = [int(os.path.basename(p).split("_", 1)[0]) for p in self.files(grid, cache_dir)]
+        info["survey_years"] = [min(years), max(years)] if years else None
+        return info
 
     def bytes_per_tile(self) -> float:
         return self._bytes
 
-    def download_tile(self, tile, path: str) -> int:
+    def download_tile(self, tile, path: str) -> Fetched:
         try:
             response = _get(tile.url, binary_types=("octet", "zip", "text", "image"))
         except RuntimeError as e:
             raise RuntimeError(f"Could not download {self.description} sheet {tile.godlo}: {e}")
         if response is None:
-            return 0
+            return Fetched(0, tile.url)
         name, data = tile.url.lower(), response.content
         while name.endswith(".zip"):  # sometimes zipped twice
             with zipfile.ZipFile(io.BytesIO(data)) as archive:
@@ -432,7 +480,7 @@ class SheetTiles(Layer):
         else:
             band, transform = _xyz_grid(data, tile.res)
         _write_tile(path, _clean(band), tile.crs, transform)
-        return len(response.content)
+        return Fetched.of(response, tile.url)
 
 
 def _sheet_order(sheet: Sheet) -> tuple:
@@ -471,6 +519,9 @@ class FileLayer(Layer):
     def missing(self, grid, cache_dir, refresh):
         return []
 
+    def used(self, grid: Grid, cache_dir: str) -> Dict:
+        return {"layer": self.description, "file": os.path.abspath(self.path)}
+
 
 @dataclass
 class OrthoService:
@@ -478,7 +529,7 @@ class OrthoService:
     name: str
     url: str
     layer: str
-    cache_name: str
+    folder: str      # in the cache; tiles go to <folder>/wm256/{z}/{x}/{y}.jpg
     attribution: str
 
 
@@ -513,7 +564,7 @@ MALTA = "https://malta.coverage.wetransform.eu"
 SPAIN_MDT = "https://servicios.idee.es/wcs-inspire/mdt"
 SPAIN_MDS = "https://wcs-mds.idee.es/mds"
 SPAIN_ORTHO = OrthoService("Orthophoto PNOA (IGN Spain)", "https://www.ign.es/wms-inspire/pnoa-ma",
-                           "OI.OrthoimageCoverage", "spain/ortho", "PNOA © IGN")
+                           "OI.OrthoimageCoverage", "spain/ortho/live", "PNOA © IGN")
 FABDEM = "https://huggingface.co/buckets/links-ads/fabdem/resolve/tiles"
 COPERNICUS = "https://copernicus-dem-30m.s3.amazonaws.com"
 
@@ -552,11 +603,11 @@ def _spain(canary: bool) -> Source:
         id="spain_canarias" if canary else "spain", name=f"IGN {where} (MDT05/MDS05)",
         description=f"IGN Spain PNOA-LiDAR, MDT05 terrain and MDS05 surface, 5 m ({where})",
         nmt=WcsTiles(f"MDT05 (terrain) {where}", SPAIN_MDT, coverage, crs,
-                     f"spain/mdt05{'_canarias' if canary else ''}", native_res=5.0, fetch_res=5.0,
+                     "spain/mdt05/live", native_res=5.0, fetch_res=5.0,
                      fmt="application/asc", bytes_per_px=8),
         # MDS05's grid is 5.0045 m; tiles are resampled to 5 m on download
         nmpt=WcsTiles(f"MDS05 (trees, buildings) {where}", SPAIN_MDS, "mds05", "EPSG:25830",
-                      "spain/mds05", native_res=5.0, fetch_res=5.0, fmt="application/asc", bytes_per_px=8),
+                      "spain/mds05/live", native_res=5.0, fetch_res=5.0, fmt="application/asc", bytes_per_px=8),
         countries=("es",), crs=crs, default_resolution=5, ortho=SPAIN_ORTHO,
         bbox=(27.0, 29.6, -18.6, -13.0) if canary else None,
         note="IGN Spain data is available at 5 m: lines shorter than about 30 m are not reliable.")
@@ -566,7 +617,7 @@ def _malta(year: int, note: str = "") -> Source:
     crs = "EPSG:25833" if year == 2012 else "EPSG:32633"
     layer = lambda kind, desc: WcsTiles(
         f"{desc} Malta {year}", f"{MALTA}/{kind}_1m_{year}/ows", f"{kind}_1m_{year}", crs,
-        f"malta/{kind}{year}", native_res=1.0 if year == 2012 else 0.15, fetch_res=1.0, axes=("E", "N"),
+        f"malta/{kind}/{year}", native_res=1.0 if year == 2012 else 0.15, fetch_res=1.0, axes=("E", "N"),
         shift=MALTA_2012_SHIFT if year == 2012 else (0.0, 0.0))
     return Source(
         id="malta" if year == 2018 else f"malta{year}", name=f"Malta {year} (MSDI)",
@@ -575,7 +626,7 @@ def _malta(year: int, note: str = "") -> Source:
         countries=("mt",) if year == 2018 else (), crs=crs, default_resolution=2,
         fallback="malta" if year == 2012 else "europe",
         ortho=OrthoService("Orthophoto Malta 2018 (MSDI)", f"{MALTA}/wms/ortho_2018/ows",
-                           "OI.OrthoimageCoverage", "malta/ortho2018", "Planning Authority Malta"),
+                           "OI.OrthoimageCoverage", "malta/ortho/2018", "Planning Authority Malta"),
         note=note)
 
 
@@ -594,7 +645,7 @@ SOURCES: Dict[str, Source] = {s.id: s for s in [
                         "SkorowidzNMPT", "poland/nmpt", native_res=1.0),
         countries=("pl",), crs="EPSG:2180", default_resolution=2, grid_origin=(0.5, 0.5),
         ortho=OrthoService("Orthophoto (geoportal.gov.pl)", f"{GEOPORTAL}/ORTO/WMS/HighResolution",
-                           "Raster", "poland/ortho", "GUGiK")),
+                           "Raster", "poland/ortho/live", "GUGiK")),
     _malta(2018, note="Malta 2018 heights are published in whole metres, which makes slopes and "
                       "clearances coarser; --source malta2012 has centimetre precision but gaps "
                       "along the coast (filled from 2018)."),
@@ -604,8 +655,8 @@ SOURCES: Dict[str, Source] = {s.id: s for s in [
     Source(
         id="europe", name="FABDEM + Copernicus DEM",
         description="FABDEM V1-2 (terrain, trees and buildings removed) and Copernicus GLO-30 (surface), 30 m",
-        nmt=DegreeTiles("FABDEM (terrain)", "fabdem", _fabdem_url, native_res=30, bytes_per_tile=20e6),
-        nmpt=DegreeTiles("Copernicus DEM GLO-30 (surface)", "copernicus30", _copernicus_url,
+        nmt=DegreeTiles("FABDEM (terrain)", "fabdem/v1-2", _fabdem_url, native_res=30, bytes_per_tile=20e6),
+        nmpt=DegreeTiles("Copernicus DEM GLO-30 (surface)", "copernicus30/2021/dem", _copernicus_url,
                          native_res=30, bytes_per_tile=20e6),
         default_resolution=30, fallback=None,
         note="FABDEM is free for non-commercial use only (Non-Commercial Government Licence). "
@@ -613,7 +664,7 @@ SOURCES: Dict[str, Source] = {s.id: s for s in [
     Source(
         id="nasadem", name="NASADEM (OpenTopography)",
         description="NASADEM 30 m (SRTM, includes some vegetation), from the OpenTopography API",
-        nmt=OpenTopographyTiles("NASADEM", "nasadem", "NASADEM"),
+        nmt=OpenTopographyTiles("NASADEM", "nasadem/v1", "NASADEM"),
         default_resolution=30,
         note="NASADEM is a radar surface model at 30 m: only long lines can be found reliably."),
 ]}
@@ -623,13 +674,10 @@ OFFLINE_BOXES = {"mt": (35.78, 36.10, 14.15, 14.60), "pl": (49.0, 54.9, 14.1, 24
                  "es": (27.0, 43.9, -18.6, 4.4)}
 
 
-def country_code(lat: float, lon: float) -> Optional[str]:
+def country_code(lat: float, lon: float, cache_dir: str) -> Optional[str]:
     """ISO country code of a point (OpenStreetMap), or a rough guess when offline."""
     try:
-        response = requests.get("https://nominatim.openstreetmap.org/reverse", headers=HEADERS, timeout=15,
-                                params={"lat": lat, "lon": lon, "format": "jsonv2", "zoom": 3})
-        response.raise_for_status()
-        code = response.json().get("address", {}).get("country_code")
+        code = osm.reverse(lat, lon, cache_dir, zoom=3).get("address", {}).get("country_code")
         if code:
             return code.lower()
     except (requests.RequestException, ValueError):
@@ -640,7 +688,7 @@ def country_code(lat: float, lon: float) -> Optional[str]:
     return None
 
 
-def choose_source(name: str, lat: float, lon: float, elevation_file: Optional[str] = None,
+def choose_source(name: str, lat: float, lon: float, cache_dir: str, elevation_file: Optional[str] = None,
                   surface_file: Optional[str] = None) -> Tuple[Source, str]:
     """The source to use and why."""
     if elevation_file or name == "files":
@@ -660,11 +708,15 @@ def choose_source(name: str, lat: float, lon: float, elevation_file: Optional[st
         return source, "--elevation-file given"
     if name != "auto":
         return SOURCES[name], f"--source {name}"
-    code = country_code(lat, lon)
+    code = country_code(lat, lon, cache_dir)
     for source in SOURCES.values():
         if code and code in source.countries and source.covers(lat, lon):
             return source, f"the centre is in {code.upper()}"
     return SOURCES["europe"], f"no national source for {code.upper() if code else 'this place'}"
+
+
+# What the layers prepared in this process came from (Layer.used), saved with the run
+used_data: List[Dict] = []
 
 
 def prepare_layer(layer: Layer, grid: Grid, cache_dir: str, out_path: str, label: str,
@@ -672,6 +724,7 @@ def prepare_layer(layer: Layer, grid: Grid, cache_dir: str, out_path: str, label
     """Download what is missing and bring the layer onto the working grid (.npy)."""
     layer.download(grid, cache_dir, refresh, label)
     build_mosaic(layer.files(grid, cache_dir), grid, out_path, label, shift=layer.shift)
+    used_data.append(layer.used(grid, cache_dir))
     return out_path
 
 
@@ -758,7 +811,7 @@ GAP_MATCH_SLOPE = 15  # degrees; only gentler ground is used to match heights
 GAP_MAX_LOCAL_SHIFT = 3  # m; local height offsets differing more from the overall one are ignored
 SHORE_BUFFER = 45  # m around water in the mask that may still be water (the mask is 30 m)
 SEA_LEVEL_TOLERANCE = 1.0  # m; data at most this high inside the sea counts as water
-WATER_MASK = DegreeTiles("Copernicus water body mask", "copernicus30/wbm",
+WATER_MASK = DegreeTiles("Copernicus water body mask", "copernicus30/2021/wbm",
                          lambda lat, lon: _copernicus_url(lat, lon, "WBM"), native_res=30,
                          bytes_per_tile=1e5)
 
@@ -767,8 +820,9 @@ def water_body_mask(grid: Grid, cache_dir: str, out_path: str, refresh: bool = F
     """Copernicus water body mask on the grid (OCEAN, LAKE...), open sea where tiles are missing."""
     WATER_MASK.download(grid, cache_dir, refresh, "water mask")
     wbm = build_mosaic(WATER_MASK.files(grid, cache_dir), grid, out_path, "water mask", categorical=True)
+    used_data.append(WATER_MASK.used(grid, cache_dir))
     for tile in WATER_MASK.tiles(grid):
-        if os.path.exists(WATER_MASK.tile_path(cache_dir, tile) + ".missing"):
+        if cache.state(cache_dir, WATER_MASK.tile_path(cache_dir, tile)) == "missing":
             lat, lon = tile
             left, bottom, right, top = transform_bounds("EPSG:4326", grid.crs, lon, lat, lon + 1, lat + 1)
             c0, c1 = max(0, int((left - grid.left) // grid.res)), min(grid.width, int((right - grid.left) // grid.res) + 1)

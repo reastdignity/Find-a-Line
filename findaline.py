@@ -15,6 +15,7 @@ Run `python findaline.py --help` for all options.
 
 import argparse
 import dataclasses
+import gc
 import os
 import sys
 from datetime import datetime
@@ -31,6 +32,7 @@ from progress import progress
 import runs as rn
 import sag as sg
 import sources as src
+import cache
 import coast
 
 # Ask before continuing when a run looks this expensive
@@ -121,7 +123,9 @@ def parse_args():
                          help="height below the sagged webbing that must stay free (leash fall), m")
 
     output = parser.add_argument_group("data and output")
-    output.add_argument("--cache-dir", default="cache", help="folder for downloaded data")
+    output.add_argument("--data-dir",
+                        help="folder holding cache/ (downloaded data), runs/ (saved runs) and work/ "
+                             "(working grids); default: FINDALINE_DATA, else the folder of the script")
     output.add_argument("--refresh", action="store_true",
                         help="download data again even if it is cached")
     output.add_argument("--group-distance", type=float,
@@ -132,12 +136,11 @@ def parse_args():
                         help="line shown for each group: largest clearance or longest")
     output.add_argument("--all-lines", action="store_true",
                         help="list every line instead of one line per group")
-    output.add_argument("--runs-dir", default="runs",
-                        help="folder where every run (map, CSV, GeoJSON, parameters) is saved")
     output.add_argument("--name",
                         help="name of the run (default: place name from OpenStreetMap)")
-    output.add_argument("--html", default="findaline_map.html",
-                        help="page that opens the map of the latest run")
+    output.add_argument("--html",
+                        help="page that opens the map of the latest run (default: findaline_map.html "
+                             "in the data folder)")
     output.add_argument("--no-html", action="store_true", help="do not save the interactive map")
     output.add_argument("--no-ortho-cache", action="store_true",
                         help="do not download orthophoto tiles for offline use of the map")
@@ -179,6 +182,10 @@ def parse_args():
         parser.error("rigging values must be positive")
     if args.nmpt == "off":
         args.nmpt = None
+    args.data_dir = cache.data_dir(args.data_dir)
+    args.cache_dir = os.path.join(args.data_dir, "cache")
+    args.runs_dir = os.path.join(args.data_dir, "runs")
+    args.html = args.html or os.path.join(args.data_dir, "findaline_map.html")
     return args
 
 
@@ -211,8 +218,9 @@ def main(args):
     else:
         center_lat, center_lon = mp.pl1992_to_wgs84(args.easting, args.northing)
 
+    cache.check_layout(args.cache_dir)
     try:
-        source, reason = src.choose_source(args.source, center_lat, center_lon,
+        source, reason = src.choose_source(args.source, center_lat, center_lon, args.cache_dir,
                                            args.elevation_file, args.surface_file)
     except ValueError as e:
         sys.exit(str(e))
@@ -265,20 +273,19 @@ def main(args):
         n_tiles, n_missing, mb = layer.estimate(grid, args.cache_dir, args.refresh)
         download_mb += mb
         print(f"{layer.description}: {n_tiles} tiles, {n_missing} to download (~{mb:.0f} MB)")
-    if args.water == "fill" and args.coastline == "world" and not os.path.exists(
-            os.path.join(args.cache_dir, "osm", "water-polygons", "water-polygons-split-4326")):
+    if args.water == "fill" and args.coastline == "world" and coast.world_file(args.cache_dir) is None:
         download_mb += coast.WORLD_MB
         print(f"OpenStreetMap water polygons (world): one download of ~{coast.WORLD_MB} MB")
     work_gb = grid.width * grid.height * 4 * (len(layers) + bool(args.slope_file)) / 1e9
     if download_mb > CONFIRM_DOWNLOAD_MB:
         reasons.append(f"about {download_mb:.0f} MB to download ({source.name})")
     if work_gb > CONFIRM_DISK_GB:
-        reasons.append(f"working grids take about {work_gb:.1f} GB of disk in {args.cache_dir}")
+        reasons.append(f"working grids take about {work_gb:.1f} GB of disk in {args.work}")
     confirm(reasons, args.yes)
 
     # Step 1: Download elevation data
     print(f"\nStep 1: Downloading elevation data ({source.name})...")
-    work = os.path.join(args.cache_dir, "work")
+    work = args.work
     try:
         elevation_path = src.prepare_layer(source.nmt, grid, args.cache_dir,
                                            os.path.join(work, "nmt.npy"), "terrain", args.refresh)
@@ -332,7 +339,7 @@ def main(args):
     slope = None
     if args.slope_file:
         slope_path = src.load_slope_file(args.slope_file, grid,
-                                        os.path.join(args.cache_dir, "work", "slope.npy"))
+                                        os.path.join(work, "slope.npy"))
         slope = np.load(slope_path, mmap_mode="r")
     anchors = sh.find_significant_slopes(elevation, args.resolution, args.slope_threshold,
                                          (grid.center_row, grid.center_col), grid.radius_px, slope)
@@ -398,7 +405,7 @@ def main(args):
     # Step 5: Save the run and display results on a map
     print("\nStep 5: Saving the run and displaying results on map...")
     created = datetime.now()
-    name = args.name or rn.place_name(center_lat, center_lon) or f"{center_lat:.5f}, {center_lon:.5f}"
+    name = args.name or rn.place_name(center_lat, center_lon, args.cache_dir) or f"{center_lat:.5f}, {center_lon:.5f}"
     run = rn.new_run(args.runs_dir, name, created)
     meta = {
         "id": run["id"],
@@ -406,6 +413,7 @@ def main(args):
         "created": created.isoformat(timespec="seconds"),
         "center": {"lat": center_lat, "lon": center_lon, "x": x, "y": y, "crs": crs},
         "source": {"id": source.id, "name": source.name, "description": source.description},
+        "data": src.used_data,  # folders, files and fetch times of the data used
         "params": {"radius": args.radius, "resolution": args.resolution,
                    "min_length": args.min_length, "max_length": args.max_length,
                    "max_anchor_diff": args.max_anchor_diff,
@@ -437,7 +445,7 @@ def main(args):
             if minutes > CONFIRM_MINUTES and not args.yes and not ask(
                     "Download now? Otherwise the map loads the orthophoto online. [y/N] "):
                 tiles = []
-            ortho.download(source.ortho, tiles, ortho_folder)
+            ortho.download(source.ortho, tiles, ortho_folder, args.cache_dir)
             ortho_cache = ortho_folder
         map_path = os.path.join(run["path"], "map.html")
         mp.save_html_map(results, center_lat, center_lon, args.radius, map_path,
@@ -460,5 +468,19 @@ if __name__ == "__main__":
     # Output redirected to a file gets the Windows code page, which has no "²" and the like
     for stream in (sys.stdout, sys.stderr):
         stream.reconfigure(encoding="utf-8", errors="replace")
-    with progress.bars():
-        main(parse_args())
+    args = parse_args()
+    args.work = cache.new_work(args.data_dir)
+    failed = True
+    try:
+        with progress.bars():
+            main(args)
+        failed = False
+    except SystemExit as e:  # a stop with a message (no lines found, bad input...) is not a failure
+        failed = e.code not in (None, 0) and not isinstance(e.code, str)
+        raise
+    finally:
+        if failed:
+            print(f"The working grids are kept in {args.work} (delete the folder when done)")
+        else:
+            gc.collect()  # close the memory-mapped grids before deleting them (Windows)
+            cache.remove_work(args.work)

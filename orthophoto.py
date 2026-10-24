@@ -9,6 +9,7 @@ strip around the found lines; the whole search area is fetched for an overview.
 
 import math
 import os
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Dict, Iterable, List, Set, Tuple
@@ -19,6 +20,7 @@ from shapely.geometry import LineString, Point, box
 from shapely.ops import unary_union
 from shapely.prepared import prep
 
+import cache
 from progress import progress
 
 TILE_PX = 256
@@ -37,7 +39,7 @@ Tile = Tuple[int, int, int]  # (z, x, y)
 
 def cache_folder(cache_dir: str, service) -> str:
     """Folder of a service's tiles ({z}/{x}/{y}.jpg); service is a sources.OrthoService."""
-    return os.path.join(cache_dir, service.cache_name)
+    return os.path.join(cache_dir, service.folder, "wm256")
 
 
 def tile_path(folder: str, z: int, x: int, y: int) -> str:
@@ -114,28 +116,31 @@ def _download_tile(service, z: int, x: int, y: int, path: str):
         raise RuntimeError(f"Could not download orthophoto tile {z}/{x}/{y}: {last_error}")
 
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path + ".part", "wb") as f:
+    tmp = f"{path}.{os.getpid()}-{threading.get_ident()}.part"
+    with open(tmp, "wb") as f:
         f.write(response.content)
-    os.replace(path + ".part", path)
+    os.replace(tmp, path)
     return len(response.content)
 
 
-def download(service, tiles: List[Tile], folder: str):
-    """Download tiles (in parallel) into the cache. Failed tiles are skipped."""
+def download(service, tiles: List[Tile], folder: str, cache_dir: str):
+    """Download tiles (in parallel) into the cache and its index. Failed tiles are skipped."""
     if not tiles:
         return
-    errors = []
+    errors, done = [], []
     received = 0
     progress.download.start("orthophoto tiles", len(tiles), unit="tile")
     with ThreadPoolExecutor(max_workers=DOWNLOAD_THREADS) as pool:
-        futures = [pool.submit(_download_tile, service, *t, tile_path(folder, *t)) for t in tiles]
+        futures = {pool.submit(_download_tile, service, *t, tile_path(folder, *t)): t for t in tiles}
         for future in as_completed(futures):
             try:
                 received += future.result()
+                done.append(tile_path(folder, *futures[future]))
             except RuntimeError as e:
                 errors.append(e)
             progress.download.update(1, MB=f"{received / 1e6:.0f}", failed=len(errors))
     progress.download.finish(f"{received / 1e6:.0f} MB")
+    cache.record_many(cache_dir, done, url=service.url)
     if errors:
         print(f"  {len(errors)} tiles failed (e.g. {str(errors[0])[:200]})")
         print("  The map loads them online instead; run again to retry them.")

@@ -7,14 +7,17 @@ Finds possible highlines in elevation data: anchors on steep pixels, every pair 
 - Tests: `pytest` (offline, ~25 s: synthetic canyon + Żabi Koń clip in `tests/data`) and `python tests/regression.py` (real searches, see docs/regression-tests.md).
 - `python findaline.py --lat 50.1559508 --lon 19.7562722` (Żabi Koń, Poland). `--help` lists everything.
 - `--no-plot` is required when running without a desktop session (the matplotlib window blocks). `--yes` skips the confirmation questions; without a terminal they default to "no".
-- Long runs: start them in the background and wait for the notification. Do not run two searches at the same time: they share `cache/work/*.npy`.
+- Long runs: start them in the background and wait for the notification. Each search has its own `work/<id>/` and downloads write unique `.part` files, so searches may overlap, but tests run one after another (each search uses all cores).
+- Data folder (`--data-dir`, `FINDALINE_DATA`, default the repo): `cache/`, `runs/`, `work/`; layout and index in `cache.py`. A cache without the current `cache/LAYOUT` is refused: no migration code, move or delete the user's folders by hand.
 - Without a terminal, progress is printed as `[Download] ...` / `[Compute] ...` lines every 10 s; `FINDALINE_PROGRESS=bars|text` forces a mode.
 
 ## Code map
 | File | What it does |
 | --- | --- |
 | `findaline.py` | CLI and the pipeline (steps 1-5) |
-| `sources.py` | Data sources (`SOURCES`), tiled download + cache (WCS tiles, 1° tiles, geoportal sheets), mosaics, water and gap filling |
+| `sources.py` | Data sources (`SOURCES`), tiled download (WCS tiles, 1° tiles, geoportal sheets), mosaics, water and gap filling |
+| `cache.py` | Data folder (`cache/`, `runs/`, `work/`), cache layout, `index.sqlite` per top-level folder |
+| `osm.py` | OSM themes in 0.25° tiles from Overpass (`coastline`, `cliff`), cached Nominatim answers |
 | `coast.py` | Sea mask: OSM coastline (Overpass or the world file) or the Copernicus water mask |
 | `grid.py` | Working grid (metric CRS: the source's, or the UTM zone of the centre; edges on the source's pixel edges, `Source.grid_origin`) |
 | `helpers.py` | Anchors, line evaluation (DDA), line profiles |
@@ -40,13 +43,13 @@ Finds possible highlines in elevation data: anchors on steep pixels, every pair 
 - **WCS services differ**: axis labels (`x/y` vs `E/N`), multipart responses (coverage part may be `image/*` or `application/*`), formats (some GeoTIFFs are whole metres; ASCII grids keep centimetres), server limits (~2000×2000 px), interpolation support.
 - **Check georeferencing of every new source** against Copernicus DEM (shift search, see regression doc). Malta 2012 is off by (-56 m E, -196 m N), corrected by `MALTA_2012_SHIFT`.
 - **Water/gap filling order**: sea zone first, then gaps on land outside it, then water. Gap offsets are matched on gentle slopes only and limited to ±3 m from the overall offset; no anchors at gap seams. Cliffs can be vertical: high land next to water is normal.
-- **Public services are flaky**: Overpass is often overloaded (the world file in `cache/osm/` is used instead when present; inland areas skip the coastline); the OpenTopography demo key `demoapikeyot2022` has a shared limit of 50 calls/day; Nominatim allows 1 request/s.
+- **Public services are flaky**: Overpass is often overloaded and slow (30–70 s per 0.25° theme tile; the world file in `cache/osm/water-polygons/` is used instead when present; inland areas skip the coastline); the OpenTopography demo key `demoapikeyot2022` has a shared limit of 50 calls/day; Nominatim allows 1 request/s.
 - Grid snapping and the circle mask make results sensitive to the exact centre: a centre 0.4 m away changes a few lines at the edge.
 
 ## Verifying changes
 - Follow [docs/regression-tests.md](docs/regression-tests.md): run the affected locations and compare with the expected numbers.
 - Map/JS changes: generate a small map (Kasprowy test), append a test `<script>` to a copy and run headless Edge (`msedge --headless --dump-dom` for checks, `--screenshot` for a look). Synthetic `mousemove` works; headless screenshots don't keep hover state.
-- New download code: test with `--refresh` on a scratch `--cache-dir`, so the real cache is not touched.
+- New download code: test on an empty cache (`tests/regression.py --cache <temp>/cache`, or a scratch `--data-dir`), so the real cache is not touched.
 - New data source or download path: also check the share of valid pixels at the coarsest resolution (5 m) and compare a few tiles with the source files (see the regression doc, "Data checks for a new source").
 - The Polish set (R13, R1–R5) takes about 3 min with an empty geoportal cache; run the tests one after another, never two searches at once.
 
@@ -54,4 +57,4 @@ Finds possible highlines in elevation data: anchors on steep pixels, every pair 
 - Code, comments, docs and commit messages in English; conversation with the user in Polish.
 - Match the existing style (docstrings, comment density). Commit messages end with the `Co-Authored-By` line.
 - Work happens on the `rework-webui-websources` branch (local, ahead of `main`); nothing is pushed unless the user asks.
-- Generated data (`cache/`, `runs/`, `findaline_map.html`) is git-ignored. The user is the only user: no migration or backward-compatibility code for old caches or runs.
+- Generated data (`cache/`, `runs/`, `work/`, `findaline_map.html`) is git-ignored. The user is the only user: no migration or backward-compatibility code for old caches or runs.

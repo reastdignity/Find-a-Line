@@ -22,7 +22,7 @@ Planned features and the decisions already made for them. Nothing here is implem
 Chosen to keep the cost and the risk of errors low: a safety net first, foundations before what builds on them, nothing built twice.
 
 1. **Safety net** (done 2026-10-25): `tests/regression.py` runs the searches of `tests/regression.json` and compares the numbers (all 13 in about 3 min; the table in docs/regression-tests.md is generated from the JSON); `pytest` runs the offline tests (synthetic canyon, Żabi Koń clip) in about 25 s. `pyproject.toml` + `uv.lock` replace `requirements.txt`; the regression set gives the same numbers with the locked, newer library versions (numpy 2.5, rasterio 1.5, shapely 2.2). The start scripts come with stage 3.
-2. **Cache layout and index** (without the update commands): new paths, `index.sqlite`, `FINDALINE_DATA`, `work/<job-id>/`, editions recorded in runs, OSM themes from Overpass. Moving the folders by hand is cheapest now, while there are few saved maps; the download code changes once, before large areas download ten times more tiles.
+2. **Cache layout and index** (done 2026-10-25, `cache.py`, `osm.py`): new paths with editions and tilings, `cache/LAYOUT`, `index.sqlite` per top-level folder (replaces the `.missing` files), `--data-dir` / `FINDALINE_DATA` (replacing `--cache-dir` and `--runs-dir`), `work/<id>/` per search (deleted unless the search crashed), the data used recorded in `run.json`, OSM themes `coastline` and `cliff` from Overpass, cached Nominatim answers. The old cache was deleted and downloaded again (only the OSM world file was moved), so old maps load the orthophoto online. `--refresh` stays until the update commands (step 6).
 3. **Stage 0** (refactoring): results must stay identical to the line, so no regression number may change. Kept apart from behaviour changes, so that any difference is a bug.
 4. **Stage 1, minimal**: repeatable `--point` only. The "Other runs" panel and `lines.js` are not built for the folium map; they come with the stage 3 viewer and its per-run data format.
 5. **Profiling, then stage 2**: measure where the time goes (downloading, gap/water filling, profiles, map) first. Then areas: GeoJSON file first, then `coast` and `cliffs` (they use the OSM themes from step 2), tiling and resuming last, with the tests ready (a polygon equal to the circle, a tiled area equal to one grid).
@@ -40,7 +40,6 @@ Rules for every step:
 - Area abstraction: `Circle(center, radius)` and `Polygon(geometry)`, both giving a boolean mask on the grid. Everything that now uses `center_row`, `center_col` and `radius_px` (anchor search, plots, orthophoto cache, run metadata) uses the mask instead.
 - `progress.py` reports to a callback as well as to tqdm, so the server can forward progress.
 - `run_search` is split into a download part (all tiles of the area into the cache) and a compute part, so the worker can download the data of the next job while the current one computes (stage 3).
-- `--data-dir` (or `FINDALINE_DATA`) replaces `--cache-dir` and `--runs-dir`: one folder holding `cache/`, `runs/` and `work/`.
 
 ## Stage 1: several points, overlaying runs
 - `--point` may be given many times; the runs are computed one after another with the same parameters. `--lat/--lon`, `--northing/--easting` stay as the single-point form.
@@ -85,24 +84,24 @@ The top level of `cache/` stays one folder per country or per global dataset, so
 | Path | `<country or global dataset>/<dataset>/<edition>/<tiling>/<tile>`. |
 | Edition | Versioned releases use their version (`2018`, `2021`, `v1-2`): content never changes, a new release goes into a new folder. Services that always serve the current state (IGN, WMS orthophotos) use `live`: an update overwrites the tile, its dates are kept in the index. |
 | Tiling | CRS, resolution, tile size and format (e.g. `epsg2180-1m-2000px-tif`); a format change matters because IGN GeoTIFFs are whole metres and ASCII grids keep centimetres. Corrections applied when tiles are placed on the grid (`MALTA_2012_SHIFT`) are not part of it. |
-| Metadata | `index.sqlite` in every top-level folder: status (`ok`, `missing`, `error`), fetched/checked/last-used times, ETag, Last-Modified, sha256, date of the source data, processing version. Replaces the `.missing` files. URLs are stored without secrets (no OpenTopography key). A row without a file means missing; a file without a row is adopted. |
+| Metadata | `index.sqlite` in every top-level folder, one row per file keyed by its path (which names dataset, edition and tiling): status (`ok`, `missing`), fetched/checked/last-used times, ETag, Last-Modified, sha256, date of the source data, processing version. Replaces the `.missing` files. URLs are stored without secrets (no OpenTopography key). A row without a file means missing; a file without a row is adopted. |
 | Updates | Never during a search. `--update stale|all` or `findaline cache update [folder] [--point/--bbox]`; `findaline cache status` lists folders with size, last use and stale tiles. Missing tiles are re-checked by `update` like any other (after 90 days). Checks never stop a search: offline or on errors the cached data is used with a warning. |
-| OSM | Themes (coastline, cliffs, crags...) in `osm/themes/<theme>/<tile>.fgb` on a fixed 0.25° grid, filled from Overpass by default. `findaline osm download <country>` adds a Geofabrik extract in `<country>/osm-extract/`; when present, themes are built from it and `findaline osm update` applies the daily diffs. Fallbacks as today: world water polygons, then Overpass, then the Copernicus mask. |
-| Runs | Each run records the datasets, editions and tile dates it used; `cache status` lists runs computed on data that has changed since. |
+| OSM | Themes (coastline, cliffs, crags...) in `osm/themes/<theme>/<tile>.geojson` on a fixed 0.25° grid, filled from Overpass by default. `findaline osm download <country>` adds a Geofabrik extract in `<country>/osm-extract/`; when present, themes are built from it and `findaline osm update` applies the daily diffs. Fallbacks as today: world water polygons, then Overpass, then the Copernicus mask. |
+| Runs | Each run records the data it used (`data` in `run.json`: folder, number of files, oldest and newest fetch time, survey years of sheets); `cache status` lists runs computed on data that has changed since. |
 
 **Layout**
 ```
 cache/
   LAYOUT                                   # layout version; a mismatch tells the user to delete the cache
   poland/        index.sqlite, nmt/<year>_<sheet file>.tif, nmpt/<year>_<sheet file>.tif (sheets never change: no edition level), ortho/live/wm256/{z}/{x}/{y}.jpg, osm-extract/
-  malta/         index.sqlite, dtm/2018/..., dtm/2012/..., dsm/..., ortho/2018/...
+  malta/         index.sqlite, dtm/2018/epsg32633-1m-2000px-tif/<i>_<j>.tif, dtm/2012/epsg25833-..., dsm/..., ortho/2018/wm256/...
   spain/         index.sqlite, mdt05/live/epsg25830-.../, mdt05/live/epsg4083-.../, mds05/live/..., ortho/live/...
   copernicus30/  index.sqlite, 2021/dem/, 2021/wbm/       # the AWS bucket serves the 2021 release (since 2022-05-09)
   fabdem/        index.sqlite, v1-2/
   nasadem/       index.sqlite, v1/
-  osm/           index.sqlite, water-polygons/<date>/, themes/<theme>/<tile>.fgb, nominatim.sqlite
+  osm/           index.sqlite, water-polygons/<date>/, themes/<theme>/<tile>.geojson, nominatim.sqlite
 runs/
-work/<job-id>/                             # per job, deleted afterwards
+work/<id>/                                 # per search, deleted unless it crashed
 ```
 
 **How each dataset is checked**

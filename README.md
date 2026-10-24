@@ -69,7 +69,7 @@ Anchors are taken at ground level, as with the formula. With the default values 
 | `files` | your files | `--elevation-file` | `--surface-file` (optional) | – |
 
 - With the default `--source auto`, the country of the search centre is looked up in OpenStreetMap: Poland uses `geoportal`, Malta uses `malta` (2018), Spain uses `spain` (or `spain_canarias` on the Canary Islands), anywhere else uses `europe`. Giving `--elevation-file` selects `files`.
-- Every source has its own folder in `cache` (`cache/poland`, `cache/malta`, `cache/fabdem`, `cache/copernicus30`, `cache/nasadem`), so switching between sources (or back) never downloads again what is already there. Polish data is cached per map sheet (1:5000, about 2.3 × 2.3 km, one GeoTIFF of about 9 MB each), Malta and Spain in WCS tiles of 2000 × 2000 pixels at native resolution (2 km and 10 km), the 30 m models in 1°×1° tiles; the same files serve every working resolution.
+- Downloaded data is kept in `cache/`, with one folder per country or Europe-wide dataset (`poland`, `malta`, `spain`, `copernicus30`, `fabdem`, `nasadem`, `osm`): switching between sources (or back) never downloads again what is already there, and deleting such a folder frees its space (it is downloaded again when needed). Inside, the path names the dataset, its edition and the tiling, e.g. `malta/dtm/2018/epsg32633-1m-2000px-tif/` or `copernicus30/2021/dem/`; `live` marks services that always serve their current state. Each folder has an `index.sqlite` listing its files with when and where they were fetched; every run records in `run.json` which data it used. Polish data is cached per map sheet (1:5000, about 2.3 × 2.3 km, one GeoTIFF of about 9 MB each), Malta and Spain in WCS tiles of 2000 × 2000 pixels at native resolution (2 km and 10 km), the 30 m models in 1°×1° tiles; the same files serve every working resolution.
 - The default `--resolution` is 2 m for the LiDAR sources, 30 m for `europe` and `nasadem`, and the file's own resolution for `files`. The grouping distance follows it (twice the resolution, at least 20 m).
 - Esri World Imagery is available as an online background layer everywhere; it is not cached, because Esri's terms do not allow downloading tiles for offline use.
 - **NASADEM**: `--source nasadem` needs a free API key from [opentopography.org](https://portal.opentopography.org/myopentopo), given with `--opentopo-key` or in the `OPENTOPOGRAPHY_API_KEY` environment variable (step-by-step: [getting an API key](setup-for-regular-folk.md#getting-an-opentopography-api-key-optional)). Alternatively download a NASADEM GeoTIFF (or a slope raster) from the [OpenTopography portal](https://portal.opentopography.org/raster?opentopoID=OTSDEM.032021.4326.2), as in the original version of this tool, and use `--elevation-file` (and `--slope-file`).
@@ -80,8 +80,8 @@ Anchors are taken at ground level, as with the formula. With the default values 
 ### Sea, lakes and gaps in the data
 LiDAR models usually have no data over water. Without it, lines across the sea between cliffs are never found, and neither are the cliff edges themselves (their slope needs the pixels next to them). By default (`--water fill`):
 - **The sea** gets 0 m where the elevation data has none. Where the sea is comes from `--coastline`:
-  - `overpass` (default): the OpenStreetMap coastline of the search area from the Overpass API (cached in `cache/osm`). If Overpass does not answer, the Copernicus mask is used instead and a warning is printed. Once the world file below has been downloaded, it is used instead of Overpass (same OpenStreetMap data, no waiting for the server).
-  - `world`: the OpenStreetMap water polygons of the whole world, downloaded once (about 900 MB) into `cache/osm`; no Overpass needed afterwards.
+  - `overpass` (default): the OpenStreetMap coastline of the search area from the Overpass API (cached in `cache/osm/themes/coastline` in tiles of 0.25°). If Overpass does not answer, the Copernicus mask is used instead and a warning is printed. Once the world file below has been downloaded, it is used instead of Overpass (same OpenStreetMap data, no waiting for the server).
+  - `world`: the OpenStreetMap water polygons of the whole world, downloaded once (about 900 MB) into `cache/osm/water-polygons/<date>/`; no Overpass needed afterwards.
   - `copernicus`: the Copernicus DEM water body mask (30 m).
 
   Measured along 2 km of the Maltese coast, 90% of the OpenStreetMap coastline is within 13 m of the shoreline in the LiDAR data (median 6 m), against 70 m for the Copernicus mask (median 12 m). Pixels without data within `--shore-buffer` metres (default 20) of the sea are taken as water too, as the mapped coastline is not exact; the exact shoreline comes from the elevation data itself. Cliffs can be vertical, so the land right next to the water may be high.
@@ -126,7 +126,7 @@ uv run findaline.py --lat 49.2320 --lon 19.9817
 
 Without uv, install the libraries listed under `dependencies` in `pyproject.toml` with pip into a Python 3.12+ environment and run `python findaline.py ...`. The examples below use `python findaline.py`; with uv write `uv run findaline.py`.
 
-No data files are needed; everything is downloaded automatically into the `cache` folder.
+No data files are needed; everything is downloaded automatically into the `cache` folder. The `cache`, `runs` and `work` folders are kept in the folder of the script; `--data-dir` or the environment variable `FINDALINE_DATA` moves all three elsewhere (for example to another disk).
 
 The search centre can be given in either of two coordinate systems:
 - **WGS84** (`--lat`, `--lon`), as shown in Google Maps or a GPS. Example: `--lat 49.2320 --lon 19.9817`
@@ -154,14 +154,13 @@ The search centre can be given in either of two coordinate systems:
 | `--pretension` / `--stretch` | 2.5 / 5 | Pretension in kN / webbing stretch at 10 kN in % |
 | `--webbing-weight` / `--athlete-mass` | 70 / 80 | Webbing weight in g/m / athlete mass in kg |
 | `--fall-zone` | 3 | Height below the sagged webbing that must stay free, in metres |
-| `--cache-dir` | `cache` | Folder for downloaded data |
+| `--data-dir` | `FINDALINE_DATA`, else the folder of the script | Folder holding `cache/` (downloaded data), `runs/` (saved runs) and `work/` (working grids of a search, deleted when it ends) |
 | `--refresh` | | Download data again even if it is cached |
 | `--group-distance` | 20 (2 × resolution if more) | Group similar lines: both anchors within this many metres |
 | `--group-by` | `clearance` | Line shown for each group: `clearance` (largest) or `longest` |
 | `--all-lines` | | List every line instead of one line per group |
-| `--runs-dir` | `runs` | Folder where every run is saved |
 | `--name` | place name from OpenStreetMap | Name of the run |
-| `--html` | `findaline_map.html` | Page that opens the map of the latest run |
+| `--html` | `findaline_map.html` in the data folder | Page that opens the map of the latest run |
 | `--no-ortho-cache` | | Do not download orthophoto tiles for offline use of the map |
 | `--no-html` / `--no-plot` | | Skip the interactive map / the matplotlib window |
 | `-y`, `--yes` | | Do not ask for confirmation before long runs |
@@ -174,7 +173,7 @@ A steep rock face produces many near-identical lines (anchors shifted by a metre
 - The coordinates are printed in the terminal (WGS84, latitude and longitude), one line per group with the number of similar lines. Use `--all-lines` to list every line.
 - Every run is saved in its own folder, `runs/<date>_<place>/`: the interactive map (`map.html`), all lines with their group number (`lines.csv` for spreadsheets, `lines.geojson` for QGIS and other GIS tools) and the parameters (`run.json`). Runs are named after the nearest rock, peak or valley in OpenStreetMap and the locality (for example "Żabi Koń, Gaj Kobylański"); use `--name` to choose your own. `runs/index.html` lists all runs.
 - The interactive map can be opened in any web browser; `findaline_map.html` always opens the latest run. The panel in the top-left corner shows the run's parameters and switches to any other saved run. You can switch between OpenTopoMap, OpenStreetMap and the geoportal orthophoto, and click a line to see its length, anchor elevations and clearance. The panel in the bottom-left corner turns grouping on and off, sets the grouping distance and the line shown for each group. Clicking a line hides all the other lines (the variants of its group stay, drawn thin) until its popup is closed or *Show all lines* is pressed in the bottom-left panel; *Zoom to line* in the popup zooms the map to it. Clicking a group shows all of its lines. Clicking a line also opens its terrain profile at the bottom of the map: terrain (NMT), trees and buildings (NMPT) and the safety limit used by the search, with the point of smallest clearance marked. The sag estimator adds the webbing under its own weight, the sag envelope, the fall zone and, under the mouse cursor, the webbing with the athlete standing there; each can be switched on and off, and the rigging values can be changed in the panel to see the effect immediately. Moving the mouse over the profile shows the values at that point and marks it on the map; the button switches between a fitted and a true (1:1) vertical scale. A popup can be moved off the line by dragging its top bar.
-- Orthophoto tiles for the map are saved in the source's folder (for example `cache/poland/ortho`), so the aerial photos also work without internet: the whole search area up to zoom 16, and a 30 m strip around each group's line up to the maximum zoom (21). Elsewhere the map loads the orthophoto online. The first run in an area can download a couple of thousand tiles (for example about 1700 tiles, 26 MB and 8 minutes for 66 spots within 1 km); later runs reuse them. Maps find the tiles through a relative path, so keep the `runs` and `cache` folders where they are; a map moved elsewhere loads everything online.
+- Orthophoto tiles for the map are saved in the source's folder (for example `cache/poland/ortho/live/wm256`), so the aerial photos also work without internet: the whole search area up to zoom 16, and a 30 m strip around each group's line up to the maximum zoom (21). Elsewhere the map loads the orthophoto online. The first run in an area can download a couple of thousand tiles (for example about 1700 tiles, 26 MB and 8 minutes for 66 spots within 1 km); later runs reuse them. Maps find the tiles through a relative path, so keep the `runs` and `cache` folders where they are; a map moved elsewhere loads everything online.
 - A static map is shown in a separate window (close it to finish the program), with one line per group.
 
 ### Progress

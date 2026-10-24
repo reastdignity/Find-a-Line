@@ -7,9 +7,9 @@
     python tests/regression.py R1 --update     # store the new results as expected
     python tests/regression.py --write-doc     # rewrite the table in docs/regression-tests.md
 
-Tests run one after another (searches share cache/work) with runs and maps in a
-temporary folder; the data cache is the real one unless --cache-dir is given.
-The output of every search is kept in the log folder printed at the end.
+Each test runs with its own temporary data folder (runs, map, work) whose cache/ links
+to the real cache (or to --cache, e.g. an empty folder to test downloads). The output
+of every search is kept in the log folder printed at the end.
 """
 
 import argparse
@@ -23,6 +23,9 @@ import subprocess
 import sys
 import tempfile
 import time
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import cache  # noqa: E402
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 TESTS = os.path.join(REPO, "tests", "regression.json")
@@ -68,14 +71,23 @@ def measure(output: str, run_dir: str) -> dict:
     return found
 
 
-def run(tests: dict, test_id: str, work: str, cache_dir: str = None) -> dict:
+def link(target: str, link_path: str):
+    """A directory link (a junction on Windows: no special rights needed)."""
+    if os.name == "nt":
+        import _winapi
+        _winapi.CreateJunction(os.path.abspath(target), link_path)
+    else:
+        os.symlink(os.path.abspath(target), link_path)
+
+
+def run(tests: dict, test_id: str, work: str, cache_dir: str) -> dict:
     out = os.path.join(work, test_id)
     os.makedirs(out, exist_ok=True)
+    os.makedirs(cache_dir, exist_ok=True)
+    link(cache_dir, os.path.join(out, "cache"))
     # Orthophoto tiles are not compared and can take many minutes to fetch (R9: 15 000 tiles)
     cmd = [sys.executable, "findaline.py", *full_args(tests, test_id), "--no-plot", "--yes", "--no-ortho-cache",
-           "--runs-dir", os.path.join(out, "runs"), "--html", os.path.join(out, "map.html")]
-    if cache_dir:
-        cmd += ["--cache-dir", cache_dir]
+           "--data-dir", out]
     env = {**os.environ, "FINDALINE_PROGRESS": "text", "PYTHONIOENCODING": "utf-8"}
     result = subprocess.run(cmd, cwd=REPO, env=env, capture_output=True, text=True, encoding="utf-8")
     with open(os.path.join(out, "output.log"), "w", encoding="utf-8") as f:
@@ -149,7 +161,8 @@ def main():
     parser.add_argument("--all", action="store_true", help="run every test")
     parser.add_argument("--update", action="store_true", help="store the results of the run tests as expected")
     parser.add_argument("--write-doc", action="store_true", help="rewrite the table in docs/regression-tests.md")
-    parser.add_argument("--cache-dir", help="data cache for the searches (default: the real cache)")
+    parser.add_argument("--cache", help="cache folder for the searches (default: the real one, "
+                                         "cache/ in FINDALINE_DATA or the repository)")
     args = parser.parse_args()
 
     tests = load()
@@ -174,7 +187,7 @@ def main():
             skipped.append(test_id)
             continue
         start = time.time()
-        found = run(tests, test_id, work, args.cache_dir)
+        found = run(tests, test_id, work, args.cache or os.path.join(cache.data_dir(), "cache"))
         diffs = compare(test["expected"], found)
         status = "ok" if not diffs else "DIFFERENT"
         print(f"{test_id}: {status} ({time.time() - start:.0f} s)" + "".join(f"\n    {d}" for d in diffs), flush=True)

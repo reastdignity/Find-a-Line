@@ -89,6 +89,6 @@
     "args": "--northing 152074 --easting 571448 --radius 500 --resolution 5 --slope-threshold 50 --min-length 50 --max-length 400",
     "sets": ["quick", "pl", "sources", "water"],
     "expected": {"anchors": 2796, "open": 2396, "checked": 8628, "lines": 562, "spots": 138, "filled_km2": 0.03, "filled_from": "FABDEM + Copernicus DEM"},
-    "notes": "PL-1992 input; the filled gaps are on the Slovak side; with `--refresh --cache-dir <temp>/cache` it also tests the geoportal sheet download (index WFS, ASCII grid sheets, NMPT at 0.5 m)"
+    "notes": "PL-1992 input; the filled gaps are on the Slovak side; with `--cache` on an empty folder it also tests the geoportal sheet download (index WFS, ASCII grid sheets, NMPT at 0.5 m)"
   }
 }

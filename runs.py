@@ -18,34 +18,28 @@ import json
 import math
 import os
 import re
-import time
 import unicodedata
 from datetime import datetime
 from typing import Dict, List, Optional
 
 import requests
 
-NOMINATIM_URL = "https://nominatim.openstreetmap.org/reverse"
-HEADERS = {"User-Agent": "Find-a-Line/1.0 (highline finder)"}
+import osm
+
 MAX_FEATURE_DEG = 0.2  # about 20 km; larger natural features are not used in run names
 
 
-def _reverse(lat: float, lon: float, **params) -> Dict:
-    response = requests.get(NOMINATIM_URL, headers=HEADERS, timeout=15,
-                            params={"lat": lat, "lon": lon, "format": "jsonv2",
-                                    "accept-language": "pl", **params})
-    response.raise_for_status()
-    time.sleep(1)  # Nominatim usage policy: at most one request per second
-    return response.json()
+def _reverse(lat: float, lon: float, cache_dir: str, **params) -> Dict:
+    return osm.reverse(lat, lon, cache_dir, **{"accept-language": "pl"}, **params)
 
 
-def _nearest_feature(lat: float, lon: float) -> Optional[str]:
+def _nearest_feature(lat: float, lon: float, cache_dir: str) -> Optional[str]:
     """Name of the nearest natural feature: rock, peak, valley, river...
 
     Very large features (a peninsula, a sea strait) say nothing about the spot
     and are skipped.
     """
-    data = _reverse(lat, lon, zoom=18, layer="natural")
+    data = _reverse(lat, lon, cache_dir, zoom=18, layer="natural")
     try:
         south, north, west, east = map(float, data.get("boundingbox", []))
         if north - south > MAX_FEATURE_DEG or (east - west) * math.cos(math.radians(lat)) > MAX_FEATURE_DEG:
@@ -55,9 +49,9 @@ def _nearest_feature(lat: float, lon: float) -> Optional[str]:
     return data.get("name") or None
 
 
-def _locality(lat: float, lon: float) -> Optional[str]:
+def _locality(lat: float, lon: float, cache_dir: str) -> Optional[str]:
     """Hamlet, village or town at the point."""
-    data = _reverse(lat, lon, zoom=14)
+    data = _reverse(lat, lon, cache_dir, zoom=14)
     if data.get("category") in ("place", "boundary") and data.get("name"):
         return data["name"]
     address = data.get("address", {})
@@ -65,7 +59,7 @@ def _locality(lat: float, lon: float) -> Optional[str]:
                  if k in address), None)
 
 
-def place_name(lat: float, lon: float) -> Optional[str]:
+def place_name(lat: float, lon: float, cache_dir: str) -> Optional[str]:
     """Name of the place from OpenStreetMap, e.g. "Żabi Koń, Gaj Kobylański".
 
     The nearest named natural feature plus the locality; None if offline.
@@ -73,7 +67,7 @@ def place_name(lat: float, lon: float) -> Optional[str]:
     parts = []
     for lookup in (_nearest_feature, _locality):
         try:
-            parts.append(lookup(lat, lon))
+            parts.append(lookup(lat, lon, cache_dir))
         except (requests.RequestException, ValueError, KeyError):
             pass
     parts = list(dict.fromkeys(p for p in parts if p))  # drop empty and duplicates

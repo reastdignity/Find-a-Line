@@ -28,8 +28,7 @@ def run_search(tmp_path, *args) -> tuple:
     env = {**os.environ, **OFFLINE_ENV}
     result = subprocess.run(
         [sys.executable, "findaline.py", *args, "--water", "off", "--fill-gaps", "off", "--no-plot", "--yes",
-         "--cache-dir", str(tmp_path / "cache"), "--runs-dir", str(tmp_path / "runs"),
-         "--html", str(tmp_path / "map.html")],
+         "--data-dir", str(tmp_path)],
         cwd=REPO, env=env, capture_output=True, text=True, encoding="utf-8", timeout=600)
     assert result.returncode == 0, result.stdout + result.stderr
     runs = glob.glob(str(tmp_path / "runs" / "*" / "lines.csv"))

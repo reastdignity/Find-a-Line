@@ -138,4 +138,4 @@ The next `uv run` installs any new library versions by itself.
 - **It takes too long:** use a smaller `--radius`, a higher `--slope-threshold`, or a coarser `--resolution 5`. You can stop the script at any time with Ctrl+C.
 - **"No lines found":** try a lower `--slope-threshold`, a larger `--radius` or other line lengths. Outside Poland and Malta the data is less detailed, so try longer lines, for example `--min-length 100`.
 - **Download errors:** the data servers are sometimes busy. Run the same command again; what was already downloaded is kept.
-- **Not enough disk space:** you can delete the `cache` folder (it is downloaded again when needed) and old searches in the `runs` folder.
+- **Not enough disk space:** inside the `cache` folder, delete the folders of countries or datasets you no longer need (for example `cache/spain`), or the whole `cache` folder; everything is downloaded again when needed. Old searches can be deleted from the `runs` folder.
