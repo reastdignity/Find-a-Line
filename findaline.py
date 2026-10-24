@@ -463,5 +463,8 @@ def main(args):
 
 
 if __name__ == "__main__":
+    # Output redirected to a file gets the Windows code page, which has no "²" and the like
+    for stream in (sys.stdout, sys.stderr):
+        stream.reconfigure(encoding="utf-8", errors="replace")
     with progress.bars():
         main(parse_args())
