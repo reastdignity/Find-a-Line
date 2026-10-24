@@ -33,7 +33,7 @@ Planned features and the decisions already made for them. Nothing here is implem
 - The grid covers the bounding box of the area. Anchors are searched only inside the mask; the pair search is unchanged.
 - Tiles: squares of about 2 km with an overlap equal to `--max-length`. A line belongs to the tile that holds its first anchor, so there are no duplicates. Each finished tile is saved in the run folder (`tiles/<i>.npz`), and a restarted run skips those.
 - Before starting, the script shows the area (km²), the number of tiles, the download size and an estimated time, and asks for confirmation.
-- Rough scale: the coast of Malta and Gozo is about 190 km, so a 100 m band is 20–40 km² at 1 m. Expect hours of computing, which is fine for memory with tiles.
+- Rough scale: the coast of Malta and Gozo is about 190 km, so a 100 m band is 20–40 km² at 1 m. With the numba search the line search takes minutes; downloading the data dominates.
 
 **Area sources (`--area ...`)**
 - `coast --buffer 100`: land within the given distance of the OSM coastline (`coast.py`, world water polygons file), limited to a country/island or a bounding box.
@@ -76,10 +76,10 @@ Python stays. It has the best geospatial stack (GDAL/rasterio, pyproj, shapely, 
 - **C++:** native GDAL but the hardest to build and maintain on three platforms.
 - **TypeScript/Node:** no usable GDAL or numeric stack at this scale.
 
-Speeding up, when large areas make it necessary:
-1. Profile first (R1, R4): on a first run much of the time is downloading.
-2. **numba** on the pair evaluation loop in `helpers.py`: wheels for all platforms, small changes, typically 10–100× for such loops.
-3. If more is needed: a **Rust extension (PyO3/maturin)** for the hot loop, the rest stays in Python. The same Rust code could be compiled to WASM for the viewer, ending the duplicated `Sag`/`groupLines` code in Python and JS.
+Speeding up:
+- Done (2026-10-24): the pair search is in numba (`linesearch.py`): free directions per anchor, bucketed pairs, early-exit line check. Same lines as before, step 3 is about 150–750× faster (R4: 201 s on 23 processes → 0.3 s; R5 with the sag model: 283 s → 2 s).
+- Now the time goes to downloading, gap/water filling, profiles and the map. Profile these before large areas.
+- If ever needed: a **Rust extension (PyO3/maturin)**; the same code could be compiled to WASM for the viewer, ending the duplicated `Sag`/`groupLines` code in Python and JS.
 
 The static viewer (stage 3) is written in **TypeScript**.
 

@@ -24,6 +24,7 @@ from pyproj import Transformer
 
 import grid as gd
 import helpers as sh
+import linesearch as ls
 import mapping as mp
 import orthophoto as ortho
 from progress import progress
@@ -104,8 +105,8 @@ def parse_args():
                         help="also check clearance over trees/buildings (NMPT): "
                              "'mark' shows such lines in orange, 'reject' drops them, "
                              "'off' skips the check (and the NMPT download)")
-    search.add_argument("--processes", type=int,
-                        help="number of parallel processes (default: CPU count - 1)")
+    search.add_argument("--threads", type=int,
+                        help="number of threads for the line search (default: CPU count - 1)")
 
     rigging = parser.add_argument_group(
         "clearance model (the sag estimator is also shown in the profile of the map)")
@@ -335,32 +336,16 @@ def main(args):
     print(f"Found {len(anchors)} potential anchors to evaluate")
     if len(anchors) < 2:
         sys.exit("Not enough steep terrain. Try a lower --slope-threshold or a larger --radius.")
-    anchors_path = os.path.join(args.cache_dir, "work", "anchors.npy")
-    np.save(anchors_path, anchors)
 
     # Step 3: Compare each promising anchor to every other anchor
     print("\nStep 3: Evaluating anchor pairs...")
-    num_processes = args.processes or max(1, os.cpu_count() - 1)
     sag_table = None
     if args.model == "sag":
         print("Precomputing the sag estimator for all line lengths...")
         sag_table = sg.EnvelopeTable(rigging, args.min_length, args.max_length)
-    max_dh_ratio = args.max_anchor_diff / 100
-    pairs, seconds_per_pair = sh.estimate_search(anchors, elevation, args.resolution,
-                                                 args.min_length, args.max_length, surface,
-                                                 sag_table, max_dh_ratio, args.max_anchor_diff_m)
-    minutes = pairs * seconds_per_pair / num_processes / 60
-    print(f"Estimated {pairs:,.0f} anchor pairs within length constraints, "
-          f"~{minutes:.0f} min on {num_processes} processes")
-    if pairs == 0:
-        sys.exit("No anchor pairs found within specified length constraints.")
-    if minutes > CONFIRM_MINUTES:
-        confirm([f"about {pairs:,.0f} anchor pairs to evaluate, ~{minutes:.0f} minutes"], args.yes)
-
-    valid_lines = sh.find_valid_lines(elevation_path, surface_path, anchors_path, len(anchors),
-                                      args.resolution, args.min_length, args.max_length,
-                                      args.nmpt, num_processes, sag_table,
-                                      max_dh_ratio, args.max_anchor_diff_m)
+    valid_lines = ls.find_valid_lines(elevation, surface, anchors, args.resolution,
+                                      args.min_length, args.max_length, args.nmpt, args.threads,
+                                      sag_table, args.max_anchor_diff / 100, args.max_anchor_diff_m)
     if not valid_lines:
         sys.exit("No lines found matching elevation requirements.")
 

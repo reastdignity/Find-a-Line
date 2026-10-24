@@ -47,10 +47,12 @@ Anchors are taken at ground level, as with the formula. With the default values 
 ## Algorithm Breakdown
 - Elevation data for a circle around the given point is downloaded in tiles from the data source (see *Data sources*) and resampled to the working resolution (`--resolution`). Tiles are cached, so a second run over the same area does not download anything.
 - Slope is computed from the terrain model (or read from your own slope raster, `--slope-file`). Pixels steeper than `--slope-threshold` degrees become promising anchors.
-- For every promising anchor, we find every other anchor whose distance matches our length criteria (using a KD-tree, so pairs that are too far apart are never considered). Pairs whose anchors differ in height by more than 5% of the line length, or by more than 50 m, are skipped.
-- For each such pair, we "draw" a line using a DDA (Digital Differential Analyzer) algorithm. This allows us to intercept every raster pixel between the two anchors.
-- For each raster pixel that exists along this line, the maximum acceptable elevation is calculated using our formula, and the pixel's actual elevation is subtracted from this value to retrieve the elevation difference (clearance). A **positive** clearance implies that the pixel's elevation is **lower** than our required maximum.
-- If every pixel has a positive clearance, the line is added to a list of valid lines.
+- A line between two anchors is "drawn" with a DDA (Digital Differential Analyzer) algorithm, which gives every raster pixel between them. For each pixel the maximum acceptable elevation is calculated using our formula (or the sag estimator), and the pixel's actual elevation is subtracted from it to get the clearance. A **positive** clearance means the pixel is **lower** than the required maximum; if every pixel has a positive clearance, the line is valid.
+- Checking every pair of anchors this way would be slow (a 1 km circle at 1 m has around 100 million pairs), but almost all of them fail within a few metres of an anchor: the terrain right next to it has to be about 6 m lower. So the search skips what cannot pass, without losing any valid line:
+  - For every anchor and 64 directions, it checks how far a line could leave the anchor before the terrain is certainly too high for any partner. Anchors with no open direction are dropped (usually most of them).
+  - Partners are anchors at the right distance, at most 5% of the line length or 50 m apart in height, and with both anchors open towards each other.
+  - The pixels of the remaining lines are checked from both anchors inwards, stopping at the first one that is too high.
+  - This runs as compiled code (numba) on all CPU cores; the lines found are checked once more pixel by pixel to compute their clearances.
 - The same check is repeated against the surface model (treetops, roofs), unless `--nmpt off`. In `mark` mode lines that fail it are kept but drawn in orange; in `reject` mode they are dropped.
 - The list of valid lines is then converted into GPS coordinates, printed, and displayed on a map.
 
@@ -145,7 +147,7 @@ The search centre can be given in either of two coordinate systems:
 | `--max-anchor-diff` / `--max-anchor-diff-m` | 5 / 50 | Maximum height difference of the anchors: % of the line length / metres (whichever is smaller) |
 | `--slope-file` | | Your own slope raster in degrees (GeoTIFF or ASC) instead of computing it from NMT |
 | `--nmpt` | `mark` | `mark` or `reject` lines that pass too close to trees or buildings; `off` skips the check and the NMPT download |
-| `--processes` | CPU count - 1 | Number of parallel processes |
+| `--threads` | CPU count - 1 | Number of threads for the line search |
 | `--model` | `formula` | Clearance model for the search: `formula` or `sag` (see *Sag Estimator*) |
 | `--pretension` / `--stretch` | 2.5 / 5 | Pretension in kN / webbing stretch at 10 kN in % |
 | `--webbing-weight` / `--athlete-mass` | 70 / 80 | Webbing weight in g/m / athlete mass in kg |
@@ -177,7 +179,7 @@ A steep rock face produces many near-identical lines (anchors shifted by a metre
 While the script runs, two progress bars at the bottom of the terminal show downloads (elevation and orthophoto tiles) and computations (stitching tiles, finding anchors, evaluating anchor pairs, profiles, grouping), each with the current stage, speed and remaining time. When the output is written to a file instead of a terminal, a line of text with the progress is printed every 10 seconds. Set `FINDALINE_PROGRESS=bars` or `FINDALINE_PROGRESS=text` to force one of the two.
 
 ### Run time and data size
-With the defaults (1 km radius at 2 m, NMPT on) the first run downloads about 100 MB and takes a minute or two, mostly downloading NMPT, which is much slower than NMT. Larger areas grow quickly: a 20 km radius at 2 m is about 1.5 GB for NMT alone, and in steep terrain potentially billions of anchor pairs. Before downloading and before evaluating, the script prints an estimate and asks for confirmation if the run looks long. If it is too slow, compromise by doing at least one of the following:
+With the defaults (1 km radius at 2 m, NMPT on) the first run downloads about 100 MB and takes a minute or two, mostly downloading NMPT, which is much slower than NMT. The line search itself takes seconds. Larger areas grow quickly in data: a 20 km radius at 2 m is about 1.5 GB for NMT alone. Before downloading, the script prints an estimate and asks for confirmation if the download looks large. If it is too slow, compromise by doing at least one of the following:
 - Use a smaller `--radius`
 - Use a coarser `--resolution` (5 or 10 metres is good for a first look at a large area)
 - Raise `--slope-threshold`
@@ -203,7 +205,7 @@ NMPT (trees/buildings): mark
 Clearance model: maximum elevation formula
 ...
 Found 8371 potential anchors to evaluate
-Estimated 17,370,267 anchor pairs within length constraints, ~0 min on 23 processes
+Anchors with an open direction: 1000 of 8371
 ...
 Found 691 valid lines in 66 spots (lines with both anchors within 20m are grouped, ...)
 GPS Coordinates (lat, lon):
@@ -217,10 +219,9 @@ GPS Coordinates (lat, lon):
     Anchor 2: 50.154057, 19.754887
   ...
 Run "Żabi Koń, Gaj Kobylański" saved to ...
-uns6-10-23_174205_Zabi-Kon-Gaj-Kobylanski
 ```
 
-On a 24-core PC the 17 million anchor pairs took about 30 seconds; the first run in an area also downloads about 100 MB of elevation data and a few thousand orthophoto tiles.
+On a 24-core PC the line search took a fraction of a second (plus a few seconds to compile the search code on the very first run); the first run in an area also downloads about 100 MB of elevation data and a few thousand orthophoto tiles.
 
 Of the 66 spots, 16 have clearance over the trees as well (pink); the other 50 only over the terrain (orange). The interactive map (`findaline_map.html`) shows them all:
 
