@@ -54,6 +54,35 @@ Planned features and the decisions already made for them. Nothing here is implem
 - Docker Compose: reverse proxy with TLS (Caddy), API, worker(s), Postgres, Redis, object storage for results.
 - Accounts (to be decided: invitations, OAuth, or anonymous with a quota), per-user quotas, admin view of jobs.
 
+## Installation and platforms
+The goal is Windows, Linux and macOS (Intel and Apple Silicon), installable by people with little technical knowledge.
+
+- **One lock file, two ways to run it.** `pyproject.toml` + `uv.lock` (uv) replace `requirements.txt`; both ways below install exactly the same versions.
+  - **Users, R&D, Windows:** install uv with one command, then double-click `start.bat` / `start.command` (macOS) / `start.sh` (Linux). uv downloads the right Python by itself, so there is no system Python, PATH, venv or PEP 668 trouble (Debian 12 ships Python 3.11, the project needs 3.12+). setup-for-regular-folk.md shrinks to two steps.
+  - **Docker (maintainer, server):** multi-stage `Dockerfile`. The build stage uses the official uv image and `uv sync --frozen`; the runtime stage is slim, has no uv and runs as non-root. `docker compose up` runs the local version (one container, SQLite); stage 4 adds Postgres/Redis to the same image. Keep `cache/` in a Docker volume, not a bind-mounted Windows folder (memmap is much slower there), and give Docker Desktop enough RAM and cores.
+- **Platform rules for the code:**
+  - The worker is a separate process and uses the `spawn` start method on every OS, so Linux behaves like Windows/macOS. (Python 3.14 changes the Linux default to `forkserver`.)
+  - Each job gets its own work folder, and memmapped files are closed before they are deleted: Windows cannot delete or overwrite an open file.
+  - `pathlib` for paths; `webbrowser` to open the browser.
+- **CI**: GitHub Actions on `windows-latest`, `macos-latest` and `ubuntu-latest` runs a small search on a fixture raster (no network) and starts the web server, plus a Docker build.
+- **macOS:** a downloaded `start.command` may need right-click → Open the first time (Gatekeeper) and can lose its executable bit when unzipped; the guide covers both.
+- **Resources** are shown before a search: the cache needs several GB (the OSM water polygons alone are 1.2 GB), large areas need a lot of RAM.
+- Not planned: signed installers (PyInstaller/Briefcase), which mean 300–500 MB packages, SmartScreen/Gatekeeper warnings without paid signing, and antivirus false positives. The public website (stage 4) is the no-install option.
+
+## Language
+Python stays. It has the best geospatial stack (GDAL/rasterio, pyproj, shapely, scipy), binary wheels for all three platforms, the working code and the regression baselines. Other languages considered:
+- **Rust:** fast, a single binary, can compile to WASM. But GDAL needs a system library, which loses the easy install, and it would be a full rewrite.
+- **Go:** weak geospatial and numeric ecosystem.
+- **C++:** native GDAL but the hardest to build and maintain on three platforms.
+- **TypeScript/Node:** no usable GDAL or numeric stack at this scale.
+
+Speeding up, when large areas make it necessary:
+1. Profile first (R1, R4): on a first run much of the time is downloading.
+2. **numba** on the pair evaluation loop in `helpers.py`: wheels for all platforms, small changes, typically 10–100× for such loops.
+3. If more is needed: a **Rust extension (PyO3/maturin)** for the hot loop, the rest stays in Python. The same Rust code could be compiled to WASM for the viewer, ending the duplicated `Sag`/`groupLines` code in Python and JS.
+
+The static viewer (stage 3) is written in **TypeScript**.
+
 ## Web architecture: options considered
 | | Pros | Cons |
 | --- | --- | --- |
