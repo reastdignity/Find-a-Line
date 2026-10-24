@@ -18,6 +18,23 @@ Planned features and the decisions already made for them. Nothing here is implem
 | Web application | FastAPI + job queue + separate worker (option A below). |
 | Result viewer | A static viewer (JS/CSS + per-run JSON data) replaces the folium-generated `map.html` in stage 3. |
 
+## Order
+Chosen to keep the cost and the risk of errors low: a safety net first, foundations before what builds on them, nothing built twice.
+
+1. **Safety net**: a script that runs the locations of docs/regression-tests.md and compares the numbers, plus a quick test on a small fixture raster without network. `pyproject.toml` + `uv.lock` replace `requirements.txt`.
+2. **Cache layout and index** (without the update commands): new paths, `index.sqlite`, `FINDALINE_DATA`, `work/<job-id>/`, editions recorded in runs, OSM themes from Overpass. Moving the folders by hand is cheapest now, while there are few saved maps; the download code changes once, before large areas download ten times more tiles.
+3. **Stage 0** (refactoring): results must stay identical to the line, so no regression number may change. Kept apart from behaviour changes, so that any difference is a bug.
+4. **Stage 1, minimal**: repeatable `--point` and `lines.js`. The "Other runs" panel is not built in the Jinja templates; it comes with the stage 3 viewer, which replaces the folium map anyway.
+5. **Profiling, then stage 2**: measure where the time goes (downloading, gap/water filling, profiles, map) first. Then areas: GeoJSON file first, then `coast` and `cliffs` (they use the OSM themes from step 2), tiling and resuming last, with the tests ready (a polygon equal to the circle, a tiled area equal to one grid).
+6. **Cache updates**: `cache status/update`, the `conditional` and `ttl` policies, `sheet-index` for geoportal.gov.pl (first check what the GUGiK sheet index provides), `findaline osm download/update`. Independent of the rest; can wait until the services actually publish new data.
+7. **Stage 3** (local web application) with the TypeScript viewer, the "Other runs" panel and polygon drawing. The viewer's grouping and sag must match Python (checked with Node, as `Sag` is today). Docker and CI on three platforms come with it.
+8. **Stage 4** (public website): last, after the licences (FABDEM non-commercial, Malta) are checked and Overpass/Nominatim have own instances or caching.
+
+Rules for every step:
+- A commit is either a refactoring or a behaviour change, never both; only then do the regression tests tell something.
+- No new features in the Jinja templates of `mapping.py` that stage 3 moves to the viewer; bug fixes only.
+- The highest risk is in step 5 (tile borders, duplicate lines) and step 7 (viewer matching Python); step 1 must be done before them.
+
 ## Stage 0: refactoring
 - `findaline.main(args)` becomes a library function `run_search(params, on_progress)`. One parameter schema (pydantic) is shared by the CLI, the API and the browser form, with types, defaults, limits and help texts in one place. argparse is generated from it.
 - Area abstraction: `Circle(center, radius)` and `Polygon(geometry)`, both giving a boolean mask on the grid. Everything that now uses `center_row`, `center_col` and `radius_px` (anchor search, plots, orthophoto cache, run metadata) uses the mask instead.
@@ -26,8 +43,8 @@ Planned features and the decisions already made for them. Nothing here is implem
 ## Stage 1: several points, overlaying runs
 - `--point` may be given many times; the runs are computed one after another with the same parameters. `--lat/--lon`, `--northing/--easting` stay as the single-point form.
 - Every run also writes `lines.js` (`window.FINDALINE_LINES[...] = {...}`), so a map opened from disk can load other runs with a `<script>` tag. It holds the spot representatives with their popup data, without profiles.
-- Map panel "Other runs": a checkbox per saved run (nearby ones first) adds its lines and its search area, drawn in the run's own colour. Clicking such a line shows its popup and a link to open it in its own map (with the profile).
-- Tests: R1 and R13 unchanged; two points within one map in headless Edge.
+- Map panel "Other runs" (built in the stage 3 viewer, see Order): a checkbox per saved run (nearby ones first) adds its lines and its search area, drawn in the run's own colour. Clicking such a line shows its popup and a link to open it in its own map (with the profile).
+- Tests: R1 and R13 unchanged; two points computed in one call, each with its own run and `lines.js`.
 
 ## Stage 2: irregular areas
 **Engine**
