@@ -22,9 +22,9 @@ Planned features and the decisions already made for them. Nothing here is implem
 Chosen to keep the cost and the risk of errors low: a safety net first, foundations before what builds on them, nothing built twice.
 
 1. **Safety net**: a script that runs the locations of docs/regression-tests.md and compares the numbers, plus a quick test on a small fixture raster without network. `pyproject.toml` + `uv.lock` replace `requirements.txt`.
-2. **Cache layout and index** (without the update commands): new paths, `index.sqlite`, `FINDALINE_DATA`, `work/<job-id>/`, editions recorded in runs, OSM themes from Overpass. Moving the folders by hand is cheapest now, while there are few saved maps; the download code changes once, before large areas download ten times more tiles.
+2. **Cache layout and index** (without the update commands; first the geoportal.gov.pl height system, see "To check", so the Polish tiles move only once): new paths, `index.sqlite`, `FINDALINE_DATA`, `work/<job-id>/`, editions recorded in runs, OSM themes from Overpass. Moving the folders by hand is cheapest now, while there are few saved maps; the download code changes once, before large areas download ten times more tiles.
 3. **Stage 0** (refactoring): results must stay identical to the line, so no regression number may change. Kept apart from behaviour changes, so that any difference is a bug.
-4. **Stage 1, minimal**: repeatable `--point` and `lines.js`. The "Other runs" panel is not built in the Jinja templates; it comes with the stage 3 viewer, which replaces the folium map anyway.
+4. **Stage 1, minimal**: repeatable `--point` only. The "Other runs" panel and `lines.js` are not built for the folium map; they come with the stage 3 viewer and its per-run data format.
 5. **Profiling, then stage 2**: measure where the time goes (downloading, gap/water filling, profiles, map) first. Then areas: GeoJSON file first, then `coast` and `cliffs` (they use the OSM themes from step 2), tiling and resuming last, with the tests ready (a polygon equal to the circle, a tiled area equal to one grid).
 6. **Cache updates**: `cache status/update`, the `conditional` and `ttl` policies, `sheet-index` for geoportal.gov.pl (first check what the GUGiK sheet index provides), `findaline osm download/update`. Independent of the rest; can wait until the services actually publish new data.
 7. **Stage 3** (local web application) with the TypeScript viewer, the "Other runs" panel and polygon drawing. The viewer's grouping and sag must match Python (checked with Node, as `Sag` is today). Docker and CI on three platforms come with it.
@@ -39,12 +39,14 @@ Rules for every step:
 - `findaline.main(args)` becomes a library function `run_search(params, on_progress)`. One parameter schema (pydantic) is shared by the CLI, the API and the browser form, with types, defaults, limits and help texts in one place. argparse is generated from it.
 - Area abstraction: `Circle(center, radius)` and `Polygon(geometry)`, both giving a boolean mask on the grid. Everything that now uses `center_row`, `center_col` and `radius_px` (anchor search, plots, orthophoto cache, run metadata) uses the mask instead.
 - `progress.py` reports to a callback as well as to tqdm, so the server can forward progress.
+- `run_search` is split into a download part (all tiles of the area into the cache) and a compute part, so the worker can download the data of the next job while the current one computes (stage 3).
+- `--data-dir` (or `FINDALINE_DATA`) replaces `--cache-dir` and `--runs-dir`: one folder holding `cache/`, `runs/` and `work/`.
 
 ## Stage 1: several points, overlaying runs
 - `--point` may be given many times; the runs are computed one after another with the same parameters. `--lat/--lon`, `--northing/--easting` stay as the single-point form.
-- Every run also writes `lines.js` (`window.FINDALINE_LINES[...] = {...}`), so a map opened from disk can load other runs with a `<script>` tag. It holds the spot representatives with their popup data, without profiles.
-- Map panel "Other runs" (built in the stage 3 viewer, see Order): a checkbox per saved run (nearby ones first) adds its lines and its search area, drawn in the run's own colour. Clicking such a line shows its popup and a link to open it in its own map (with the profile).
-- Tests: R1 and R13 unchanged; two points computed in one call, each with its own run and `lines.js`.
+- Built in the stage 3 viewer (see Order): every run also writes `lines.js` (`window.FINDALINE_LINES[...] = {...}`), so a map opened from disk can load other runs with a `<script>` tag. It holds the spot representatives with their popup data, without profiles.
+- Map panel "Other runs" (also in the stage 3 viewer): a checkbox per saved run (nearby ones first) adds its lines and its search area, drawn in the run's own colour. Clicking such a line shows its popup and a link to open it in its own map (with the profile).
+- Tests: R1 and R13 unchanged; two points computed in one call, each with its own run.
 
 ## Stage 2: irregular areas
 **Engine**
@@ -52,10 +54,11 @@ Rules for every step:
 - Tiles: squares of about 2 km with an overlap equal to `--max-length`. A line belongs to the tile that holds its first anchor, so there are no duplicates. Each finished tile is saved in the run folder (`tiles/<i>.npz`), and a restarted run skips those.
 - Before starting, the script shows the area (km²), the number of tiles, the download size and an estimated time, and asks for confirmation.
 - Rough scale: the coast of Malta and Gozo is about 190 km, so a 100 m band is 20–40 km² at 1 m. With the numba search the line search takes minutes; downloading the data dominates.
+- Orthophoto cache: the overview (up to zoom 16) covers the whole area, the detail strip (up to zoom 21) only the N best groups in the `--group-by` order (a parameter, about 50); the other groups load the orthophoto online.
 
 **Area sources (`--area ...`)**
-- `coast --buffer 100`: land within the given distance of the OSM coastline (`coast.py`, world water polygons file), limited to a country/island or a bounding box.
-- `cliffs --buffer 100`: OSM `natural=cliff` (optionally `climbing=crag`) from Overpass, buffered.
+- `coast --buffer 100`: land within the given distance of the OSM coastline (world water polygons file, else the `coastline` OSM theme), limited to a country/island or a bounding box.
+- `cliffs --buffer 100`: OSM `natural=cliff` (optionally `climbing=crag`) from the OSM themes of the cache, buffered.
 - `file.geojson|kml|gpx`: polygons as they are; points and lines buffered by `--buffer`.
 - `osm:"Gozo"`: polygon of a named object from Nominatim (`polygon_geojson=1`).
 - Polygons drawn on the map arrive as GeoJSON (stage 3, or exported to a file before then).
@@ -66,7 +69,7 @@ Rules for every step:
 - `findaline_web.py` (plus `start.bat`) starts FastAPI on `127.0.0.1` and opens the browser. Locally, the API, the queue (SQLite) and the worker run in one process tree.
 - Pages: map for clicking points and drawing polygons (Leaflet-Geoman); parameter form generated from the schema; live Download/Compute progress (Server-Sent Events); list of runs; result viewer.
 - Static viewer: one JS/CSS bundle shared by all runs. Data per run comes as JSON (lines, groups, profiles), plus `lines.js` for `file://`. Grouping and the `Sag` port move from the Jinja templates in `mapping.py` into this bundle, and stay in sync with Python as today.
-- One job runs at a time (the worker shares `cache/work`); the others wait in the queue and can be cancelled.
+- One job computes at a time (it uses all cores and much RAM); the next job may already download its data meanwhile. The others wait in the queue and can be cancelled. Each job has its own `work/<job-id>/`; concurrent downloads need WAL mode in `index.sqlite` and a lock so the same tile is not fetched twice.
 
 ## Stage 4: public website (later)
 - Docker Compose: reverse proxy with TLS (Caddy), API, worker(s), Postgres, Redis, object storage for results.
@@ -78,9 +81,9 @@ The top level of `cache/` stays one folder per country or per global dataset, so
 **Decisions**
 | Topic | Decision |
 | --- | --- |
-| Location | `cache/`, `runs/` and `work/` stay in the repository folder; `FINDALINE_DATA` moves all three together (maps reach cached orthophoto tiles by a relative path from `runs/`). |
+| Location | `cache/`, `runs/` and `work/` stay in the repository folder; `--data-dir` / `FINDALINE_DATA` moves all three together (maps reach cached orthophoto tiles by a relative path from `runs/`). |
 | Path | `<country or global dataset>/<dataset>/<edition>/<tiling>/<tile>`. |
-| Edition | Versioned releases use their version (`2018`, `2023_1`, `v1-2`): content never changes, a new release goes into a new folder. Services that always serve the current state (geoportal.gov.pl, IGN, WMS orthophotos) use `live`: an update overwrites the tile, its dates are kept in the index. |
+| Edition | Versioned releases use their version (`2018`, `2021`, `v1-2`): content never changes, a new release goes into a new folder. Services that always serve the current state (geoportal.gov.pl, IGN, WMS orthophotos) use `live`: an update overwrites the tile, its dates are kept in the index. |
 | Tiling | CRS, resolution, tile size and format (e.g. `epsg2180-1m-2000px-tif`); a format change matters because IGN GeoTIFFs are whole metres and ASCII grids keep centimetres. Corrections applied when tiles are placed on the grid (`MALTA_2012_SHIFT`) are not part of it. |
 | Metadata | `index.sqlite` in every top-level folder: status (`ok`, `missing`, `error`), fetched/checked/last-used times, ETag, Last-Modified, sha256, date of the source data, processing version. Replaces the `.missing` files. URLs are stored without secrets (no OpenTopography key). A row without a file means missing; a file without a row is adopted. |
 | Updates | Never during a search. `--update stale|all` or `findaline cache update [folder] [--point/--bbox]`; `findaline cache status` lists folders with size, last use and stale tiles. Missing tiles are re-checked by `update` like any other (after 90 days). Checks never stop a search: offline or on errors the cached data is used with a warning. |
@@ -94,7 +97,7 @@ cache/
   poland/        index.sqlite, nmt/live/..., nmpt/live/..., ortho/live/wm256/{z}/{x}/{y}.jpg, osm-extract/
   malta/         index.sqlite, dtm/2018/..., dtm/2012/..., dsm/..., ortho/2018/...
   spain/         index.sqlite, mdt05/live/epsg25830-.../, mdt05/live/epsg4083-.../, mds05/live/..., ortho/live/...
-  copernicus30/  index.sqlite, 2023_1/dem/, 2023_1/wbm/
+  copernicus30/  index.sqlite, 2021/dem/, 2021/wbm/       # the AWS bucket serves the 2021 release (since 2022-05-09)
   fabdem/        index.sqlite, v1-2/
   nasadem/       index.sqlite, v1/
   osm/           index.sqlite, water-polygons/<date>/, themes/<theme>/<tile>.fgb, nominatim.sqlite
@@ -107,10 +110,12 @@ work/<job-id>/                             # per job, deleted afterwards
 | --- | --- | --- |
 | `static` | Malta 2012/2018, FABDEM, Copernicus, NASADEM (OpenTopography allows 50 calls/day) | never; a new release is a code change |
 | `conditional` | world water polygons, S3/HTTP files | `If-None-Match` / `If-Modified-Since` |
-| `sheet-index` | geoportal.gov.pl NMT/NMPT/orthophoto, possibly IGN | sheet index dates for the tile's bbox (attributes to be checked) |
+| `sheet-index` | geoportal.gov.pl NMT/NMPT/orthophoto | the sheet index WFS (below): the list of sheets under the tile changed |
 | `ttl` | WMS without dates, Overpass tiles, `missing` | age of the last check |
 
 When a server gives no dates, the tile is downloaded again and only its check time changes if the sha256 is the same.
+
+**geoportal.gov.pl sheet index** (checked 2026-10-24): WFS services `PZGIK/NumerycznyModelTerenu{KRON86,EVRF2007}/WFS/Skorowidze`, `PZGIK/NumerycznyModelPokryciaTerenu{KRON86,EVRF2007}/WFS/Skorowidze` and `PZGIK/ORTO/WFS/Skorowidze` have one layer per year (`gugik:SkorowidzNMT2024`, `SkorowidzNMPT2026`, `SkorowidzOrtofomapy2025`...). A sheet has `godlo`, `akt_rok` (year only), `nr_zglosz`, `char_przestrz` (1 m, 5 m...), `uklad_h`, `zrodlo_danych` and `url_do_pobrania`. The index stores per tile the sheets under it (`godlo`, `akt_rok`, `nr_zglosz`); an update asks only the year layers from the newest stored year on (a new year appears as a new layer in GetCapabilities) and marks the tile stale when the list changes. The KRON86 indexes end in 2019; newer surveys are only in the EVRF2007 ones (see "To check").
 
 **Moving to it**: the existing folders are moved by hand once (no migration code), `cache/osm/coastline` is deleted, saved maps get the new orthophoto paths. README, regression-tests.md (`--update` instead of `--refresh`) and setup-for-regular-folk.md are updated.
 
@@ -119,7 +124,7 @@ The goal is Windows, Linux and macOS (Intel and Apple Silicon), installable by p
 
 - **One lock file, two ways to run it.** `pyproject.toml` + `uv.lock` (uv) replace `requirements.txt`; both ways below install exactly the same versions.
   - **Users, R&D, Windows:** install uv with one command, then double-click `start.bat` / `start.command` (macOS) / `start.sh` (Linux). uv downloads the right Python by itself, so there is no system Python, PATH, venv or PEP 668 trouble (Debian 12 ships Python 3.11, the project needs 3.12+). setup-for-regular-folk.md shrinks to two steps.
-  - **Docker (maintainer, server):** multi-stage `Dockerfile`. The build stage uses the official uv image and `uv sync --frozen`; the runtime stage is slim, has no uv and runs as non-root. `docker compose up` runs the local version (one container, SQLite); stage 4 adds Postgres/Redis to the same image. Keep `cache/` in a Docker volume, not a bind-mounted Windows folder (memmap is much slower there), and give Docker Desktop enough RAM and cores.
+  - **Docker (maintainer, server):** multi-stage `Dockerfile`. The build stage uses the official uv image and `uv sync --frozen`; the runtime stage is slim, has no uv and runs as non-root. `docker compose up` runs the local version (one container, SQLite); stage 4 adds Postgres/Redis to the same image. Keep the data folder (`cache/`, `runs/`, `work/`) in a Docker volume, not a bind-mounted Windows folder (memmap is much slower there), and give Docker Desktop enough RAM and cores.
 - **Platform rules for the code:**
   - The worker is a separate process and uses the `spawn` start method on every OS, so Linux behaves like Windows/macOS. (Python 3.14 changes the Linux default to `forkserver`.)
   - Each job gets its own work folder, and memmapped files are closed before they are deleted: Windows cannot delete or overwrite an open file.
@@ -137,7 +142,7 @@ Python stays. It has the best geospatial stack (GDAL/rasterio, pyproj, shapely, 
 - **TypeScript/Node:** no usable GDAL or numeric stack at this scale.
 
 Speeding up:
-- Done (2026-10-24): the pair search is in numba (`linesearch.py`): free directions per anchor, bucketed pairs, early-exit line check. Same lines as before, step 3 is about 150–750× faster (R4: 201 s on 23 processes → 0.3 s; R5 with the sag model: 283 s → 2 s).
+- Done (2026-10-24): the pair search is in numba (`linesearch.py`): free directions per anchor, bucketed pairs, early-exit line check. Same lines as before, the pair search is about 150–750× faster (R4: 201 s on 23 processes → 0.3 s; R5 with the sag model: 283 s → 2 s).
 - Now the time goes to downloading, gap/water filling, profiles and the map. Profile these before large areas.
 - If ever needed: a **Rust extension (PyO3/maturin)**; the same code could be compiled to WASM for the viewer, ending the duplicated `Sag`/`groupLines` code in Python and JS.
 
@@ -154,7 +159,7 @@ The static viewer (stage 3) is written in **TypeScript**.
 ## Security
 These apply from stage 3 on, the local version included.
 - **Abuse of computing power is the main risk.** Every request goes through `estimate_search` with limits on area, pairs, minimum resolution and time. Jobs have a timeout and can be killed; the queue has per-user limits; the public version adds rate limiting.
-- **No file paths over the web.** `--elevation-file`, `--surface-file`, `--cache-dir` and `--runs-dir` are CLI only. Results are addressed by UUID, with no directory listing.
+- **No file paths over the web.** `--elevation-file`, `--surface-file` and `--data-dir` are CLI only. Results are addressed by UUID, with no directory listing.
 - **No user-supplied URLs.** The server talks to a fixed list of services only (SSRF).
 - **Uploads**: size limit, vertex limit, KML/GPX parsed with `defusedxml` (XXE).
 - **XSS / CSP**: names from Nominatim and user input are escaped. The static viewer allows a strict Content-Security-Policy without inline scripts.
@@ -163,10 +168,16 @@ These apply from stage 3 on, the local version included.
 - **Public deployment**: HTTPS only, security headers, non-root read-only containers, pinned dependencies checked with `pip-audit`, audit log.
 - **No shell anywhere**: the worker calls `run_search()` directly.
 
-## To check before going public
-- **Data licences:**
-  - FABDEM is CC BY-NC-SA (non-commercial only).
-  - Malta Planning Authority LiDAR terms need checking.
-  - IGN is CC BY 4.0, GUGiK data are open, OSM is ODbL (attribution).
-  - Esri imagery tiles have their own terms.
+## To check
+- **geoportal.gov.pl height system** (found 2026-10-24): the sources use the KRON86 coverages (`DTM_PL-KRON86-NH_TIFF`, `DSM_PL-KRON86-NH`), whose sheet indexes end in 2019. The WCS also has `DTM_PL-EVRF2007-NH` (ASCII grid only) and `DSM_PL-EVRF2007-NH`. At Żabi Koń, where the EVRF2007 index has 2024 sheets, the two NMT coverages differ by 0.19 m in the median (the datum offset) but by 0.05–0.33 m between the 5th and 95th percentile and up to 1.3 m locally: not one survey converted, so the KRON86 mosaic probably does not get new surveys. Before step 2: compare more places, then switch to EVRF2007 and re-baseline the Polish regression tests.
+
+**Before going public**
+- **Data licences** (checked 2026-10-24):
+  - FABDEM: CC BY-NC-SA 4.0 (non-commercial only; stated for V1-0, the V1-2 record at data.bris.ac.uk could not be read).
+  - Malta 2018: the INSPIRE records say no conditions on access and use, and the data portal lists it as a High Value Dataset (Regulation 2023/138, which requires CC BY 4.0 or more permissive). Malta 2012: the MSDI records were reported as CC BY-NC-ND 4.0, the INSPIRE ones as no conditions; unresolved.
+  - IGN: CC BY 4.0 (Orden FOM/2807/2015), attribution with product, date and "CC BY 4.0".
+  - GUGiK: free for any use; the source must be stated (geoportal terms § 3.2).
+  - OSM: ODbL, attribution.
+  - Esri World Imagery: Esri Master License Agreement; the layer is not meant for offline tile export (there is a separate "for Export" layer), so it stays online only.
 - **Public services:** the public Nominatim and Overpass instances forbid heavy use. A public site needs caching or its own instances.
+- **Accounts** (stage 4): a decision, not a check; to be made when stage 4 starts.
