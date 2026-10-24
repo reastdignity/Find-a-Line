@@ -13,7 +13,7 @@ Finds possible highlines in elevation data: anchors on steep pixels, every pair 
 | File | What it does |
 | --- | --- |
 | `findaline.py` | CLI and the pipeline (steps 1-5) |
-| `sources.py` | Data sources (`SOURCES`), tiled download + cache, mosaics, water and gap filling |
+| `sources.py` | Data sources (`SOURCES`), tiled download + cache (WCS tiles, 1° tiles, geoportal sheets), mosaics, water and gap filling |
 | `coast.py` | Sea mask: OSM coastline (Overpass or the world file) or the Copernicus water mask |
 | `grid.py` | Working grid (metric CRS: the source's, or the UTM zone of the centre) |
 | `helpers.py` | Anchors, line evaluation (DDA), line profiles |
@@ -33,6 +33,7 @@ Finds possible highlines in elevation data: anchors on steep pixels, every pair 
 - **numba** compiles `linesearch.py` on the first run (a few seconds, cached in `__pycache__`). Inside `@njit` code only numpy/math and module constants work; keep the float operations in `_line_ok` in the same order as `max_safe_elevation`.
 - **Jinja templates** in `mapping.py`: never write `{#` in JS; use `tojavascript` (not `tojson`) for options that contain `JsCode`; inside the Python string, JS escapes need double backslashes.
 - **Pipes and heredocs**: piping the script's output into `head` kills it before the map is saved. Complex multi-line edits are safer as a Python script written to the scratchpad than as a bash heredoc.
+- **geoportal.gov.pl data comes from sheet files**, not WCS (`SheetTiles`): the EVRF2007 WCS takes 30–50 s per ASCII tile, its own downsampling leaves holes at coarse resolutions (Tatras at 5 m), its GeoTIFF output is an 8-bit picture, and the KRON86 coverages stop at 2019. Sheet files have pixel centres on whole metres (`xllcenter`); compare them with anything else only after aligning the half pixel.
 - **WCS services differ**: axis labels (`x/y` vs `E/N`), multipart responses (coverage part may be `image/*` or `application/*`), formats (some GeoTIFFs are whole metres; ASCII grids keep centimetres), server limits (~2000×2000 px), interpolation support.
 - **Check georeferencing of every new source** against Copernicus DEM (shift search, see regression doc). Malta 2012 is off by (-56 m E, -196 m N), corrected by `MALTA_2012_SHIFT`.
 - **Water/gap filling order**: sea zone first, then gaps on land outside it, then water. Gap offsets are matched on gentle slopes only and limited to ±3 m from the overall offset; no anchors at gap seams. Cliffs can be vertical: high land next to water is normal.

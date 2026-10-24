@@ -8,7 +8,9 @@ between sources never downloads again what is already there.
 
 Kinds of layers:
 - WcsTiles: square tiles from an OGC WCS 2.0 service on a fixed grid in the
-  service's coordinate system (geoportal.gov.pl, Malta).
+  service's coordinate system (Malta, IGN Spain).
+- SheetTiles: map sheets found through a WFS sheet index and downloaded as files
+  (geoportal.gov.pl).
 - DegreeTiles: 1°×1° GeoTIFF tiles in WGS84 (Copernicus DEM, FABDEM) and
   OpenTopography's global DEM API (NASADEM).
 - FileLayer: a local raster file (GeoTIFF, ASC...), e.g. NASADEM from OpenTopography.
@@ -17,10 +19,13 @@ To add a national source, add a Source with WcsTiles layers to SOURCES (see the
 Malta entries) and its country code to `countries`; see README, "Data sources".
 """
 
+import glob
+import io
 import math
 import os
 import re
 import time
+import zipfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from typing import Callable, Dict, List, Optional, Tuple
@@ -288,6 +293,165 @@ class OpenTopographyTiles(DegreeTiles):
                 f"&east={lon + 1}&outputFormat=GTiff&API_Key={self.api_key}")
 
 
+@dataclass(frozen=True)
+class Sheet:
+    """One map sheet of a sheet index (see SheetTiles)."""
+    year: int
+    name: str   # file name without extension, e.g. 77532_1356765_M-34-64-D-a-1-1
+    godlo: str
+    url: str
+    crs: str
+    res: float
+
+
+# Coordinate systems named in the uklad_xy attribute of the geoportal.gov.pl sheet indexes
+SHEET_CRS = {"PL-1992": "EPSG:2180", "PL-2000:S5": "EPSG:2176", "PL-2000:S6": "EPSG:2177",
+             "PL-2000:S7": "EPSG:2178", "PL-2000:S8": "EPSG:2179"}
+SHEET_FORMATS = ("ARC/INFO ASCII GRID", "ASCII XYZ GRID")
+
+
+class SheetTiles(Layer):
+    """Map sheets listed in a WFS sheet index, downloaded as files (geoportal.gov.pl).
+
+    The index has one layer per year (`<prefix><year>`); every sheet links to a file
+    (ASCII grid or XYZ, sometimes zipped). For every sheet name (godło) only the newest
+    sheet is used, and the sheets are ordered newest first, so where sheets of
+    different series overlap the newest data wins in the mosaic. Each sheet is cached
+    as a GeoTIFF named after its file. Without the index (offline) the cached sheets
+    over the area are used.
+    """
+
+    def __init__(self, description: str, index_url: str, prefix: str, cache_name: str,
+                 native_res: float, min_res: float = 0.5, bytes_per_tile: float = 30e6):
+        """Sheets with a resolution between min_res and native_res are used (finer ones
+        are huge as text: a 0.15 m sheet is about 2 GB)."""
+        self.description, self.index_url, self.prefix = description, index_url, prefix
+        self.cache_name, self.native_res, self.min_res, self._bytes = cache_name, native_res, min_res, bytes_per_tile
+        self._years: Optional[List[str]] = None
+        self._listed: Dict[tuple, list] = {}
+
+    def _wfs(self, **params) -> str:
+        response = requests.get(self.index_url, timeout=300, headers=HEADERS,
+                                params={"SERVICE": "WFS", "VERSION": "2.0.0", **params})
+        response.raise_for_status()
+        return response.text
+
+    def _year_layers(self) -> List[str]:
+        if self._years is None:
+            names = re.findall(rf"<Name>(gugik:{self.prefix}\d{{4}})</Name>", self._wfs(REQUEST="GetCapabilities"))
+            self._years = sorted(set(names))
+        return self._years
+
+    def _query(self, grid: Grid) -> list:
+        west, south, east, north = transform_bounds(grid.crs, "EPSG:4326", *grid.bounds)
+        newest: Dict[str, Sheet] = {}
+        for layer in self._year_layers():
+            text = self._wfs(REQUEST="GetFeature", TYPENAMES=layer, COUNT=5000,
+                             PROPERTYNAME="godlo,akt_rok,char_przestrz,format,uklad_xy,url_do_pobrania",
+                             BBOX=f"{south},{west},{north},{east},urn:ogc:def:crs:EPSG::4326")
+            for member in text.split("<wfs:member>")[1:]:
+                f = dict(re.findall(r"<gugik:(\w+)>([^<]*)</gugik:\1>", member))
+                res = re.match(r"[\d.]+", f.get("char_przestrz", ""))
+                url = f.get("url_do_pobrania", "")
+                if not (res and url and f.get("format") in SHEET_FORMATS and f.get("uklad_xy") in SHEET_CRS):
+                    continue
+                if not self.min_res - 1e-6 <= float(res.group()) <= self.native_res + 1e-6:
+                    continue
+                sheet = Sheet(int(f["akt_rok"]), re.sub(r"(\.[a-z]+)+$", "", url.rsplit("/", 1)[-1], flags=re.I),
+                              f.get("godlo", ""), url, SHEET_CRS[f["uklad_xy"]], float(res.group()))
+                old = newest.get(sheet.godlo)
+                if old is None or _sheet_order(sheet) > _sheet_order(old):
+                    newest[sheet.godlo] = sheet
+        return sorted(newest.values(), key=_sheet_order, reverse=True)
+
+    def _cached(self, grid: Grid, cache_dir: str) -> list:
+        """Cached sheets over the grid, newest first (when the index cannot be reached)."""
+        sheets = []
+        for path in glob.glob(os.path.join(cache_dir, self.cache_name, "*.tif")):
+            with rio.open(path) as src:
+                left, bottom, right, top = transform_bounds(src.crs, grid.crs, *src.bounds)
+            g_left, g_bottom, g_right, g_top = grid.bounds
+            if left < g_right and right > g_left and bottom < g_top and top > g_bottom:
+                year, name = os.path.basename(path)[:-4].split("_", 1)
+                sheets.append(Sheet(int(year), name, "", "", "", self.native_res))
+        return sorted(sheets, key=_sheet_order, reverse=True)
+
+    def tiles(self, grid: Grid) -> list:
+        key = (grid.crs, tuple(grid.bounds))
+        if key not in self._listed:
+            try:
+                self._listed[key] = self._query(grid)
+            except requests.RequestException as e:
+                print(f"{self.description}: sheet index not available ({type(e).__name__}); "
+                      "using the cached sheets")
+                self._listed[key] = None
+        return self._listed[key]
+
+    def missing(self, grid: Grid, cache_dir: str, refresh: bool) -> list:
+        if self.tiles(grid) is None:
+            return []
+        return super().missing(grid, cache_dir, refresh)
+
+    def estimate(self, grid: Grid, cache_dir: str, refresh: bool) -> Tuple[int, int, float]:
+        if self.tiles(grid) is None:
+            return len(self._cached(grid, cache_dir)), 0, 0.0
+        return super().estimate(grid, cache_dir, refresh)
+
+    def download(self, grid: Grid, cache_dir: str, refresh: bool, label: str):
+        if self.tiles(grid) is not None:
+            super().download(grid, cache_dir, refresh, label)
+
+    def files(self, grid: Grid, cache_dir: str) -> List[str]:
+        if self.tiles(grid) is None:
+            return [self.tile_path(cache_dir, s) for s in self._cached(grid, cache_dir)]
+        return super().files(grid, cache_dir)
+
+    def tile_path(self, cache_dir: str, tile) -> str:
+        return os.path.join(cache_dir, self.cache_name, f"{tile.year}_{tile.name}.tif")
+
+    def bytes_per_tile(self) -> float:
+        return self._bytes
+
+    def download_tile(self, tile, path: str) -> int:
+        try:
+            response = _get(tile.url, binary_types=("octet", "zip", "text", "image"))
+        except RuntimeError as e:
+            raise RuntimeError(f"Could not download {self.description} sheet {tile.godlo}: {e}")
+        if response is None:
+            return 0
+        name, data = tile.url.lower(), response.content
+        while name.endswith(".zip"):  # sometimes zipped twice
+            with zipfile.ZipFile(io.BytesIO(data)) as archive:
+                name = next(n for n in archive.namelist() if n.lower().endswith((".asc", ".xyz", ".txt", ".zip")))
+                data = archive.read(name)
+                name = name.lower()
+        if name.endswith(".asc"):
+            with MemoryFile(data, ext=".asc") as memfile, memfile.open() as src:
+                band = src.read(1, masked=True).astype(np.float32).filled(np.nan)
+                transform = src.transform
+        else:
+            band, transform = _xyz_grid(data, tile.res)
+        _write_tile(path, _clean(band), tile.crs, transform)
+        return len(response.content)
+
+
+def _sheet_order(sheet: Sheet) -> tuple:
+    """Newer year first; within a year, the later publication (higher numbers in the file name)."""
+    return (sheet.year,) + tuple(int(n) for n in re.findall(r"\d+", sheet.name)[:2])
+
+
+def _xyz_grid(data: bytes, res: float) -> Tuple[np.ndarray, Affine]:
+    """A raster from "x y z" lines of a regular grid (cell centres)."""
+    xyz = np.loadtxt(io.BytesIO(data), dtype=np.float64, ndmin=2)  # ~30x faster than np.fromstring
+    x, y, z = xyz[:, 0], xyz[:, 1], xyz[:, 2]
+    left, top = x.min(), y.max()
+    cols = np.rint((x - left) / res).astype(np.int64)
+    rows = np.rint((top - y) / res).astype(np.int64)
+    band = np.full((rows.max() + 1, cols.max() + 1), np.nan, dtype=np.float32)
+    band[rows, cols] = z
+    return band, from_origin(left - res / 2, top + res / 2, res, res)
+
+
 class FileLayer(Layer):
     """A local raster file; nothing to download."""
 
@@ -332,6 +496,7 @@ class Source:
     note: str = ""                  # licence or quality note printed at the start
     fallback: Optional[str] = "europe"  # source that fills gaps in the data on land
     bbox: Optional[Tuple[float, float, float, float]] = None  # (south, north, west, east) for --source auto
+    grid_origin: float = 0.0        # pixel edges of the data in the working CRS (see grid.make_grid)
 
     def covers(self, lat: float, lon: float) -> bool:
         if self.bbox is None:
@@ -417,18 +582,17 @@ def _malta(year: int, note: str = "") -> Source:
 SOURCES: Dict[str, Source] = {s.id: s for s in [
     Source(
         id="geoportal", name="geoportal.gov.pl",
-        description="GUGiK (Poland): NMT 1 m and NMPT 0.5 m, newest surveys, PL-EVRF2007-NH",
-        # The PL-KRON86-NH coverages hold surveys up to 2019 only; the EVRF2007 ones exist
-        # only as ASCII grid. Tiles are fetched at native resolution and downsampled locally:
-        # the server's downsampling loses data at coarse resolutions (Tatras at 5 m) and is
-        # not faster, because generating the ASCII grid takes most of the time.
-        nmt=WcsTiles("NMT (digital terrain model)", f"{GEOPORTAL}/NMT/GRID1/WCS/DigitalTerrainModel",
-                     "DTM_PL-EVRF2007-NH", "EPSG:2180", "poland/nmt", native_res=1.0, tile_px=2000,
-                     fmt="image/x-aaigrid", fetch_res=1.0, zero_is_nodata=True, bytes_per_px=19),
-        nmpt=WcsTiles("NMPT (digital surface model: trees, buildings)", f"{GEOPORTAL}/NMPT/GRID1/WCS/DigitalSurfaceModel",
-                      "DSM_PL-EVRF2007-NH", "EPSG:2180", "poland/nmpt", native_res=0.5, tile_px=2000,
-                      fmt="image/x-aaigrid", fetch_res=0.5, zero_is_nodata=True, bytes_per_px=19),
-        countries=("pl",), crs="EPSG:2180", default_resolution=2,
+        description="GUGiK (Poland): NMT and NMPT sheets of 1 m or finer, newest survey, PL-EVRF2007-NH",
+        # Sheet files from opendata.geoportal.gov.pl, found through the EVRF2007 sheet
+        # indexes: about 2 s per sheet, while the WCS spends 30-50 s generating each ASCII
+        # tile, its downsampling loses data at coarse resolutions (Tatras at 5 m) and its
+        # PL-KRON86-NH coverages hold surveys up to 2019 only.
+        nmt=SheetTiles("NMT (digital terrain model)", f"{GEOPORTAL}/NumerycznyModelTerenuEVRF2007/WFS/Skorowidze",
+                       "SkorowidzNMT", "poland/nmt", native_res=1.0),
+        nmpt=SheetTiles("NMPT (digital surface model: trees, buildings)",
+                        f"{GEOPORTAL}/NumerycznyModelPokryciaTerenuEVRF2007/WFS/Skorowidze",
+                        "SkorowidzNMPT", "poland/nmpt", native_res=1.0),
+        countries=("pl",), crs="EPSG:2180", default_resolution=2, grid_origin=0.5,
         ortho=OrthoService("Orthophoto (geoportal.gov.pl)", f"{GEOPORTAL}/ORTO/WMS/HighResolution",
                            "Raster", "poland/ortho", "GUGiK")),
     _malta(2018, note="Malta 2018 heights are published in whole metres, which makes slopes and "

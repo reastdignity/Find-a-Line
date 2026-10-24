@@ -62,7 +62,7 @@ When the environment is active, the line in the window starts with `(venv)`. The
    On macOS use `python3` if `python` is not found.
 
 3. The script searches within 1 km of that point. You will see what it is doing, and two progress bars at the bottom of the window: **Download** for the data it fetches and **Compute** for the calculations, each with the time left.
-4. The first search in a new place downloads the elevation data (in Poland several hundred MB) and aerial photos around the lines it finds, so it can take 10–20 minutes. Searching the same area again is much faster, because everything downloaded is kept in the `cache` folder.
+4. The first search in a new place downloads the elevation data (in Poland map sheets of about 2.3 × 2.3 km and 20–40 MB each, about 150 MB for the default 1 km radius) and aerial photos around the lines it finds, so it can take 10–20 minutes. Searching the same area again is much faster, because everything downloaded is kept in the `cache` folder.
 5. If a search would take very long, the script tells you how long and asks `Continue? [y/N]`. Type `y` and press Enter to go on, or just Enter to stop.
 
 When it is done, the coordinates of the spots it found are printed (one line per spot; similar lines are grouped together), and a simple map opens in a separate window. Close that window to finish.

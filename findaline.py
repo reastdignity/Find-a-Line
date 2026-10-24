@@ -228,7 +228,7 @@ def main(args):
 
     crs = source.working_crs(center_lat, center_lon)
     x, y = Transformer.from_crs("EPSG:4326", crs, always_xy=True).transform(center_lon, center_lat)
-    grid = gd.make_grid(x, y, args.radius, args.resolution, crs)
+    grid = gd.make_grid(x, y, args.radius, args.resolution, crs, source.grid_origin)
     rigging = sg.Rigging(args.pretension, args.stretch, args.webbing_weight,
                          args.athlete_mass, args.fall_zone)
     layers = [source.nmt] + ([source.nmpt] if args.nmpt else [])
@@ -317,6 +317,15 @@ def main(args):
     surface = np.load(surface_path, mmap_mode="r") if surface_path else None
     water = np.load(water_path, mmap_mode="r") if water_path else None
     filled = np.load(filled_path, mmap_mode="r") if filled_path else None
+    if surface is not None:
+        rows, cols = np.ogrid[:grid.height, :grid.width]
+        circle = (rows - grid.center_row) ** 2 + (cols - grid.center_col) ** 2 <= grid.radius_px ** 2
+        land = circle & ~np.isnan(elevation)
+        no_surface = (np.isnan(surface) & land).sum() / max(land.sum(), 1)
+        if no_surface > 0.01:
+            print("\n" + "!" * 60 + f"\nWARNING: no surface model (trees, buildings) for {no_surface:.0%} of "
+                  "the search area.\nLines there are checked against the bare terrain only: trees and "
+                  "buildings under\nthem are not marked.\n" + "!" * 60 + "\n")
 
     # Step 2: Find raster pixels with significant slope for promising anchors
     print("\nStep 2: Finding significant slopes...")

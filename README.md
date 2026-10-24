@@ -5,7 +5,7 @@ Where a country publishes airborne LiDAR data, the tool uses it: a terrain model
 
 | Country | Data | Grid |
 | --- | --- | --- |
-| Poland | GUGiK NMT / NMPT ([geoportal.gov.pl](https://www.geoportal.gov.pl)) | 1 m (0.5 m for NMPT) |
+| Poland | GUGiK NMT / NMPT ([geoportal.gov.pl](https://www.geoportal.gov.pl)) | 1 m (NMPT 0.5–1 m) |
 | Malta | Planning Authority LiDAR 2018 (2012 on request) | 1 m |
 | Spain, incl. the Balearic and Canary Islands | IGN MDT05 / MDS05 (PNOA-LiDAR) | 5 m |
 
@@ -59,7 +59,7 @@ Anchors are taken at ground level, as with the formula. With the default values 
 ## Data sources
 | `--source` | Where | Terrain (DTM) | Surface (DSM, trees/buildings) | Orthophoto (cached) |
 | --- | --- | --- | --- | --- |
-| `geoportal` | Poland | GUGiK NMT 1 m, newest survey (mostly LiDAR) | GUGiK NMPT 0.5 m | geoportal.gov.pl |
+| `geoportal` | Poland | GUGiK NMT sheets, 1 m, newest survey | GUGiK NMPT sheets, 0.5–1 m (about 85% of Poland) | geoportal.gov.pl |
 | `malta` | Malta | MSDI DTM 2018, LiDAR 1 m (heights in whole metres) | MSDI DSM 2018, 1 m | MSDI 2018 |
 | `malta2012` | Malta | MSDI DTM 2012, centimetre heights, gaps filled from 2018 | MSDI DSM 2012 | MSDI 2018 |
 | `spain` | Spain (peninsula, Balearic Islands) | IGN MDT05, PNOA-LiDAR 5 m | IGN MDS05, 5 m | PNOA (IGN) |
@@ -69,7 +69,7 @@ Anchors are taken at ground level, as with the formula. With the default values 
 | `files` | your files | `--elevation-file` | `--surface-file` (optional) | – |
 
 - With the default `--source auto`, the country of the search centre is looked up in OpenStreetMap: Poland uses `geoportal`, Malta uses `malta` (2018), Spain uses `spain` (or `spain_canarias` on the Canary Islands), anywhere else uses `europe`. Giving `--elevation-file` selects `files`.
-- Every source has its own folder in `cache` (`cache/poland`, `cache/malta`, `cache/fabdem`, `cache/copernicus30`, `cache/nasadem`), so switching between sources (or back) never downloads again what is already there. National WCS data is cached in tiles of 2000 × 2000 pixels at native resolution (Poland: 2 km of NMT, 1 km of NMPT; Spain: 10 km), used for every working resolution; the 30 m models in 1°×1° tiles. Polish tiles are large to download (about 75 MB each, the service only offers ASCII grids), so the first search in a new place takes a few minutes.
+- Every source has its own folder in `cache` (`cache/poland`, `cache/malta`, `cache/fabdem`, `cache/copernicus30`, `cache/nasadem`), so switching between sources (or back) never downloads again what is already there. Polish data is cached per map sheet (1:5000, about 2.3 × 2.3 km, one GeoTIFF of about 9 MB each), Malta and Spain in WCS tiles of 2000 × 2000 pixels at native resolution (2 km and 10 km), the 30 m models in 1°×1° tiles; the same files serve every working resolution.
 - The default `--resolution` is 2 m for the LiDAR sources, 30 m for `europe` and `nasadem`, and the file's own resolution for `files`. The grouping distance follows it (twice the resolution, at least 20 m).
 - Esri World Imagery is available as an online background layer everywhere; it is not cached, because Esri's terms do not allow downloading tiles for offline use.
 - **NASADEM**: `--source nasadem` needs a free API key from [opentopography.org](https://portal.opentopography.org/myopentopo), given with `--opentopo-key` or in the `OPENTOPOGRAPHY_API_KEY` environment variable (step-by-step: [getting an API key](setup-for-regular-folk.md#getting-an-opentopography-api-key-optional)). Alternatively download a NASADEM GeoTIFF (or a slope raster) from the [OpenTopography portal](https://portal.opentopography.org/raster?opentopoID=OTSDEM.032021.4326.2), as in the original version of this tool, and use `--elevation-file` (and `--slope-file`).
@@ -266,7 +266,7 @@ And here is an example of one such location found using it.
 <img width="1404" height="356" alt="Screenshot 2025-11-03 at 4 14 58 PM" src="https://github.com/user-attachments/assets/e44f01cf-f3a1-4a7d-b629-f00bec73779e" />
 
 ## Data
-- **Poland**: terrain NMT (WCS `DigitalTerrainModel`) and trees/buildings NMPT (WCS `DigitalSurfaceModel`), both in height system PL-EVRF2007-NH, which holds the newest survey of each sheet (the PL-KRON86-NH coverages stop at 2019). Some newer sheets come from aerial photos instead of laser scanning. Both are downloaded at native resolution (1 m, 0.5 m) and averaged locally to the working resolution (the server's own downsampling loses data at coarse resolutions), so at coarse resolutions small objects such as single trees appear lower than they are. Source: Główny Urząd Geodezji i Kartografii, [geoportal.gov.pl](https://www.geoportal.gov.pl).
+- **Poland**: terrain NMT and trees/buildings NMPT as map sheet files, found through the sheet indexes (WFS `Skorowidze`) in height system PL-EVRF2007-NH and downloaded from opendata.geoportal.gov.pl (ASCII grid or zipped XYZ, PL-1992 or, in some cities, PL-2000). For every sheet the newest survey with a grid of 0.5–1 m is used. The NMT covers all of Poland; the NMPT about 85% of it, and the script warns when part of the search area has none (trees and buildings are not marked there). Some newer NMT sheets are labelled as made from aerial photos; in the sheets compared they held the values of the earlier laser scan. The WCS services are not used: they take 30–50 s per tile, their downsampling loses data at coarse resolutions, and the PL-KRON86-NH coverages stop at 2019. The data is averaged locally to the working resolution, so at coarse resolutions small objects such as single trees appear lower than they are. Source: Główny Urząd Geodezji i Kartografii, [geoportal.gov.pl](https://www.geoportal.gov.pl).
 - **Malta**: DTM and DSM from the Planning Authority's LiDAR surveys (ERDF156), [Malta Spatial Data Infrastructure](https://msdi.data.gov.mt/geonetwork/srv/api/records/2269ab80-81a5-4f30-b8ce-2b16292b345d), WCS at `malta.coverage.wetransform.eu`, UTM 33N. Downloaded at 1 m and averaged locally.
 - **Sea**: OpenStreetMap coastline (© OpenStreetMap contributors, ODbL) via Overpass or [osmdata.openstreetmap.de](https://osmdata.openstreetmap.de/data/water-polygons.html); Copernicus DEM water body mask.
 - **Europe-wide**: FABDEM V1-2 (University of Bristol / Fathom; tiles from a public mirror on Hugging Face) and Copernicus DEM GLO-30 (ESA / Copernicus, AWS open data), reprojected to the UTM zone of the search centre.

@@ -48,12 +48,16 @@ class Grid:
         return x, y
 
 
-def make_grid(x: float, y: float, radius: float, res: float, crs: str) -> Grid:
-    """Build a grid covering a circle, with edges snapped to multiples of res."""
-    left = math.floor((x - radius) / res) * res
-    right = math.ceil((x + radius) / res) * res
-    bottom = math.floor((y - radius) / res) * res
-    top = math.ceil((y + radius) / res) * res
+def make_grid(x: float, y: float, radius: float, res: float, crs: str, origin: float = 0.0) -> Grid:
+    """Build a grid covering a circle, with edges snapped to origin + multiples of res.
+
+    origin matches the pixel edges of the source data (0.5 when its pixel centres are
+    on whole metres), so source pixels are copied or averaged whole, not interpolated.
+    """
+    left = math.floor((x - radius - origin) / res) * res + origin
+    right = math.ceil((x + radius - origin) / res) * res + origin
+    bottom = math.floor((y - radius - origin) / res) * res + origin
+    top = math.ceil((y + radius - origin) / res) * res + origin
     width = int(round((right - left) / res))
     height = int(round((top - bottom) / res))
     return Grid(left=left, top=top, res=res, height=height, width=width,
