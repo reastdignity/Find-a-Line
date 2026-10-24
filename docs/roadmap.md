@@ -21,7 +21,7 @@ Planned features and the decisions already made for them. Nothing here is implem
 ## Order
 Chosen to keep the cost and the risk of errors low: a safety net first, foundations before what builds on them, nothing built twice.
 
-1. **Safety net**: a script that runs the locations of docs/regression-tests.md and compares the numbers, plus a quick test on a small fixture raster without network. `pyproject.toml` + `uv.lock` replace `requirements.txt`.
+1. **Safety net** (done 2026-10-25): `tests/regression.py` runs the searches of `tests/regression.json` and compares the numbers (all 13 in about 3 min; the table in docs/regression-tests.md is generated from the JSON); `pytest` runs the offline tests (synthetic canyon, Żabi Koń clip) in about 25 s. `pyproject.toml` + `uv.lock` replace `requirements.txt`; the regression set gives the same numbers with the locked, newer library versions (numpy 2.5, rasterio 1.5, shapely 2.2). The start scripts come with stage 3.
 2. **Cache layout and index** (without the update commands): new paths, `index.sqlite`, `FINDALINE_DATA`, `work/<job-id>/`, editions recorded in runs, OSM themes from Overpass. Moving the folders by hand is cheapest now, while there are few saved maps; the download code changes once, before large areas download ten times more tiles.
 3. **Stage 0** (refactoring): results must stay identical to the line, so no regression number may change. Kept apart from behaviour changes, so that any difference is a bug.
 4. **Stage 1, minimal**: repeatable `--point` only. The "Other runs" panel and `lines.js` are not built for the folium map; they come with the stage 3 viewer and its per-run data format.

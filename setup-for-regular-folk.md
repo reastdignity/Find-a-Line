@@ -9,17 +9,20 @@ This guide takes you from nothing to your first map of possible highlines. You d
 The tool works best in Poland and Malta, where it uses very detailed national elevation data (1 m). It also works anywhere else in Europe with less detailed data (30 m), which is good enough to find long lines only. It picks the right data by itself.
 
 ## 1. Install the tools (once)
+You need two tools: **Git** downloads the project, **uv** installs Python and everything the script needs (you don't install Python yourself).
+
 ### Windows
-1. Install Python from [python.org/downloads](https://www.python.org/downloads/). In the first window of the installer, tick **"Add python.exe to PATH"**, then click *Install Now*.
-2. Install Git from [git-scm.com/downloads/win](https://git-scm.com/downloads/win). The default options are fine.
-3. Open PowerShell: press the Windows key, type `powershell` and press Enter. A window with a blinking cursor opens; this is where you type the commands below (paste with right-click or Ctrl+V, then press Enter).
+1. Install Git from [git-scm.com/downloads/win](https://git-scm.com/downloads/win). The default options are fine.
+2. Open PowerShell: press the Windows key, type `powershell` and press Enter. A window with a blinking cursor opens; this is where you type the commands below (paste with right-click or Ctrl+V, then press Enter).
+3. Install uv:
+   `powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"`
+4. Close the PowerShell window and open a new one, so it finds uv.
 
 ### macOS
 1. Open the Terminal: press Command+Space, type `terminal` and press Enter.
-2. Install Homebrew (a tool that installs other tools):
-   `/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"`
-   It asks for your computer's password; nothing appears on the screen while you type it, that's normal. At the end it may print two or three commands under "Next steps"; copy and run them too.
-3. Install Git and Python: `brew install git python`
+2. Install Git: `xcode-select --install` and confirm the window that appears (if it says the tools are already installed, Git is there).
+3. Install uv: `curl -LsSf https://astral.sh/uv/install.sh | sh`
+4. Close the Terminal and open a new one, so it finds uv.
 
 ## 2. Download the project (once)
 In PowerShell (Windows) or the Terminal (macOS):
@@ -32,34 +35,21 @@ cd Find-a-Line
 This creates a `Find-a-Line` folder in your user folder (for example `C:\Users\YourName\Find-a-Line` or `/Users/YourName/Find-a-Line`) and moves into it.
 
 ## 3. Install what the script needs (once)
-Still in the same window, create a separate Python environment for the project and install the libraries into it.
+Still in the same window:
 
-**Windows (PowerShell):**
 ```
-python -m venv venv
-.\venv\Scripts\Activate.ps1
-pip install -r requirements.txt
-```
-If you get an error saying that running scripts is disabled, run `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned`, answer `Y`, and run `.\venv\Scripts\Activate.ps1` again.
-
-**macOS (Terminal):**
-```
-python3 -m venv venv
-source venv/bin/activate
-pip install -r requirements.txt
+uv sync
 ```
 
-When the environment is active, the line in the window starts with `(venv)`. The installation takes a few minutes.
+uv downloads the right Python version and the libraries into a `.venv` folder inside `Find-a-Line`, exactly the versions the project was tested with. This takes a few minutes.
 
 ## 4. Your first search
 1. Pick the centre of the area you want to search. The easiest way is Google Maps: right-click a spot and click the coordinates at the top of the menu to copy them (for example `50.15595, 19.75627`, which is the Żabi Koń rock in Dolina Kobylańska near Kraków).
 2. Start the search with those coordinates (latitude first, then longitude):
 
    ```
-   python findaline.py --lat 50.15595 --lon 19.75627
+   uv run findaline.py --lat 50.15595 --lon 19.75627
    ```
-
-   On macOS use `python3` if `python` is not found.
 
 3. The script searches within 1 km of that point. You will see what it is doing, and two progress bars at the bottom of the window: **Download** for the data it fetches and **Compute** for the calculations, each with the time left.
 4. The first search in a new place downloads the elevation data (in Poland map sheets of about 2.3 × 2.3 km and 20–40 MB each, about 150 MB for the default 1 km radius) and aerial photos around the lines it finds, so it can take 10–20 minutes. Searching the same area again is much faster, because everything downloaded is kept in the `cache` folder.
@@ -95,10 +85,10 @@ Add options to the command to change what is searched. Some useful ones:
 For example, only longer lines over cliffs, within 2 km:
 
 ```
-python findaline.py --lat 50.15595 --lon 19.75627 --radius 2000 --min-length 100 --slope-threshold 60
+uv run findaline.py --lat 50.15595 --lon 19.75627 --radius 2000 --min-length 100 --slope-threshold 60
 ```
 
-To see all options, run `python findaline.py --help`.
+To see all options, run `uv run findaline.py --help`.
 
 ## Outside Poland
 - **Malta** works the same way as Poland, with detailed data and aerial photos.
@@ -122,7 +112,7 @@ Only needed for `--source nasadem`.
 5. Search with NASADEM:
 
    ```
-   python findaline.py --lat 39.7217 --lon 21.6306 --source nasadem --min-length 100
+   uv run findaline.py --lat 39.7217 --lon 21.6306 --source nasadem --min-length 100
    ```
 
 The key allows a limited number of downloads per day. Each request downloads one tile of about 100 × 100 km, which is kept in the `cache` folder, so a few searches use only a few requests. Keep the key to yourself; anyone who has it can use your daily limit.
@@ -130,30 +120,21 @@ The key allows a limited number of downloads per day. Each request downloads one
 ## Next time
 Open PowerShell or the Terminal and run:
 
-**Windows:**
 ```
 cd Find-a-Line
-.\venv\Scripts\Activate.ps1
-python findaline.py --lat ... --lon ...
-```
-
-**macOS:**
-```
-cd Find-a-Line
-source venv/bin/activate
-python3 findaline.py --lat ... --lon ...
+uv run findaline.py --lat ... --lon ...
 ```
 
 ## Updating to a newer version
-With the environment active (as above):
-
 ```
+cd Find-a-Line
 git pull
-pip install -r requirements.txt
 ```
+
+The next `uv run` installs any new library versions by itself.
 
 ## If something goes wrong
-- **`python` is not recognised** (Windows): Python was installed without "Add python.exe to PATH". Run the installer again, choose *Modify* and tick *Add Python to environment variables*, then open a new PowerShell window.
+- **`uv` is not recognised / command not found:** close the window and open a new one after installing uv. If it still isn't found, run the install command from step 1 again.
 - **It takes too long:** use a smaller `--radius`, a higher `--slope-threshold`, or a coarser `--resolution 5`. You can stop the script at any time with Ctrl+C.
 - **"No lines found":** try a lower `--slope-threshold`, a larger `--radius` or other line lengths. Outside Poland and Malta the data is less detailed, so try longer lines, for example `--min-length 100`.
 - **Download errors:** the data servers are sometimes busy. Run the same command again; what was already downloaded is kept.

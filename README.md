@@ -110,19 +110,21 @@ Source(
 ## Getting Started
 New to the terminal? Follow the [step-by-step setup guide](setup-for-regular-folk.md) for macOS and Windows.
 
-Get the code and install the requirements (Python 3.12 or newer):
+Get the code and install the dependencies with [uv](https://docs.astral.sh/uv/) (it also installs Python 3.12 or newer if needed); `pyproject.toml` and `uv.lock` pin the tested versions:
 
 ```
 git clone https://github.com/reastdignity/Find-a-Line.git
 cd Find-a-Line
-pip install -r requirements.txt
+uv sync
 ```
 
 Then run the script with the centre of the area you want to search:
 
 ```
-python findaline.py --lat 49.2320 --lon 19.9817
+uv run findaline.py --lat 49.2320 --lon 19.9817
 ```
+
+Without uv, install the libraries listed under `dependencies` in `pyproject.toml` with pip into a Python 3.12+ environment and run `python findaline.py ...`. The examples below use `python findaline.py`; with uv write `uv run findaline.py`.
 
 No data files are needed; everything is downloaded automatically into the `cache` folder.
 

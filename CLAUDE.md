@@ -3,7 +3,8 @@
 Finds possible highlines in elevation data: anchors on steep pixels, every pair checked for clearance under the webbing, results shown on an interactive Leaflet map. User-facing docs: [README.md](README.md) (reference) and [setup-for-regular-folk.md](setup-for-regular-folk.md) (step-by-step guide). Plans, decisions already made, their order and open checks: [docs/roadmap.md](docs/roadmap.md); read it before proposing a design.
 
 ## Run it
-- Python 3.12+ (scipy 1.18 needs it). `pip install -r requirements.txt`. There is no virtual environment in the repo; create one outside it.
+- Python 3.12+ (scipy 1.18 needs it). Dependencies in `pyproject.toml`, pinned in `uv.lock` (`uv sync`, `uv run findaline.py ...`; the user's `.venv` is git-ignored). For a session environment outside the repo: `UV_PROJECT_ENVIRONMENT=<dir> uv sync --frozen` (uv itself can be pip-installed into any venv: `python -m uv`). After changing dependencies run `uv lock` and the full regression set.
+- Tests: `pytest` (offline, ~25 s: synthetic canyon + Żabi Koń clip in `tests/data`) and `python tests/regression.py` (real searches, see docs/regression-tests.md).
 - `python findaline.py --lat 50.1559508 --lon 19.7562722` (Żabi Koń, Poland). `--help` lists everything.
 - `--no-plot` is required when running without a desktop session (the matplotlib window blocks). `--yes` skips the confirmation questions; without a terminal they default to "no".
 - Long runs: start them in the background and wait for the notification. Do not run two searches at the same time: they share `cache/work/*.npy`.
