@@ -16,7 +16,7 @@ python findaline.py <arguments> --no-plot --yes --runs-dir <temp>/runs --html <t
 ## When a number differs
 1. A difference after a code change that should not affect results is a regression.
 2. If the change is intended, check a few lines on the map (profile, orthophoto), then update the table in the same commit.
-3. The remote data can change too: geoportal.gov.pl and IGN republish surveys, OpenStreetMap coastlines are edited, Nominatim names change. If a test fails without a code change, check the data first (`--refresh` on a scratch cache) and re-baseline.
+3. The remote data can change too: geoportal.gov.pl publishes new sheets (a newer sheet in the index replaces the cached one), IGN republishes surveys, OpenStreetMap coastlines are edited, Nominatim names change. If a test fails without a code change, check the data first (`--refresh` on a scratch cache) and re-baseline.
 4. The exact centre matters: grid snapping and the circle mask make a centre moved by a fraction of a metre change a few lines at the edge. Always use the coordinates below as written.
 
 ## Search tests
@@ -46,6 +46,12 @@ Suggested sets:
 
 ## Component checks
 **Sea mask (coastline sources).** On a 2 m grid in EPSG:32633 with radius 1000 m around 35.8565, 14.3830, `coast.sea_mask` gives 0.433 km² of sea with both `world` and `overpass` (identical pixels) and 0.440 km² with `copernicus`. Against the LiDAR shoreline there, 90% of the OSM coastline is within 13 m, of the Copernicus mask within 70 m.
+
+**Data checks for a new source or download path.** Learned with geoportal.gov.pl (2026-10-24/25):
+- *Coverage at coarse resolutions*: a server that downsamples may lose data. The EVRF2007 WCS at 5 m returned 41% valid pixels on the Kasprowy tile, where its 1 m data was complete. Compare the valid share of a 5 m mosaic with a 1 m one.
+- *Which survey a service serves*: compare the difference between two services with the difference between candidate source files over the same 200×200 m window (difference of differences); a residual median of 0.00 m and p5–p95 within about ±0.2 m identifies them (KRON86 WCS = 2012–2018 scans, EVRF2007 WCS = 2023–2025).
+- *Half-pixel alignment*: geoportal sheets have pixel centres on whole metres (`xllcenter`); windows and grids must be shifted by 0.5 m, otherwise every comparison shows spurious ±0.5 m differences on slopes.
+- *Exactness at native resolution*: with the grid aligned (`grid_origin`), R2 and R4 at 1 m gave the same anchors, open anchors and checked pairs from the sheet files as from the native WCS.
 
 **Malta 2012 georeference.** With `MALTA_2012_SHIFT` applied, the 2012 DTM matches Copernicus GLO-30 with a median absolute difference of about 0.5 m and the 2018 DTM with 0.19 m (radius 1500 m, 10 m grid, Dingli). Without the shift it is 9 m. Do the same shift search (move one model ±200 m, minimise the median absolute difference) for any new national source.
 

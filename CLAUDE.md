@@ -1,6 +1,6 @@
 # Find-a-Line
 
-Finds possible highlines in elevation data: anchors on steep pixels, every pair checked for clearance under the webbing, results shown on an interactive Leaflet map. User-facing docs: [README.md](README.md) (reference) and [setup-for-regular-folk.md](setup-for-regular-folk.md) (step-by-step guide).
+Finds possible highlines in elevation data: anchors on steep pixels, every pair checked for clearance under the webbing, results shown on an interactive Leaflet map. User-facing docs: [README.md](README.md) (reference) and [setup-for-regular-folk.md](setup-for-regular-folk.md) (step-by-step guide). Plans, decisions already made, their order and open checks: [docs/roadmap.md](docs/roadmap.md); read it before proposing a design.
 
 ## Run it
 - Python 3.12+ (scipy 1.18 needs it). `pip install -r requirements.txt`. There is no virtual environment in the repo; create one outside it.
@@ -15,7 +15,7 @@ Finds possible highlines in elevation data: anchors on steep pixels, every pair 
 | `findaline.py` | CLI and the pipeline (steps 1-5) |
 | `sources.py` | Data sources (`SOURCES`), tiled download + cache (WCS tiles, 1° tiles, geoportal sheets), mosaics, water and gap filling |
 | `coast.py` | Sea mask: OSM coastline (Overpass or the world file) or the Copernicus water mask |
-| `grid.py` | Working grid (metric CRS: the source's, or the UTM zone of the centre) |
+| `grid.py` | Working grid (metric CRS: the source's, or the UTM zone of the centre; edges on the source's pixel edges, `Source.grid_origin`) |
 | `helpers.py` | Anchors, line evaluation (DDA), line profiles |
 | `linesearch.py` | The pair search (numba): free directions per anchor, bucketed pairs, early-exit line check |
 | `sag.py` | Sag estimator (elastic catenary + point load) and envelope table for `--model sag` |
@@ -33,7 +33,9 @@ Finds possible highlines in elevation data: anchors on steep pixels, every pair 
 - **numba** compiles `linesearch.py` on the first run (a few seconds, cached in `__pycache__`). Inside `@njit` code only numpy/math and module constants work; keep the float operations in `_line_ok` in the same order as `max_safe_elevation`.
 - **Jinja templates** in `mapping.py`: never write `{#` in JS; use `tojavascript` (not `tojson`) for options that contain `JsCode`; inside the Python string, JS escapes need double backslashes.
 - **Pipes and heredocs**: piping the script's output into `head` kills it before the map is saved. Complex multi-line edits are safer as a Python script written to the scratchpad than as a bash heredoc.
-- **geoportal.gov.pl data comes from sheet files**, not WCS (`SheetTiles`): the EVRF2007 WCS takes 30–50 s per ASCII tile, its own downsampling leaves holes at coarse resolutions (Tatras at 5 m), its GeoTIFF output is an 8-bit picture, and the KRON86 coverages stop at 2019. Sheet files have pixel centres on whole metres (`xllcenter`); compare them with anything else only after aligning the half pixel.
+- **geoportal.gov.pl data comes from sheet files**, not WCS (`SheetTiles`): the EVRF2007 WCS takes 30–50 s per ASCII tile (generating the text, not downsampling, is the cost), its own downsampling leaves holes at coarse resolutions (Tatras at 5 m), its GeoTIFF output is an 8-bit picture, and the KRON86 coverages stop at 2019. The sheet files on opendata.geoportal.gov.pl download at ~17 MB/s; the geoportal pages give no request limits (technical contact service.desk@gugik.gov.pl). Sheet attributes and coverage are in docs/roadmap.md ("To check").
+- **Half-pixel grid alignment**: data whose pixel centres lie on whole metres (geoportal sheets: `xllcenter`) must get `grid_origin=0.5`, otherwise the mosaic interpolates it bilinearly half a pixel off and smooths cliff edges (R2 at 1 m lost 40% of its lines). Comparing rasters from two services needs the same care.
+- **Telling surveys apart**: two services resample differently, so compare their difference with the difference of the candidate source files (difference of differences); a residual around 0 shows which survey each serves (used for KRON86 vs EVRF2007).
 - **WCS services differ**: axis labels (`x/y` vs `E/N`), multipart responses (coverage part may be `image/*` or `application/*`), formats (some GeoTIFFs are whole metres; ASCII grids keep centimetres), server limits (~2000×2000 px), interpolation support.
 - **Check georeferencing of every new source** against Copernicus DEM (shift search, see regression doc). Malta 2012 is off by (-56 m E, -196 m N), corrected by `MALTA_2012_SHIFT`.
 - **Water/gap filling order**: sea zone first, then gaps on land outside it, then water. Gap offsets are matched on gentle slopes only and limited to ±3 m from the overall offset; no anchors at gap seams. Cliffs can be vertical: high land next to water is normal.
@@ -44,6 +46,8 @@ Finds possible highlines in elevation data: anchors on steep pixels, every pair 
 - Follow [docs/regression-tests.md](docs/regression-tests.md): run the affected locations and compare with the expected numbers.
 - Map/JS changes: generate a small map (Kasprowy test), append a test `<script>` to a copy and run headless Edge (`msedge --headless --dump-dom` for checks, `--screenshot` for a look). Synthetic `mousemove` works; headless screenshots don't keep hover state.
 - New download code: test with `--refresh` on a scratch `--cache-dir`, so the real cache is not touched.
+- New data source or download path: also check the share of valid pixels at the coarsest resolution (5 m) and compare a few tiles with the source files (see the regression doc, "Data checks for a new source").
+- The Polish set (R13, R1–R5) takes about 3 min with an empty geoportal cache; run the tests one after another, never two searches at once.
 
 ## Conventions
 - Code, comments, docs and commit messages in English; conversation with the user in Polish.
