@@ -21,15 +21,12 @@ def utm_crs(lat: float, lon: float) -> str:
 
 @dataclass
 class Grid:
-    """Working raster grid around the search centre."""
+    """Working raster grid covering the search area (see area.py for its mask)."""
     left: float
     top: float
     res: float
     height: int
     width: int
-    center_row: float
-    center_col: float
-    radius_px: float
     crs: str
 
     @property
@@ -49,22 +46,21 @@ class Grid:
         return x, y
 
 
-def make_grid(x: float, y: float, radius: float, res: float, crs: str,
+def make_grid(bounds: Tuple[float, float, float, float], res: float, crs: str,
               origin: Tuple[float, float] = (0.0, 0.0)) -> Grid:
-    """Build a grid covering a circle, with edges snapped to origin + multiples of res.
+    """Build a grid covering bounds (left, bottom, right, top), with edges snapped to
+    origin + multiples of res.
 
     origin (x, y) matches the pixel edges of the source data ((0.5, 0.5) when its pixel
     centres are on whole metres), so source pixels are copied or averaged whole, not
     interpolated.
     """
     ox, oy = origin
-    left = math.floor((x - radius - ox) / res) * res + ox
-    right = math.ceil((x + radius - ox) / res) * res + ox
-    bottom = math.floor((y - radius - oy) / res) * res + oy
-    top = math.ceil((y + radius - oy) / res) * res + oy
+    b_left, b_bottom, b_right, b_top = bounds
+    left = math.floor((b_left - ox) / res) * res + ox
+    right = math.ceil((b_right - ox) / res) * res + ox
+    bottom = math.floor((b_bottom - oy) / res) * res + oy
+    top = math.ceil((b_top - oy) / res) * res + oy
     width = int(round((right - left) / res))
     height = int(round((top - bottom) / res))
-    return Grid(left=left, top=top, res=res, height=height, width=width,
-                center_row=(top - y) / res - 0.5,
-                center_col=(x - left) / res - 0.5,
-                radius_px=radius / res, crs=crs)
+    return Grid(left=left, top=top, res=res, height=height, width=width, crs=crs)

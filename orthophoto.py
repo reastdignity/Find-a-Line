@@ -16,7 +16,7 @@ from typing import Dict, Iterable, List, Set, Tuple
 
 import requests
 from pyproj import Transformer
-from shapely.geometry import LineString, Point, box
+from shapely.geometry import LineString, box
 from shapely.ops import unary_union
 from shapely.prepared import prep
 
@@ -65,13 +65,11 @@ def _tiles_in(area, zooms: Iterable[int]) -> Set[Tile]:
     return tiles
 
 
-def tiles_to_cache(lines: List[Dict], center_lat: float, center_lon: float,
-                   radius: float) -> Set[Tile]:
-    """Tiles for the overview of the search area and the strips around lines."""
+def tiles_to_cache(lines: List[Dict], area) -> Set[Tile]:
+    """Tiles for the overview of the search area (area.Area) and the strips around lines."""
     # Web Mercator stretches distances by 1/cos(latitude)
-    scale = 1 / math.cos(math.radians(center_lat))
-    cx, cy = _to_mercator.transform(center_lon, center_lat)
-    tiles = _tiles_in(Point(cx, cy).buffer(radius * scale), OVERVIEW_ZOOMS)
+    scale = 1 / math.cos(math.radians(area.center[0]))
+    tiles = _tiles_in(area.shape_mercator(), OVERVIEW_ZOOMS)
 
     strips = []
     for line in lines:

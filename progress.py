@@ -10,16 +10,23 @@ Usage:
     progress.download.start("NMT tiles", total=40, unit="tile")
     progress.download.update(1, MB=3.2)
     progress.download.finish()
+
+Other code (e.g. a server forwarding the progress to a browser) can follow the bars
+with progress.subscribe(callback): the callback gets a dict with "bar" ("Download"
+or "Compute"), "stage", "count", "total", "unit", "extra" and "done" on every start,
+update and finish.
 """
 
 import contextlib
 import os
 import sys
 import time
+from typing import Callable, Dict, List
 
 from tqdm import tqdm
 
 TEXT_INTERVAL = 10  # seconds between progress lines when there is no terminal
+_listeners: List[Callable[[Dict], None]] = []
 
 
 def _duration(seconds: float) -> str:
@@ -43,15 +50,22 @@ class _Bar:
         self.count = 0
         self.extra = {}
         self.stage = ""
+        self.unit = "it"
         self.started = self.last_text = 0.0
         self.bar = None
         if terminal:
             self.bar = tqdm(total=0, position=position, leave=True, dynamic_ncols=True,
                             desc=f"{label}: idle", bar_format="{desc}")
 
+    def _notify(self, done: bool = False):
+        for listener in _listeners:
+            listener({"bar": self.label, "stage": self.stage, "count": self.count, "total": self.total,
+                      "unit": self.unit, "extra": dict(self.extra), "done": done})
+
     def start(self, stage: str, total: float, unit: str = "it"):
-        self.stage, self.total, self.count, self.extra = stage, total, 0, {}
+        self.stage, self.total, self.count, self.extra, self.unit = stage, total, 0, {}, unit
         self.started = self.last_text = time.time()
+        self._notify()
         if self.bar is not None:
             self.bar.bar_format = None  # default tqdm layout while a stage runs
             self.bar.unit = unit
@@ -62,6 +76,7 @@ class _Bar:
     def update(self, n: float = 1, **extra):
         self.count += n
         self.extra.update(extra)
+        self._notify()
         if self.bar is not None:
             if self.extra:
                 self.bar.set_postfix(self.extra, refresh=False)
@@ -79,6 +94,10 @@ class _Bar:
         else:
             self.count = self.total
             self._print_text(done=True, note=note)
+        self.count = self.total
+        if note:
+            self.extra["note"] = note
+        self._notify(done=True)
 
     def _print_text(self, done: bool = False, note: str = ""):
         elapsed = time.time() - self.started
@@ -146,6 +165,15 @@ class Progress:
             self.download.close()
             self.compute.close()
             self.download = self.compute = _Bar("", 0, False)  # later updates print nothing useful
+
+    @staticmethod
+    def subscribe(listener: Callable[[Dict], None]):
+        """Call listener(state) on every change of a bar (see the module docstring)."""
+        _listeners.append(listener)
+
+    @staticmethod
+    def unsubscribe(listener: Callable[[Dict], None]):
+        _listeners.remove(listener)
 
     def ask(self, question: str) -> str:
         """input() that works while the bars are shown."""

@@ -86,7 +86,7 @@ def run(tests: dict, test_id: str, work: str, cache_dir: str) -> dict:
     os.makedirs(cache_dir, exist_ok=True)
     link(cache_dir, os.path.join(out, "cache"))
     # Orthophoto tiles are not compared and can take many minutes to fetch (R9: 15 000 tiles)
-    cmd = [sys.executable, "findaline.py", *full_args(tests, test_id), "--no-plot", "--yes", "--no-ortho-cache",
+    cmd = [sys.executable, "findaline.py", *full_args(tests, test_id), "--no-plot", "--yes", "--ortho", "never",
            "--data-dir", out]
     env = {**os.environ, "FINDALINE_PROGRESS": "text", "PYTHONIOENCODING": "utf-8"}
     result = subprocess.run(cmd, cwd=REPO, env=env, capture_output=True, text=True, encoding="utf-8")

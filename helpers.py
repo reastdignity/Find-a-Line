@@ -29,20 +29,18 @@ class Line(NamedTuple):
 
 
 def find_significant_slopes(elevation: np.ndarray, res: float, slope_threshold: float,
-                            center: Tuple[float, float], radius_px: float,
-                            slope: Optional[np.ndarray] = None,
+                            area_mask: np.ndarray, slope: Optional[np.ndarray] = None,
                             block_rows: int = 512) -> np.ndarray:
     """Finds pixels steep enough to be promising anchors.
 
     Slope is computed from the elevation model unless a slope raster (in degrees)
-    is given. Only pixels inside the search circle are returned.
+    is given. Only pixels inside the search area are returned.
 
     Args:
         elevation: NMT elevation grid
         res: Pixel size in metres
         slope_threshold: Minimum slope in degrees
-        center: (row, col) of the search centre
-        radius_px: Search radius in pixels
+        area_mask: True inside the search area (area.Area.mask), aligned with elevation
         slope: Optional slope grid in degrees, aligned with elevation
         block_rows: Rows processed at once (keeps memory use bounded)
 
@@ -50,7 +48,6 @@ def find_significant_slopes(elevation: np.ndarray, res: float, slope_threshold: 
         Array of [row, col] anchor coordinates (int32)
     """
     height, width = elevation.shape
-    center_row, center_col = center
     anchors = []
 
     progress.compute.start("finding anchors", height, unit="row")
@@ -67,7 +64,7 @@ def find_significant_slopes(elevation: np.ndarray, res: float, slope_threshold: 
 
         rows, cols = np.nonzero(block >= slope_threshold)  # NaN compares False
         rows += r0
-        inside = (rows - center_row) ** 2 + (cols - center_col) ** 2 <= radius_px ** 2
+        inside = area_mask[rows, cols]
         anchors.append(np.column_stack([rows[inside], cols[inside]]).astype(np.int32))
         progress.compute.update(r1 - r0)
     progress.compute.finish()

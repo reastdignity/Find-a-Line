@@ -14,7 +14,10 @@ Finds possible highlines in elevation data: anchors on steep pixels, every pair 
 ## Code map
 | File | What it does |
 | --- | --- |
-| `findaline.py` | CLI and the pipeline (steps 1-5) |
+| `findaline.py` | Command line only: options from `params.py`, messages, questions, the list of spots, the matplotlib window |
+| `params.py` | `SearchParams` (pydantic: fields, help, groups, validation) and `CliOptions`; argparse is generated from them |
+| `search.py` | The search as a library: `plan_search`, `estimate_search`, `prepare_data` (step 1), `find_lines` (2-4), `save_run` (5), `run_search`; messages via `on_event`, questions via `confirm` |
+| `area.py` | Search areas (`Circle`, `Polygon`): grid bounds, mask, shapes for maps and orthophoto |
 | `sources.py` | Data sources (`SOURCES`), tiled download (WCS tiles, 1° tiles, geoportal sheets), mosaics, water and gap filling |
 | `cache.py` | Data folder (`cache/`, `runs/`, `work/`), cache layout, `index.sqlite` per top-level folder |
 | `osm.py` | OSM themes in 0.25° tiles from Overpass (`coastline`, `cliff`), cached Nominatim answers |
@@ -31,6 +34,7 @@ Finds possible highlines in elevation data: anchors on steep pixels, every pair 
 ## Things that must stay in sync
 - `mapping.group_lines` (Python) and `groupLines` (JS in `GROUPING_SCRIPT`): the same greedy algorithm; the browser must produce the same groups. Values used for grouping are passed to JS unrounded.
 - `sag.py` and the `Sag` JS object in `mapping.py`: the same solver; results match to 1e-6 m. Check with Node after changes (see docs/regression-tests.md).
+- `params.py` help texts and the options table in README.md describe the same options.
 - `helpers.max_safe_elevation` defines the clearance limit; `evaluate_line` and `line_profile` use it. `linesearch._line_ok` repeats it in numba (formula and sag table) and `find_valid_lines` derives the weakest per-anchor limit from it (`gain`, `cap`, `offset`): change all three together. The kernels may only pass too much, never too little (EPS); `evaluate_line` makes the final decision, so results equal the plain pixel-by-pixel search.
 
 ## Pitfalls learned the hard way

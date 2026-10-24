@@ -27,11 +27,11 @@ import requests
 from rasterio.features import rasterize
 from rasterio.warp import transform_bounds
 from shapely.geometry import LineString, MultiLineString, box, mapping
-from shapely.ops import polygonize, transform as shape_transform, unary_union
-from pyproj import Transformer
+from shapely.ops import polygonize, unary_union
 
 import cache
 import osm
+from area import project
 from grid import Grid
 from progress import progress
 
@@ -57,8 +57,7 @@ def _rasterize(geometries, grid: Grid) -> np.ndarray:
 def _overpass_coastline(grid: Grid, cache_dir: str, refresh: bool):
     """OSM coastline ways around the grid as lines in the grid CRS (cached theme tiles)."""
     features = osm.theme("coastline", *_grid_bbox_wgs84(grid), cache_dir, refresh)
-    to_grid = Transformer.from_crs("EPSG:4326", grid.crs, always_xy=True).transform
-    return [shape_transform(to_grid, f["geometry"]) for f in features
+    return [project(f["geometry"], "EPSG:4326", grid.crs) for f in features
             if isinstance(f["geometry"], (LineString, MultiLineString))]
 
 

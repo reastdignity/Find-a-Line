@@ -161,7 +161,7 @@ The search centre can be given in either of two coordinate systems:
 | `--all-lines` | | List every line instead of one line per group |
 | `--name` | place name from OpenStreetMap | Name of the run |
 | `--html` | `findaline_map.html` in the data folder | Page that opens the map of the latest run |
-| `--no-ortho-cache` | | Do not download orthophoto tiles for offline use of the map |
+| `--ortho` | `auto` | Orthophoto tiles for offline use of the map: `auto` asks when they would take more than 30 min (`--yes` downloads them), `always`, or `never` (the map loads them online) |
 | `--no-html` / `--no-plot` | | Skip the interactive map / the matplotlib window |
 | `-y`, `--yes` | | Do not ask for confirmation before long runs |
 

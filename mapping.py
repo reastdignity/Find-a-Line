@@ -108,17 +108,14 @@ def group_lines(results: List[Dict], distance: float, by: str = "clearance") -> 
     return groups
 
 
-def _search_area(center_lat: float, center_lon: float, radius: float):
-    """Search circle as a polygon in WGS84 (geopandas)."""
+def _search_area(area):
+    """The search area (area.Area) as a polygon in WGS84 (geopandas)."""
     import geopandas as gpd
-    from shapely.geometry import Point
 
-    local = f"+proj=aeqd +lat_0={center_lat} +lon_0={center_lon} +datum=WGS84 +units=m"
-    circle = gpd.GeoSeries([Point(0, 0).buffer(radius, 128)], crs=local)
-    return circle.to_crs("EPSG:4326")
+    return gpd.GeoSeries([area.shape_wgs84()], crs="EPSG:4326")
 
 
-def mapify(results: List[Dict], center_lat: float, center_lon: float, radius: float):
+def mapify(results: List[Dict], area):
     """Visualize lines on a static map (matplotlib + OpenTopoMap)."""
     import contextily as ctx
     import geopandas as gpd
@@ -135,7 +132,7 @@ def mapify(results: List[Dict], center_lat: float, center_lon: float, radius: fl
     gdf = gpd.GeoDataFrame({"color": colors}, geometry=lines, crs="EPSG:4326")
 
     fig, ax = plt.subplots(figsize=(10, 10))
-    _search_area(center_lat, center_lon, radius).boundary.plot(
+    _search_area(area).boundary.plot(
         ax=ax, color="black", linestyle="--", linewidth=0.8)
     gdf.plot(ax=ax, color=gdf["color"], linewidth=0.8, alpha=0.9)
 
@@ -918,8 +915,7 @@ def _relative_url(folder: str, html_path: str) -> str:
         return Path(os.path.abspath(folder)).as_uri()
 
 
-def save_html_map(results: List[Dict], center_lat: float, center_lon: float,
-                  radius: float, path: str, group_distance: float = 20,
+def save_html_map(results: List[Dict], area, path: str, group_distance: float = 20,
                   group_by: str = "clearance", ortho_cache: Optional[str] = None,
                   ortho_service=None,
                   run: Optional[Dict] = None, runs_dir: Optional[str] = None,
@@ -968,6 +964,7 @@ def save_html_map(results: List[Dict], center_lat: float, center_lon: float,
             {% endmacro %}
             """)
 
+    center_lat, center_lon = area.center
     fmap = folium.Map(location=[center_lat, center_lon], tiles=None, control_scale=True)
     # The map's maximum zoom comes from its layers.
     # Beyond their native zoom, OpenTopoMap and OSM tiles are scaled up
@@ -989,7 +986,7 @@ def save_html_map(results: List[Dict], center_lat: float, center_lon: float,
                      max_zoom=MAX_ZOOM, max_native_zoom=xyz.Esri.WorldImagery.get("max_zoom", 18)
                      ).add_to(fmap)
 
-    folium.GeoJson(_search_area(center_lat, center_lon, radius).__geo_interface__,
+    folium.GeoJson(_search_area(area).__geo_interface__,
                    name="Search area", interactive=False,
                    style_function=lambda _: {"color": "black", "weight": 1,
                                              "dashArray": "6", "fill": False}).add_to(fmap)
@@ -1024,6 +1021,6 @@ def save_html_map(results: List[Dict], center_lat: float, center_lon: float,
 
     folium.Marker([center_lat, center_lon], tooltip="Search centre").add_to(fmap)
     folium.LayerControl(collapsed=False).add_to(fmap)
-    fmap.fit_bounds(_search_area(center_lat, center_lon, radius).total_bounds[[1, 0, 3, 2]]
+    fmap.fit_bounds(_search_area(area).total_bounds[[1, 0, 3, 2]]
                     .reshape(2, 2).tolist())
     fmap.save(path)
