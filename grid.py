@@ -7,6 +7,7 @@ line search works in pixels of a known size in metres.
 
 import math
 from dataclasses import dataclass
+from typing import Tuple
 
 import numpy as np
 from rasterio.transform import from_origin
@@ -48,16 +49,19 @@ class Grid:
         return x, y
 
 
-def make_grid(x: float, y: float, radius: float, res: float, crs: str, origin: float = 0.0) -> Grid:
+def make_grid(x: float, y: float, radius: float, res: float, crs: str,
+              origin: Tuple[float, float] = (0.0, 0.0)) -> Grid:
     """Build a grid covering a circle, with edges snapped to origin + multiples of res.
 
-    origin matches the pixel edges of the source data (0.5 when its pixel centres are
-    on whole metres), so source pixels are copied or averaged whole, not interpolated.
+    origin (x, y) matches the pixel edges of the source data ((0.5, 0.5) when its pixel
+    centres are on whole metres), so source pixels are copied or averaged whole, not
+    interpolated.
     """
-    left = math.floor((x - radius - origin) / res) * res + origin
-    right = math.ceil((x + radius - origin) / res) * res + origin
-    bottom = math.floor((y - radius - origin) / res) * res + origin
-    top = math.ceil((y + radius - origin) / res) * res + origin
+    ox, oy = origin
+    left = math.floor((x - radius - ox) / res) * res + ox
+    right = math.ceil((x + radius - ox) / res) * res + ox
+    bottom = math.floor((y - radius - oy) / res) * res + oy
+    top = math.ceil((y + radius - oy) / res) * res + oy
     width = int(round((right - left) / res))
     height = int(round((top - bottom) / res))
     return Grid(left=left, top=top, res=res, height=height, width=width,

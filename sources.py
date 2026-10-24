@@ -496,7 +496,7 @@ class Source:
     note: str = ""                  # licence or quality note printed at the start
     fallback: Optional[str] = "europe"  # source that fills gaps in the data on land
     bbox: Optional[Tuple[float, float, float, float]] = None  # (south, north, west, east) for --source auto
-    grid_origin: float = 0.0        # pixel edges of the data in the working CRS (see grid.make_grid)
+    grid_origin: Tuple[float, float] = (0.0, 0.0)  # pixel edges of the data in the working CRS (grid.make_grid)
 
     def covers(self, lat: float, lon: float) -> bool:
         if self.bbox is None:
@@ -592,7 +592,7 @@ SOURCES: Dict[str, Source] = {s.id: s for s in [
         nmpt=SheetTiles("NMPT (digital surface model: trees, buildings)",
                         f"{GEOPORTAL}/NumerycznyModelPokryciaTerenuEVRF2007/WFS/Skorowidze",
                         "SkorowidzNMPT", "poland/nmpt", native_res=1.0),
-        countries=("pl",), crs="EPSG:2180", default_resolution=2, grid_origin=0.5,
+        countries=("pl",), crs="EPSG:2180", default_resolution=2, grid_origin=(0.5, 0.5),
         ortho=OrthoService("Orthophoto (geoportal.gov.pl)", f"{GEOPORTAL}/ORTO/WMS/HighResolution",
                            "Raster", "poland/ortho", "GUGiK")),
     _malta(2018, note="Malta 2018 heights are published in whole metres, which makes slopes and "
@@ -653,6 +653,8 @@ def choose_source(name: str, lat: float, lon: float, elevation_file: Optional[st
         with rio.open(elevation_file) as src:
             if src.crs is not None and src.crs.is_projected and src.crs.linear_units in ("metre", "meter"):
                 source.crs = src.crs.to_string()
+                # The grid is in the file's CRS: put its edges on the file's pixel edges
+                source.grid_origin = (src.transform.c % abs(src.res[0]), src.transform.f % abs(src.res[1]))
         native = source.nmt.native_res
         source.default_resolution = float(round(native)) if native >= 5 else max(1.0, round(native, 1))
         return source, "--elevation-file given"
