@@ -194,6 +194,12 @@ class WcsTiles(Layer):
     fetch_res=None requests tiles at the working resolution (the server
     downsamples); a number requests tiles at that resolution, cached independently
     of the working resolution and downsampled locally.
+
+    Some services (Malta) refuse a request that reaches beyond the coverage with a 404,
+    which would make every tile at the edge of the data "missing" (the whole north
+    coast of Gozo). Then the request is clipped to the coverage extent
+    (DescribeCoverage), on whole pixels of the tile grid, and the rest of the tile
+    stays without data.
     """
 
     def __init__(self, description: str, url: str, coverage: str, crs: str, folder: str,
@@ -206,6 +212,7 @@ class WcsTiles(Layer):
         self.axes, self.fetch_res, self.interpolation = axes, fetch_res, interpolation
         self.zero_is_nodata, self.bytes_per_px, self.shift = zero_is_nodata, bytes_per_px, shift
         self._res = None
+        self._extent: Optional[tuple] = None  # (left, bottom, right, top) of the coverage; () if unknown
 
     def _tile_res(self, grid: Grid) -> float:
         return self.fetch_res or grid.res
@@ -260,21 +267,52 @@ class WcsTiles(Layer):
     def bytes_per_tile(self) -> float:
         return self.tile_px ** 2 * self.bytes_per_px
 
+    def coverage_extent(self) -> Optional[tuple]:
+        """(left, bottom, right, top) of the coverage in the service CRS, or None if unknown."""
+        if self._extent is None:
+            try:
+                response = requests.get(self.url, timeout=60, headers=HEADERS, params={
+                    "SERVICE": "WCS", "VERSION": "2.0.1", "REQUEST": "DescribeCoverage", "COVERAGEID": self.coverage})
+                response.raise_for_status()
+                text = response.text
+                lower = [float(v) for v in re.search(r"<gml:lowerCorner>([^<]+)<", text).group(1).split()]
+                upper = [float(v) for v in re.search(r"<gml:upperCorner>([^<]+)<", text).group(1).split()]
+                labels = re.search(r'axisLabels="([^"]+)"', text)
+                if labels and labels.group(1).split()[0] == self.axes[1]:  # northing first
+                    lower, upper = lower[::-1], upper[::-1]
+                self._extent = (lower[0], lower[1], upper[0], upper[1])
+            except (requests.RequestException, AttributeError, ValueError, IndexError):
+                self._extent = ()
+        return self._extent or None
+
+    def _request(self, left: float, bottom: float, right: float, top: float, res: float):
+        """GetCoverage of a box; None if the service has no data there (404)."""
+        ax, ay = self.axes
+        params = [("SERVICE", "WCS"), ("VERSION", "2.0.1"), ("REQUEST", "GetCoverage"),
+                  ("COVERAGEID", self.coverage), ("FORMAT", self.fmt),
+                  ("SUBSET", f"{ax}({left:.3f},{right:.3f})"),
+                  ("SUBSET", f"{ay}({bottom:.3f},{top:.3f})")]
+        if not math.isclose(res, self.native_res):
+            params.append(("SCALESIZE", f"{ax}({round((right - left) / res)}),{ay}({round((top - bottom) / res)})"))
+            if self.interpolation:
+                params.append(("INTERPOLATION", self.interpolation))
+        return _get(self.url, params)
+
     def download_tile(self, tile, path: str) -> Fetched:
         res, i, j = tile
         size, px = self.tile_px * res, self.tile_px
         left, bottom = i * size, j * size
-        ax, ay = self.axes
-        params = [("SERVICE", "WCS"), ("VERSION", "2.0.1"), ("REQUEST", "GetCoverage"),
-                  ("COVERAGEID", self.coverage), ("FORMAT", self.fmt),
-                  ("SUBSET", f"{ax}({left:.3f},{left + size:.3f})"),
-                  ("SUBSET", f"{ay}({bottom:.3f},{bottom + size:.3f})")]
-        if not math.isclose(res, self.native_res):
-            params.append(("SCALESIZE", f"{ax}({px}),{ay}({px})"))
-            if self.interpolation:
-                params.append(("INTERPOLATION", self.interpolation))
         try:
-            response = _get(self.url, params)
+            response = self._request(left, bottom, left + size, bottom + size, res)
+            extent = self.coverage_extent() if response is None else None
+            if extent:
+                # Inside the coverage, on whole pixels of the tile
+                inner = (left + math.ceil(max(0.0, extent[0] - left) / res) * res,
+                         bottom + math.ceil(max(0.0, extent[1] - bottom) / res) * res,
+                         left + size - math.ceil(max(0.0, left + size - extent[2]) / res) * res,
+                         bottom + size - math.ceil(max(0.0, bottom + size - extent[3]) / res) * res)
+                if inner[0] < inner[2] and inner[1] < inner[3] and inner != (left, bottom, left + size, bottom + size):
+                    response = self._request(*inner, res)
         except RuntimeError as e:
             raise RuntimeError(f"Could not download {self.description} tile {i}_{j}: {e}")
         if response is None:
