@@ -378,6 +378,9 @@ def create_app(data_dir: str, token: Optional[str] = None, port: int = PORT, sta
             "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; "
             "img-src 'self' data: https:; connect-src 'self'; frame-ancestors 'none'")
         response.headers["X-Content-Type-Options"] = "nosniff"
+        # The viewer and the app change with the code, run data with every run: always revalidate
+        # (otherwise a browser may keep an old viewer.js next to a new data.js)
+        response.headers.setdefault("Cache-Control", "no-cache")
         response.headers["Referrer-Policy"] = "no-referrer"
         return response
 

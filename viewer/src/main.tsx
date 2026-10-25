@@ -48,6 +48,10 @@ function lineInfo(l: Line): string {
   if (l.water > 0) html += "<br><b>Over water:</b> " + l.water.toFixed(0) + " m of " + l.len.toFixed(0) + " m";
   if (l.filled > 0)
     html += "<br><b>Over filled gaps in the data:</b> " + l.filled.toFixed(0) + " m (less precise)";
+  if (!l.prof && !l.run) {
+    html += "<br><i>No profile: in the map of an area only the line saved for each group has one " +
+      "(the filters or the grouping chose another line here).</i>";
+  }
   return html;
 }
 
