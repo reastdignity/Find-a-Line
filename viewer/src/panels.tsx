@@ -2,6 +2,8 @@
 
 import L from "leaflet";
 import { render, type ComponentChild } from "preact";
+import { useState } from "preact/hooks";
+import { active, NO_FILTERS, type Filters, type Range } from "./filters";
 import { COLORS } from "./style";
 import type { RunInfo } from "./types";
 
@@ -30,7 +32,10 @@ export interface LinesPanelProps {
   nOver: number;
   shown: {spots: number; lines: number};
   focused: boolean;            // one line is focused: offer "Show all lines"
+  filters: Filters;
+  ranges: FilterRanges;
   onChange(state: LinesState): void;
+  onFilters(filters: Filters): void;
   onShowAll(): void;
 }
 
@@ -60,6 +65,7 @@ export function LinesPanel(props: LinesPanelProps) {
                     onChange={(e) => set({showOver: e.currentTarget.checked})} />{" "}
         <span class="fal-swatch" style={"background:" + COLORS.over}></span> Over trees/buildings ({nOver})</label>
     </div>}
+    <FiltersPanel filters={props.filters} ranges={props.ranges} grouping={state.group} onChange={props.onFilters} />
   </div>;
 }
 
@@ -120,4 +126,73 @@ export function OtherRunsPanel({items, nearbyKm, onToggle}:
       {far.map(row)}
     </details>}
   </div>;
+}
+
+export interface FilterRanges {
+  len: Range | null;
+  clr: Range | null;
+  clrN: Range | null;
+  dh: Range | null;
+  elev: Range | null;
+  group: Range | null;
+  water: boolean;   // some lines are over water
+  filled: boolean;  // some lines are over filled gaps
+}
+
+/** A limit: a slider over the range of the lines and a number field; at the end of the range, no limit. */
+function Limit({label, value, range, step, kind, unit, onChange}: {
+  label: string; value: number | null; range: Range; step: number; kind: "min" | "max"; unit: string;
+  onChange(v: number | null): void;
+}) {
+  const [draft, setDraft] = useState<number | null>(null);  // while the slider is dragged
+  const low = Math.floor(range.min / step) * step, high = Math.ceil(range.max / step) * step;
+  const end = kind === "min" ? low : high;
+  const shown = draft ?? value ?? end;
+  const commit = (v: number) => {
+    setDraft(null);
+    onChange(!isFinite(v) || (kind === "min" ? v <= low : v >= high) ? null : v);
+  };
+  const digits = step < 1 ? 1 : 0;
+  return <div class="fal-limit">
+    <span class={value === null ? "" : "fal-set"}>{label}</span>
+    <input type="range" min={low} max={high} step={step} value={shown}
+           onInput={(e) => setDraft(+e.currentTarget.value)} onChange={(e) => commit(+e.currentTarget.value)} />
+    <input type="number" key={String(shown)} step={step} placeholder={end.toFixed(digits)}
+           defaultValue={value === null && draft === null ? "" : shown.toFixed(digits)}
+           onChange={(e) => e.currentTarget.value.trim() === "" ? onChange(null) : commit(+e.currentTarget.value)} />
+    {unit}
+  </div>;
+}
+
+/** The filters (filters.ts): lines that do not pass are left out before grouping. */
+export function FiltersPanel({filters, ranges, grouping, onChange}: {
+  filters: Filters; ranges: FilterRanges; grouping: boolean; onChange(f: Filters): void;
+}) {
+  const set = (change: Partial<Filters>) => onChange({...filters, ...change});
+  const n = active(filters);
+  const limit = (label: string, key: keyof Filters, range: Range | null, step: number, kind: "min" | "max",
+                 unit = " m") => range && <Limit label={label} value={filters[key] as number | null} range={range}
+                                                  step={step} kind={kind} unit={unit}
+                                                  onChange={(v) => set({[key]: v} as Partial<Filters>)} />;
+  return <details class="fal-filters" open={n > 0}>
+    <summary>Filters{n > 0 && <b> ({n} active)</b>}
+      {n > 0 && <button class="fal-reset" onClick={(e) => { e.preventDefault(); onChange({...NO_FILTERS}); }}>
+        clear</button>}</summary>
+    {limit("length from", "lenMin", ranges.len, 1, "min")}
+    {limit("length to", "lenMax", ranges.len, 1, "max")}
+    {limit("clearance at least", "clrMin", ranges.clr, 0.1, "min")}
+    {limit("over trees at least", "clrNMin", ranges.clrN, 0.1, "min")}
+    {limit("anchor Δh at most", "dhMax", ranges.dh, 0.5, "max")}
+    {limit("lower anchor at least", "elevMin", ranges.elev, 1, "min", " m a.s.l.")}
+    {grouping && limit("lines in group at least", "groupMin", ranges.group, 1, "min", "")}
+    {ranges.water && <div class="fal-limit"><span class={filters.water === "all" ? "" : "fal-set"}>water</span>
+      <select value={filters.water} onChange={(e) => set({water: e.currentTarget.value as Filters["water"]})}>
+        <option value="all">all lines</option>
+        <option value="water">only over water</option>
+        <option value="land">only over land</option>
+      </select></div>}
+    {ranges.filled && <label class="fal-limit"><input type="checkbox" checked={filters.hideFilled}
+                                                       onChange={(e) => set({hideFilled: e.currentTarget.checked})} />
+      hide lines over filled gaps in the data</label>}
+  </details>;
 }

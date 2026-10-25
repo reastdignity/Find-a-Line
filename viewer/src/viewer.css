@@ -33,3 +33,11 @@ html, body { width: 100%; height: 100%; margin: 0; padding: 0; overflow: hidden;
 .fal-others a { text-decoration: none; }
 .fal-others summary { cursor: pointer; color: #555; }
 .fal-run-of { margin-bottom: 4px; }
+.fal-filters { margin-top: 4px; border-top: 1px solid #eee; padding-top: 2px; }
+.fal-filters summary { cursor: pointer; }
+.fal-reset { font: inherit; font-size: 11px; margin-left: 6px; cursor: pointer; }
+.fal-limit { display: flex; align-items: center; gap: 4px; white-space: nowrap; }
+.fal-limit > span:first-child { width: 130px; color: #444; }
+.fal-limit .fal-set { font-weight: bold; color: #222; }
+.fal-limit input[type=range] { width: 110px; }
+.fal-limit input[type=number] { width: 58px; font: inherit; }

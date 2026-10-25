@@ -228,7 +228,8 @@ def save_map(results: List[Dict], area, run_path: str, runs_dir: str, run: Dict,
              round(r["anchor2"][0], 7), round(r["anchor2"][1], 7),
              *r["a1_xy"], *r["a2_xy"], r["length"], r["clearance"],
              None if r["clearance_nmpt"] is None else round(r["clearance_nmpt"], 2),
-             round(r["elev_a1"], 2), round(r["elev_a2"], 2), r["over_obstacles"]] for r in results]
+             round(r["elev_a1"], 2), round(r["elev_a2"], 2), r["over_obstacles"],
+             round(r.get("water_m", 0.0), 1), round(r.get("filled_m", 0.0), 1)] for r in results]
     data = {
         "run": {"id": run["id"], "name": run["name"], "created": run["created"],
                 "description": run.get("description", "")},

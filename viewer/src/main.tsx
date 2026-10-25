@@ -9,6 +9,7 @@ import iconUrl from "leaflet/dist/images/marker-icon.png";
 import shadowUrl from "leaflet/dist/images/marker-shadow.png";
 import { render } from "preact";
 import "./viewer.css";
+import { dh, lowerAnchor, passes, range as valueRange, saveFilters, savedFilters, type Filters } from "./filters";
 import { groupLines, type Group } from "./grouping";
 import { baseLayers } from "./layers";
 import { inLocalPlane, listOthers, loadLines, colorOf, NEARBY_KM, saveChoice, savedChoice } from "./others";
@@ -44,10 +45,9 @@ function lineInfo(l: Line): string {
     "<b>Anchor 2:</b> " + l.lat2.toFixed(6) + ", " + l.lon2.toFixed(6) + " (" + l.e2.toFixed(1) + " m)<br>" +
     "<b>Min. clearance over terrain:</b> " + l.clr.toFixed(1) + " m";
   if (l.clrN !== null) html += "<br><b>Min. clearance over trees/buildings:</b> " + l.clrN.toFixed(1) + " m";
-  if (l.prof && l.prof.water_m > 0)
-    html += "<br><b>Over water:</b> " + l.prof.water_m.toFixed(0) + " m of " + l.len.toFixed(0) + " m";
-  if (l.prof && l.prof.filled_m > 0)
-    html += "<br><b>Over filled gaps in the data:</b> " + l.prof.filled_m.toFixed(0) + " m (less precise)";
+  if (l.water > 0) html += "<br><b>Over water:</b> " + l.water.toFixed(0) + " m of " + l.len.toFixed(0) + " m";
+  if (l.filled > 0)
+    html += "<br><b>Over filled gaps in the data:</b> " + l.filled.toFixed(0) + " m (less precise)";
   return html;
 }
 
@@ -134,22 +134,32 @@ function start(data: RunData) {
 
   let state: LinesState = {group: true, distance: data.distance, by: data.by, showClean: true, showOver: true};
   let shown = {spots: 0, lines: 0};
+  let filters: Filters = savedFilters(), largestGroup = 1;
   let all = lines;  // with the lines of the other runs shown
   const panel = control(map, "bottomleft", "fal-panel");
   const drawPanel = () => panel(
     <LinesPanel state={state} maxDistance={Math.max(100, Math.round(3 * data.distance))}
                 nClean={all.filter((l) => !l.over).length} nOver={all.filter((l) => l.over).length}
-                shown={shown} focused={focused !== null}
+                shown={shown} focused={focused !== null} filters={filters}
+                ranges={{len: valueRange(all, (l) => l.len), clr: valueRange(all, (l) => l.clr),
+                         clrN: valueRange(all, (l) => l.clrN), dh: valueRange(all, dh),
+                         elev: valueRange(all, lowerAnchor),
+                         group: largestGroup > 1 ? {min: 1, max: largestGroup} : null,
+                         water: all.some((l) => l.water > 0), filled: all.some((l) => l.filled > 0)}}
                 onChange={(next) => { state = next; drawLines(); }}
+                onFilters={(next) => { filters = next; saveFilters(filters); drawLines(); }}
                 onShowAll={() => { map.closePopup(); unfocus(); }} />);
 
   const drawLines = () => {
     unfocus();
     linesLayer.clearLayers();
     variantsLayer.clearLayers();
-    const visible = framed(all).filter((l) => l.over ? state.showOver : state.showClean);
-    const groups = state.group ? groupLines(visible, state.distance, state.by)
+    // Filters first, then the groups of what is left; the group size last
+    const visible = framed(all).filter((l) => (l.over ? state.showOver : state.showClean) && passes(l, filters));
+    let groups = state.group ? groupLines(visible, state.distance, state.by)
       : visible.map((l) => ({rep: l, members: [l]}));
+    largestGroup = groups.reduce((m, g) => Math.max(m, g.members.length), 1);
+    if (state.group && filters.groupMin !== null) groups = groups.filter((g) => g.members.length >= filters.groupMin!);
     // Lines over trees/buildings first, so clear lines stay on top
     groups.sort((a, b) => +b.rep.over - +a.rep.over);
     for (const g of groups) {
@@ -170,7 +180,7 @@ function start(data: RunData) {
       pl.on("popupclose", () => { unfocus(); variantsLayer.clearLayers(); });
       pl.addTo(linesLayer);
     }
-    shown = {spots: groups.length, lines: visible.length};
+    shown = {spots: groups.length, lines: groups.reduce((n, g) => n + g.members.length, 0)};
     drawPanel();
   };
 
