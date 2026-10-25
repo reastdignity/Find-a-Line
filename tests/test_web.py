@@ -12,7 +12,7 @@ DATA = os.path.join(REPO, "tests", "data")
 sys.path.insert(0, REPO)
 import web  # noqa: E402
 
-pytest.importorskip("httpx")
+pytest.importorskip("httpx2")
 from fastapi.testclient import TestClient  # noqa: E402
 
 TOKEN = "test-token"
