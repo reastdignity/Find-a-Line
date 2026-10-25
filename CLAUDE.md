@@ -20,13 +20,15 @@ Finds possible highlines in elevation data: anchors on steep pixels, every pair 
 | `area.py` | Search areas (`Circle`, `Polygon`): grid bounds, mask, shapes for maps and orthophoto; `from_spec` builds `--area` (coast, cliffs, file, osm:name) |
 | `sources.py` | Data sources (`SOURCES`), tiled download (WCS tiles, 1° tiles, geoportal sheets), mosaics, water and gap filling |
 | `cache.py` | Data folder (`cache/`, `runs/`, `work/`), cache layout, `index.sqlite` per top-level folder |
-| `osm.py` | OSM themes in 0.25° tiles from Overpass (`coastline`, `cliff`), cached Nominatim answers |
+| `osm.py` | OSM themes in 0.25° tiles (`coastline`, `cliff`) from Overpass or the extracts, cached Nominatim answers |
 | `coast.py` | Sea mask: OSM coastline (Overpass or the world file) or the Copernicus water mask |
 | `grid.py` | Working grid (metric CRS: the source's, or the UTM zone of the centre; edges on the source's pixel edges, `Source.grid_origin`) |
 | `helpers.py` | Anchors, line evaluation (DDA), line profiles |
 | `linesearch.py` | The pair search (numba): free directions per anchor, bucketed pairs, early-exit line check |
 | `sag.py` | Sag estimator (elastic catenary + point load) and envelope table for `--model sag` |
 | `mapping.py` | Coordinates, grouping, matplotlib map, HTML map (all browser JS lives here as Jinja templates) |
+| `update.py` | `findaline.py cache status/update` and `osm download/update`: which cached data can change, checks, runs on changed data |
+| `osmextract.py` | Geofabrik OSM extracts: download, replication diffs (pyosmium), theme features, theme tiles built from extracts |
 | `orthophoto.py` | Orthophoto tile cache (XYZ tiles requested from a WMS in EPSG:4326) |
 | `runs.py` | Saved runs (`runs/<date>_<place>/`), `runs/index.html`, `runs/runs.js`, run names |
 | `progress.py` | Two tqdm bars (Download / Compute) |
@@ -50,6 +52,9 @@ Finds possible highlines in elevation data: anchors on steep pixels, every pair 
 - **Water/gap filling order**: sea zone first, then gaps on land outside it, then water. Gap offsets are matched on gentle slopes only and limited to ±3 m from the overall offset; no anchors at gap seams. Cliffs can be vertical: high land next to water is normal.
 - **Public services are flaky**: Overpass is often overloaded and slow (30–70 s per 0.25° theme tile; the world file in `cache/osm/water-polygons/` is used instead when present; inland areas skip the coastline); the OpenTopography demo key `demoapikeyot2022` has a shared limit of 50 calls/day; Nominatim allows 1 request/s.
 - Grid snapping and the circle mask make results sensitive to the exact centre: a centre 0.4 m away changes a few lines at the edge.
+
+- **Updates** (`update.py`): a dataset that can change needs a TTL (`cache.TTL_DAYS`, `Layer.ttl_days` from `/live` in the folder) and a way back from its path to its tile (`Layer.tile_of`), otherwise `cache update` skips it. `osm.THEME_TAGS` defines a theme for both Overpass and the extracts: a new theme is one entry there, and the extracts must be taken again (`osm update` or a new download).
+- **pyosmium**: the extracts are read in three filtered passes (tagged objects, ways of relations, nodes by id) instead of `with_locations()`, whose node index for Poland would take gigabytes; Poland (2.1 GB) takes about 10 s.
 
 ## Verifying changes
 - Follow [docs/regression-tests.md](docs/regression-tests.md): run the affected locations and compare with the expected numbers.

@@ -21,7 +21,7 @@ uv run tests/regression.py R1 --update --write-doc   # store new results, rewrit
 ## When a number differs
 1. A difference after a code change that should not affect results is a regression.
 2. If the change is intended, check a few lines on the map (profile, orthophoto), then update the expected values (`--update --write-doc`) in the same commit.
-3. The remote data can change too: geoportal.gov.pl publishes new sheets (a newer sheet in the index replaces the cached one), IGN republishes surveys, OpenStreetMap coastlines are edited, Nominatim names change. If a test fails without a code change, check the data first (`--refresh` on a scratch cache) and re-baseline.
+3. The remote data can change too: geoportal.gov.pl publishes new sheets (a newer sheet in the index replaces the cached one), IGN republishes surveys, OpenStreetMap coastlines are edited, Nominatim names change. If a test fails without a code change, check the data first (`python findaline.py cache status`, then `cache update`, or the search on a scratch `--data-dir`) and re-baseline.
 4. The exact centre matters: grid snapping and the circle mask make a centre moved by a fraction of a metre change a few lines at the edge. Always use the coordinates below as written.
 
 ## Search tests

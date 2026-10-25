@@ -1,11 +1,14 @@
 """
 OpenStreetMap data kept in the cache (cache/osm, see cache.py).
 
-- Themes: features of one kind on a fixed grid of 0.25° tiles, fetched from the
-  Overpass API and stored as GeoJSON (cache/osm/themes/<theme>/<tile>.geojson), so
-  nearby searches share tiles and large areas are just more tiles:
+- Themes: features of one kind on a fixed grid of 0.25° tiles, stored as GeoJSON
+  (cache/osm/themes/<theme>/<tile>.geojson), so nearby searches share tiles and
+  large areas are just more tiles:
     coastline  natural=coastline ways (the sea mask, coast.py)
-    cliff      natural=cliff ways and climbing=crag features (search areas, later)
+    cliff      natural=cliff ways and climbing=crag features (search areas)
+  A tile comes from the Overpass API, or from the downloaded Geofabrik extracts
+  (osmextract.py) when they cover it whole; such tiles are rebuilt when the extracts
+  are updated.
 - Nominatim answers (cache/osm/nominatim.sqlite): place names and countries, so the
   same point is not asked twice (Nominatim allows one request per second).
 """
@@ -16,7 +19,7 @@ import os
 import sqlite3
 import time
 from datetime import datetime, timezone
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import requests
 from shapely.geometry import LineString, MultiLineString, Point, shape
@@ -27,10 +30,15 @@ OVERPASS_URL = "https://overpass-api.de/api/interpreter"
 NOMINATIM_URL = "https://nominatim.openstreetmap.org/reverse"
 HEADERS = {"User-Agent": "Find-a-Line/1.0 (highline finder)"}
 TILE_DEG = 0.25
-THEMES = {
-    "coastline": 'way["natural"="coastline"]({bbox});',
-    "cliff": 'way["natural"="cliff"]({bbox});nwr["climbing"="crag"]({bbox});',
+# What each theme holds: (OSM type, key, value); the Overpass queries and the
+# extracts (osmextract.py) use the same list
+THEME_TAGS = {
+    "coastline": [("way", "natural", "coastline")],
+    "cliff": [("way", "natural", "cliff"), ("node", "climbing", "crag"), ("way", "climbing", "crag"),
+              ("relation", "climbing", "crag")],
 }
+THEMES = {name: "".join(f'{kind}["{key}"="{value}"]({{bbox}});' for kind, key, value in tags)
+          for name, tags in THEME_TAGS.items()}
 
 
 def tiles(west: float, south: float, east: float, north: float) -> List[Tuple[float, float]]:
@@ -56,7 +64,24 @@ def _geometry(element: Dict):
     return None
 
 
-def _fetch_tile(theme: str, lat: float, lon: float, path: str, cache_dir: str):
+def theme_path(cache_dir: str, theme: str, lat: float, lon: float) -> str:
+    return os.path.join(cache_dir, "osm", "themes", theme, f"{tile_name(lat, lon)}.geojson")
+
+
+def write_tile(path: str, features: List[Dict]):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = f"{path}.{os.getpid()}.part"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump({"type": "FeatureCollection", "features": features}, f)
+    os.replace(tmp, path)
+
+
+def fetch_tile(theme: str, lat: float, lon: float, cache_dir: str):
+    """Build one theme tile: from the extracts when they cover it, else from Overpass."""
+    import osmextract
+    if osmextract.build_tile(cache_dir, theme, lat, lon):
+        return
+    path = theme_path(cache_dir, theme, lat, lon)
     bbox = f"{lat},{lon},{lat + TILE_DEG},{lon + TILE_DEG}"
     query = f"[out:json][timeout:90];({THEMES[theme].format(bbox=bbox)});out geom;"
     response = requests.get(OVERPASS_URL, params={"data": query}, headers=HEADERS, timeout=120)
@@ -68,25 +93,29 @@ def _fetch_tile(theme: str, lat: float, lon: float, path: str, cache_dir: str):
             features.append({"type": "Feature", "geometry": geometry.__geo_interface__,
                              "properties": {"id": f"{element['type']}/{element['id']}",
                                             "tags": element.get("tags", {})}})
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    tmp = f"{path}.{os.getpid()}.part"
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump({"type": "FeatureCollection", "features": features}, f)
-    os.replace(tmp, path)
+    write_tile(path, features)
     cache.record(cache_dir, path, url=OVERPASS_URL)
 
 
+def from_extract(row: Optional[Dict]) -> bool:
+    """Whether an index row is a theme tile built from extracts (updated with them)."""
+    return bool(row and (row.get("url") or "").startswith("geofabrik:"))
+
+
 def theme(name: str, west: float, south: float, east: float, north: float, cache_dir: str,
-          refresh: bool = False) -> List[Dict]:
+          update: Optional[str] = None) -> List[Dict]:
     """Features of a theme over a WGS84 box (each once, with "geometry" as a shapely shape).
 
-    Missing tiles are fetched from Overpass; requests errors are passed on.
+    Missing tiles (and with update, stale ones from Overpass) are built; requests
+    errors are passed on.
     """
     found: Dict[str, Dict] = {}
     for lat, lon in tiles(west, south, east, north):
-        path = os.path.join(cache_dir, "osm", "themes", name, f"{tile_name(lat, lon)}.geojson")
-        if refresh or cache.state(cache_dir, path) is None:
-            _fetch_tile(name, lat, lon, path, cache_dir)
+        path = theme_path(cache_dir, name, lat, lon)
+        row = cache.info(cache_dir, path)
+        if cache.due(cache_dir, path, update=None if from_extract(row) else update,
+                     ttl=cache.TTL_DAYS["osm-theme"]):
+            fetch_tile(name, lat, lon, cache_dir)
         with open(path, encoding="utf-8") as f:
             for feature in json.load(f)["features"]:
                 found.setdefault(feature["properties"]["id"],

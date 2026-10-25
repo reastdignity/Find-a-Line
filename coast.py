@@ -54,9 +54,9 @@ def _rasterize(geometries, grid: Grid) -> np.ndarray:
                      fill=0, dtype="uint8").astype(bool)
 
 
-def _overpass_coastline(grid: Grid, cache_dir: str, refresh: bool):
+def _osm_coastline(grid: Grid, cache_dir: str, update: Optional[str]):
     """OSM coastline ways around the grid as lines in the grid CRS (cached theme tiles)."""
-    features = osm.theme("coastline", *_grid_bbox_wgs84(grid), cache_dir, refresh)
+    features = osm.theme("coastline", *_grid_bbox_wgs84(grid), cache_dir, update)
     return [project(f["geometry"], "EPSG:4326", grid.crs) for f in features
             if isinstance(f["geometry"], (LineString, MultiLineString))]
 
@@ -89,14 +89,38 @@ def world_file(cache_dir: str) -> Optional[str]:
     return found[-1] if found else None
 
 
-def _world_polygons(cache_dir: str, refresh: bool) -> str:
-    """Path of the OSM water polygons shapefile, downloading it once (about 900 MB).
+def world_newer(cache_dir: str) -> bool:
+    """Whether osmdata.openstreetmap.de has newer water polygons than the downloaded ones
+    (their folder is named after the date of the data); when not, only the check time
+    of the files changes."""
+    shapefile = world_file(cache_dir)
+    if not shapefile:
+        return True
+    folder = os.path.dirname(os.path.dirname(shapefile))
+    response = requests.head(WORLD_URL, headers=HEADERS, timeout=60, allow_redirects=True)
+    response.raise_for_status()
+    modified = response.headers.get("Last-Modified")
+    day = email.utils.parsedate_to_datetime(modified).date().isoformat() if modified else ""
+    newer = day > os.path.basename(folder)
+    if not newer:
+        cache.checked(cache_dir, _world_files(folder))
+    return newer
+
+
+def _world_files(folder: str):
+    return [p for p in glob.glob(os.path.join(folder, "**", "*"), recursive=True) if os.path.isfile(p)]
+
+
+def world_polygons(cache_dir: str, update: Optional[str] = None) -> str:
+    """Path of the OSM water polygons shapefile, downloading it once (about 900 MB);
+    with update ("stale" or "all") a newer file is downloaded when there is one.
 
     Each download goes into a folder named after the date of the data (Last-Modified);
     an older one is deleted only after the new one is unpacked.
     """
     shapefile = world_file(cache_dir)
-    if shapefile and not refresh:
+    if shapefile and not (cache.stale(cache.info(cache_dir, shapefile), cache.TTL_DAYS["water-polygons"], update)
+                          and world_newer(cache_dir)):
         return shapefile
     with requests.get(WORLD_URL, stream=True, headers=HEADERS, timeout=120) as response:
         response.raise_for_status()
@@ -116,8 +140,8 @@ def _world_polygons(cache_dir: str, refresh: bool) -> str:
     with zipfile.ZipFile(archive) as z:
         z.extractall(folder)
     os.remove(archive)
-    files = [p for p in glob.glob(os.path.join(folder, "**", "*"), recursive=True) if os.path.isfile(p)]
-    cache.record_many(cache_dir, files, url=WORLD_URL, last_modified=modified, source_date=day.isoformat())
+    cache.record_many(cache_dir, _world_files(folder), url=WORLD_URL, last_modified=modified,
+                      source_date=day.isoformat())
     old = shapefile and os.path.dirname(os.path.dirname(shapefile))
     if old and os.path.abspath(old) != os.path.abspath(folder):
         shutil.rmtree(old, ignore_errors=True)
@@ -125,7 +149,7 @@ def _world_polygons(cache_dir: str, refresh: bool) -> str:
 
 
 def sea_mask(grid: Grid, cache_dir: str, mode: str, copernicus_sea: np.ndarray,
-             refresh: bool = False) -> Tuple[np.ndarray, str, Optional[str]]:
+             update: Optional[str] = None) -> Tuple[np.ndarray, str, Optional[str]]:
     """Boolean sea mask on the grid.
 
     Returns (mask, description of the source, warning or None).
@@ -138,13 +162,13 @@ def sea_mask(grid: Grid, cache_dir: str, mode: str, copernicus_sea: np.ndarray,
     downloaded = mode == "overpass" and world_file(cache_dir) is not None
     if mode == "world" or downloaded:
         import geopandas as gpd
-        shapefile = world_file(cache_dir) if downloaded else _world_polygons(cache_dir, refresh)
+        shapefile = world_polygons(cache_dir, update)
         water = gpd.read_file(shapefile, bbox=_grid_bbox_wgs84(grid)).to_crs(grid.crs)
         return _rasterize(water.geometry, grid), "OpenStreetMap water polygons (world file)", None
 
     if mode == "overpass":
         try:
-            lines = _overpass_coastline(grid, cache_dir, refresh)
+            lines = _osm_coastline(grid, cache_dir, update)
         except (requests.RequestException, ValueError) as e:
             warning = (f"OpenStreetMap coastline could not be downloaded from Overpass ({e}). "
                        "Using the Copernicus water body mask instead: its shoreline is only accurate "
@@ -154,6 +178,6 @@ def sea_mask(grid: Grid, cache_dir: str, mode: str, copernicus_sea: np.ndarray,
             return copernicus_sea, "Copernicus water body mask (fallback)", warning
         if not lines:  # no coast near the area: the mask is right away from the shore
             return copernicus_sea, "no coastline nearby (OpenStreetMap)", None
-        return _sea_from_coastline(lines, grid, copernicus_sea), "OpenStreetMap coastline (Overpass)", None
+        return _sea_from_coastline(lines, grid, copernicus_sea), "OpenStreetMap coastline (Overpass or extracts)", None
 
     return copernicus_sea, "Copernicus water body mask", None

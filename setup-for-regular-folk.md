@@ -139,6 +139,22 @@ git pull
 
 The next `uv run` installs any new library versions by itself.
 
+## Getting newer map data
+Downloaded data stays in the `cache` folder and is not checked again on its own. Now and then (say twice a year) run:
+
+```
+uv run findaline.py cache status
+uv run findaline.py cache update
+```
+
+`cache status` shows how much space each country takes, what is due for a check, and which of your saved searches were made on data that has changed since (run those again to see the new data). `cache update` downloads what changed, for example new laser scans published by geoportal.gov.pl. To free space, delete a country's folder inside `cache`: it is downloaded again when needed.
+
+If searches near the coast often warn that the coastline could not be downloaded, download OpenStreetMap for your country once (Poland: about 2 GB):
+
+```
+uv run findaline.py osm download poland
+```
+
 ## If something goes wrong
 - **`uv` is not recognised / command not found:** close the window and open a new one after installing uv. If it still isn't found, run the install command from step 1 again.
 - **It takes too long:** use a smaller `--radius`, a higher `--slope-threshold`, or a coarser `--resolution 5`. You can stop the script at any time with Ctrl+C.

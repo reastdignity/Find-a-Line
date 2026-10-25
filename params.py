@@ -114,7 +114,10 @@ class SearchParams(BaseModel):
     fall_zone: float = field(3, "height below the sagged webbing that must stay free (leash fall), m", "rigging")
 
     # Output of the run
-    refresh: bool = field(False, "download data again even if it is cached", "output")
+    update: Optional[Literal["stale", "all"]] = field(
+        None, "check the cached data of the search area before the search: 'stale' checks what is older than "
+              "its interval (see `findaline.py cache status`), 'all' checks everything that can change "
+              "(versioned releases never do)", "data")
     group_distance: Optional[float] = field(None, "group similar lines: both anchors within this many metres "
                                                   "(also the initial setting of the interactive map); default: "
                                                   "20, or twice the resolution if that is more", "output")

@@ -22,6 +22,12 @@ Every top-level folder has an index.sqlite with one row per file: its status
 checked and last used, ETag / Last-Modified, sha256, the date of the source data and
 the processing version. URLs are stored without API keys. A row without its file
 counts as not downloaded; a file without a row is adopted.
+
+Updates (update.py, and --update of a search) never happen on their own. Data that
+can change is checked again after its interval (TTL_DAYS); versioned releases
+(Copernicus 2021, FABDEM v1-2, Malta 2018...) never change and are never checked.
+A file downloaded again with the same content keeps its fetch time (only the check
+time changes), so the fetch time says when the data last changed.
 """
 
 import hashlib
@@ -30,10 +36,19 @@ import re
 import shutil
 import sqlite3
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Dict, Iterable, List, Optional
 
 LAYOUT = 1
+# Days after which `update stale` checks data again
+TTL_DAYS = {
+    "live": 730,         # tiles of services that serve the current state (IGN Spain, WMS orthophotos)
+    "sheet-index": 180,  # answers of the geoportal.gov.pl sheet index (new surveys)
+    "osm-theme": 365,    # OSM theme tiles from Overpass (tiles built from an extract follow the extract)
+    "osm-extract": 30,   # Geofabrik extracts (daily diffs)
+    "water-polygons": 365,  # OSM water polygons of the world (regenerated daily, about 900 MB)
+}
+MISSING_TTL_DAYS = 90    # "missing" tiles of data that can change
 SCHEMA = """CREATE TABLE IF NOT EXISTS files (
     path TEXT PRIMARY KEY,      -- relative to the top-level folder, with /
     status TEXT NOT NULL,       -- ok | missing
@@ -90,6 +105,11 @@ def _split(cache_dir: str, path: str):
     return top, inner
 
 
+def relative(cache_dir: str, path: str) -> str:
+    """A path in the cache as stored in runs and listings: relative, with /."""
+    return os.path.relpath(path, cache_dir).replace("\\", "/")
+
+
 def _connect(cache_dir: str, top: str) -> sqlite3.Connection:
     os.makedirs(os.path.join(cache_dir, top), exist_ok=True)
     db = sqlite3.connect(os.path.join(cache_dir, top, "index.sqlite"), timeout=60)
@@ -122,12 +142,93 @@ def record_many(cache_dir: str, paths: Iterable[str], status: str = "ok", url: O
         by_top.setdefault(top, []).append((path, inner))
     now = _now()
     for top, items in by_top.items():
-        rows = [(inner, status, clean_url(url), now, now, now, etag, last_modified,
-                 _sha256(path) if status == "ok" else None, source_date, processing)
-                for path, inner in items]
         with _connect(cache_dir, top) as db:
+            rows = []
+            for path, inner in items:
+                sha = _sha256(path) if status == "ok" else None
+                old = db.execute("SELECT status, sha256, fetched_at, last_used_at FROM files WHERE path = ?",
+                                 (inner,)).fetchone()
+                # The same content again: only the check time changes
+                fetched = old[2] if old and old[0] == status and old[1] == sha and old[2] else now
+                rows.append((inner, status, clean_url(url), fetched, now, (old and old[3]) or now, etag,
+                             last_modified, sha, source_date, processing))
             db.executemany("INSERT OR REPLACE INTO files VALUES (?,?,?,?,?,?,?,?,?,?,?)", rows)
         db.close()
+
+
+def checked(cache_dir: str, paths: Iterable[str]):
+    """Note that files were checked and are still current."""
+    now = _now()
+    by_top: Dict[str, List[str]] = {}
+    for path in paths:
+        top, inner = _split(cache_dir, path)
+        by_top.setdefault(top, []).append(inner)
+    for top, inners in by_top.items():
+        with _connect(cache_dir, top) as db:
+            db.executemany("UPDATE files SET checked_at = ? WHERE path = ?", [(now, i) for i in inners])
+        db.close()
+
+
+def forget(cache_dir: str, paths: Iterable[str]):
+    """Delete files and their rows (e.g. a sheet replaced by a newer survey)."""
+    for path in paths:
+        if os.path.exists(path):
+            os.remove(path)
+        top, inner = _split(cache_dir, path)
+        with _connect(cache_dir, top) as db:
+            db.execute("DELETE FROM files WHERE path = ?", (inner,))
+        db.close()
+
+
+def info(cache_dir: str, path: str) -> Optional[Dict]:
+    """The index row of a file, as a dict (None if it has none)."""
+    top, inner = _split(cache_dir, path)
+    with _connect(cache_dir, top) as db:
+        db.row_factory = sqlite3.Row
+        row = db.execute("SELECT * FROM files WHERE path = ?", (inner,)).fetchone()
+    db.close()
+    return dict(row) if row else None
+
+
+def rows(cache_dir: str, top: str) -> List[Dict]:
+    """All index rows of a top-level folder; "path" is relative to cache_dir."""
+    if not os.path.exists(os.path.join(cache_dir, top, "index.sqlite")):
+        return []
+    with _connect(cache_dir, top) as db:
+        db.row_factory = sqlite3.Row
+        found = [dict(r) for r in db.execute("SELECT * FROM files")]
+    db.close()
+    for row in found:
+        row["path"] = f"{top}/{row['path']}"
+    return found
+
+
+def age_days(timestamp: Optional[str]) -> float:
+    """Days since an index time (infinite for none)."""
+    if not timestamp:
+        return float("inf")
+    return (datetime.now(timezone.utc) - datetime.fromisoformat(timestamp)) / timedelta(days=1)
+
+
+def stale(row: Optional[Dict], ttl: Optional[int], update: Optional[str]) -> bool:
+    """Whether an update ("stale" or "all") checks a file of an index row again.
+
+    ttl: days between checks of data that can change; None for data that never changes.
+    """
+    if not update or ttl is None or row is None:
+        return False
+    if update == "all":
+        return True
+    limit = MISSING_TTL_DAYS if row["status"] == "missing" else ttl
+    return age_days(row["checked_at"]) > limit
+
+
+def due(cache_dir: str, path: str, processing: int = 1, update: Optional[str] = None,
+        ttl: Optional[int] = None) -> bool:
+    """Whether a file has to be downloaded: not there yet, or to be checked again (stale)."""
+    if state(cache_dir, path, processing) is None:
+        return True
+    return stale(info(cache_dir, path), ttl, update)
 
 
 def state(cache_dir: str, path: str, processing: int = 1) -> Optional[str]:

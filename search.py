@@ -272,7 +272,7 @@ def estimate_search(plan: Plan) -> Estimate:
     p, emit = plan.params, plan.emit
     download_mb = 0.0
     for layer in plan.layers:
-        n_tiles, n_missing, mb = layer.estimate(plan.grid, plan.paths.cache, p.refresh)
+        n_tiles, n_missing, mb = layer.estimate(plan.grid, plan.paths.cache, p.update)
         download_mb += mb
         emit("info", f"{layer.description}: {n_tiles} tiles, {n_missing} to download (~{mb:.0f} MB)")
     if p.water == "fill" and p.coastline == "world" and coast.world_file(plan.paths.cache) is None:
@@ -299,28 +299,28 @@ def prepare_data(plan: Plan) -> Data:
     emit("info", f"\nStep 1: Downloading elevation data ({source.name})...")
     try:
         elevation_path = src.prepare_layer(source.nmt, grid, cache_dir,
-                                           os.path.join(work, "nmt.npy"), "terrain", p.refresh)
+                                           os.path.join(work, "nmt.npy"), "terrain", p.update)
         surface_path = None
         if plan.nmpt:
             surface_path = src.prepare_layer(source.nmpt, grid, cache_dir,
-                                             os.path.join(work, "nmpt.npy"), "surface", p.refresh)
+                                             os.path.join(work, "nmpt.npy"), "surface", p.update)
         # Order matters: where the sea is, then gaps on land (outside the sea), then the water
         water_path = filled_path = sea_zone = None
         if p.water == "fill":
-            wbm = src.water_body_mask(grid, cache_dir, os.path.join(work, "wbm.npy"), p.refresh)
-            sea, coast_source, warning = coast.sea_mask(grid, cache_dir, p.coastline, wbm == src.OCEAN, p.refresh)
+            wbm = src.water_body_mask(grid, cache_dir, os.path.join(work, "wbm.npy"), p.update)
+            sea, coast_source, warning = coast.sea_mask(grid, cache_dir, p.coastline, wbm == src.OCEAN, p.update)
             emit("info", f"Coastline: {coast_source}")
             if warning:
                 emit("warning", warning)
             sea_zone = src.near(sea, p.shore_buffer, grid.res)
         elif p.fill_gaps == "on" and source.fallback:
             # Without --water fill the sea stays without data; keep the gap filling off it too
-            wbm = src.water_body_mask(grid, cache_dir, os.path.join(work, "wbm.npy"), p.refresh)
+            wbm = src.water_body_mask(grid, cache_dir, os.path.join(work, "wbm.npy"), p.update)
             sea_zone = src.near(wbm == src.OCEAN, src.SHORE_BUFFER, grid.res)
         if p.fill_gaps == "on" and source.fallback:
             fallback = src.SOURCES[source.fallback]
             filled_path, filled_px = src.fill_gaps(elevation_path, surface_path, grid, fallback, cache_dir,
-                                                   os.path.join(work, "filled.npy"), p.refresh, exclude=sea_zone)
+                                                   os.path.join(work, "filled.npy"), p.update, exclude=sea_zone)
             if filled_px:
                 emit("info", f"Filled {filled_px * plan.resolution ** 2 / 1e6:.2f} km² of gaps in the data "
                              f"from {fallback.name}")
@@ -420,7 +420,7 @@ def _run_name(plan: Plan) -> str:
 
 def _search_hash(plan: Plan) -> str:
     """What identifies the same tiled search, to resume it."""
-    p = plan.params.model_dump(exclude={"name", "refresh", "no_html", "ortho", "ortho_detail", "threads",
+    p = plan.params.model_dump(exclude={"name", "update", "no_html", "ortho", "ortho_detail", "threads",
                                         "opentopo_key", "tile_size", "group_distance", "group_by"})
     key = {"params": p, "source": plan.source.id, "resolution": plan.resolution}
     return hashlib.sha1(json.dumps(key, sort_keys=True).encode()).hexdigest()[:16]
@@ -500,8 +500,9 @@ def _merged_data() -> List[Dict]:
             merged[key] = json.loads(json.dumps(entry))
             continue
         m = merged[key]
-        if "files" in entry:
-            m["files"] += entry["files"]  # files shared by tiles are counted once per tile
+        if "paths" in entry:  # files shared by tiles are listed once
+            m["paths"] = sorted(set(m["paths"]) | set(entry["paths"]))
+            m["files"] = len(m["paths"])
         for k, pick in (("oldest", min), ("newest", max)):
             values = [v for v in (m.get("fetched", {}).get(k), entry.get("fetched", {}).get(k)) if v]
             if values:
@@ -573,7 +574,8 @@ def save_run(plan: Plan, lines: Lines, confirm: Optional[Confirm] = None, run: O
             # Detailed orthophoto only around one line per group (variants lie within the strip)
             spots = [g["rep"] for g in spot_groups][:None if circle else p.ortho_detail]
             ortho_folder = ortho.cache_folder(plan.paths.cache, source.ortho)
-            tiles = ortho.missing_tiles(ortho.tiles_to_cache(spots, plan.area), ortho_folder)
+            tiles = ortho.missing_tiles(ortho.tiles_to_cache(spots, plan.area), ortho_folder, plan.paths.cache,
+                                        p.update, source.ortho.ttl_days)
             minutes = len(tiles) * ORTHO_SECONDS_PER_TILE / 60
             emit("info", f"Orthophoto for offline use: {len(tiles)} tiles to download "
                          f"(~{len(tiles) * ortho.APPROX_TILE_KB / 1000:.0f} MB, ~{minutes:.0f} min)")

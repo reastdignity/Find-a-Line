@@ -117,6 +117,11 @@ class Layer:
     # Version of what download_tile does with the data; tiles made by another version are fetched again
     processing = 1
 
+    @property
+    def ttl_days(self) -> Optional[int]:
+        """Days between update checks; None for a release that never changes (see cache.py)."""
+        return cache.TTL_DAYS["live"] if "/live" in self.folder else None
+
     def tiles(self, grid: Grid) -> list:
         raise NotImplementedError
 
@@ -126,21 +131,22 @@ class Layer:
     def bytes_per_tile(self) -> float:
         return 0
 
-    def missing(self, grid: Grid, cache_dir: str, refresh: bool) -> list:
+    def missing(self, grid: Grid, cache_dir: str, update: Optional[str]) -> list:
+        """Tiles to download: not cached yet, or due for a check with update ("stale" or "all")."""
         return [t for t in self.tiles(grid)
-                if refresh or cache.state(cache_dir, self.tile_path(cache_dir, t), self.processing) is None]
+                if cache.due(cache_dir, self.tile_path(cache_dir, t), self.processing, update, self.ttl_days)]
 
-    def estimate(self, grid: Grid, cache_dir: str, refresh: bool) -> Tuple[int, int, float]:
+    def estimate(self, grid: Grid, cache_dir: str, update: Optional[str]) -> Tuple[int, int, float]:
         """(tiles, tiles to download, MB to download)."""
-        missing = self.missing(grid, cache_dir, refresh)
+        missing = self.missing(grid, cache_dir, update)
         return len(self.tiles(grid)), len(missing), len(missing) * self.bytes_per_tile() / 1e6
 
     def download_tile(self, tile, path: str) -> Fetched:
         """Download one tile to path (received 0 and no file if the service has no data there)."""
         raise NotImplementedError
 
-    def download(self, grid: Grid, cache_dir: str, refresh: bool, label: str):
-        todo = self.missing(grid, cache_dir, refresh)
+    def download(self, grid: Grid, cache_dir: str, update: Optional[str], label: str):
+        todo = self.missing(grid, cache_dir, update)
         total = len(self.tiles(grid))
         print(f"{self.description}: {total} tiles ({total - len(todo)} cached, {len(todo)} to download)")
         if not todo:
@@ -153,6 +159,11 @@ class Layer:
                 received += future.result()
                 progress.download.update(1, MB=f"{received / 1e6:.0f}")
         progress.download.finish(f"{received / 1e6:.0f} MB")
+
+    def tile_of(self, path: str):
+        """The tile of a cached file (path relative to the cache, with /), or None if it
+        is not one of this layer's tiles. Used by update.py for data that can change."""
+        return None
 
     def _download_and_record(self, tile, cache_dir: str) -> int:
         path = self.tile_path(cache_dir, tile)
@@ -173,7 +184,8 @@ class Layer:
         """What a run records about the data it used (see runs.py)."""
         files = self.files(grid, cache_dir)
         return {"layer": self.description, "folder": self.folder, "files": len(files),
-                "fetched": cache.touch(cache_dir, files)}
+                "fetched": cache.touch(cache_dir, files),
+                "paths": sorted(cache.relative(cache_dir, p) for p in files)}
 
 
 class WcsTiles(Layer):
@@ -223,12 +235,27 @@ class WcsTiles(Layer):
                     tiles.append((res, i, j))
         return tiles
 
-    def tile_path(self, cache_dir: str, tile) -> str:
-        res, i, j = tile
+    def _tiling(self, res: float) -> str:
         # The tiling in the path: tiles of another CRS, size or format never mix
         fmt = "asc" if re.search(r"aaigrid|asc", self.fmt) else "tif"
-        tiling = f"{self.crs.lower().replace(':', '')}-{res:g}m-{self.tile_px}px-{fmt}"
-        return os.path.join(cache_dir, self.folder, tiling, f"{i}_{j}.tif")
+        return f"{self.crs.lower().replace(':', '')}-{res:g}m-{self.tile_px}px-{fmt}"
+
+    def tile_path(self, cache_dir: str, tile) -> str:
+        res, i, j = tile
+        return os.path.join(cache_dir, self.folder, self._tiling(res), f"{i}_{j}.tif")
+
+    def tile_of(self, path: str):
+        match = re.fullmatch(rf"{re.escape(self.folder)}/([^/]+)/(-?\d+)_(-?\d+)\.tif", path)
+        if not match:
+            return None
+        res = float(re.search(r"-([\d.]+)m-", match.group(1)).group(1))
+        return (res, int(match.group(2)), int(match.group(3))) if match.group(1) == self._tiling(res) else None
+
+    def bounds_wgs84(self, tile) -> Tuple[float, float, float, float]:
+        """(west, south, east, north) of a tile."""
+        res, i, j = tile
+        size = self.tile_px * res
+        return transform_bounds(self.crs, "EPSG:4326", i * size, j * size, (i + 1) * size, (j + 1) * size)
 
     def bytes_per_tile(self) -> float:
         return self.tile_px ** 2 * self.bytes_per_px
@@ -384,7 +411,9 @@ class SheetTiles(Layer):
         self.folder, self.native_res, self.min_res, self._bytes = folder, native_res, min_res, bytes_per_tile
         self._years: Optional[List[str]] = None
         self._listed: Dict[tuple, list] = {}
+        self._versions: Dict[str, set] = {}  # every listed survey of a godło
         self._cache_dir: Optional[str] = None  # set by the methods that get it (tiles() does not)
+        self._update: Optional[str] = None
 
     def _wfs(self, **params) -> str:
         response = requests.get(self.index_url, timeout=300, headers=HEADERS,
@@ -427,6 +456,26 @@ class SheetTiles(Layer):
             json.dump({"layers": self._year_layers(), "sheets": sheets}, out)
         os.replace(tmp, path)
 
+    def index_path(self, cache_dir: str, lat: float, lon: float) -> str:
+        """The cached index answer of one 0.25° tile."""
+        top = self.folder.split("/")[0]
+        return os.path.join(cache_dir, top, "sheet-index", self.prefix, f"{osm.tile_name(lat, lon)}.json")
+
+    def _index_tile(self, cache_dir: str, lat: float, lon: float, update: Optional[str] = None) -> List[Dict]:
+        """The sheets listed in one tile, asking the index when not cached or stale."""
+        path = self.index_path(cache_dir, lat, lon)
+        if cache.due(cache_dir, path, update=update, ttl=cache.TTL_DAYS["sheet-index"]):
+            self._fetch_tile(lat, lon, path)
+            cache.record(cache_dir, path, url=self.index_url)
+        with open(path, encoding="utf-8") as f:
+            return json.load(f)["sheets"]
+
+    @staticmethod
+    def _sheet(item: Dict) -> Sheet:
+        url = item["url"]
+        return Sheet(item["year"], re.sub(r"(\.[a-z]+)+$", "", url.rsplit("/", 1)[-1], flags=re.I),
+                     item["godlo"], url, item["crs"], item["res"])
+
     def _query(self, grid: Grid, cache_dir: str) -> list:
         """The newest sheet per godło over the grid, newest first."""
         west, south, east, north = transform_bounds(grid.crs, "EPSG:4326", *grid.bounds)
@@ -437,28 +486,44 @@ class SheetTiles(Layer):
             from shapely.geometry import box
             shape = project(grid.area_shape, grid.crs, "EPSG:2180").intersection(
                 box(g_left, g_bottom, g_right, g_top))
-        top = self.folder.split("/")[0]
         newest: Dict[str, Sheet] = {}
         for lat, lon in osm.tiles(west, south, east, north):
-            path = os.path.join(cache_dir, top, "sheet-index", self.prefix, f"{osm.tile_name(lat, lon)}.json")
-            if cache.state(cache_dir, path) is None:
-                self._fetch_tile(lat, lon, path)
-                cache.record(cache_dir, path, url=self.index_url)
-            with open(path, encoding="utf-8") as f:
-                listed = json.load(f)["sheets"]
-            for item in listed:
-                left, bottom, right, top_ = item["extent"]
-                if not (left < g_right and right > g_left and bottom < g_top and top_ > g_bottom):
+            for item in self._index_tile(cache_dir, lat, lon, self._update):
+                left, bottom, right, top = item["extent"]
+                if not (left < g_right and right > g_left and bottom < g_top and top > g_bottom):
                     continue
-                if shape is not None and not shape.intersects(box(left, bottom, right, top_)):
+                if shape is not None and not shape.intersects(box(left, bottom, right, top)):
                     continue
-                url = item["url"]
-                sheet = Sheet(item["year"], re.sub(r"(\.[a-z]+)+$", "", url.rsplit("/", 1)[-1], flags=re.I),
-                              item["godlo"], url, item["crs"], item["res"])
+                sheet = self._sheet(item)
+                self._versions.setdefault(sheet.godlo, set()).add(sheet)
                 old = newest.get(sheet.godlo)
                 if old is None or _sheet_order(sheet) > _sheet_order(old):
                     newest[sheet.godlo] = sheet
         return sorted(newest.values(), key=_sheet_order, reverse=True)
+
+    def _prune(self, cache_dir: str, sheets: List[Sheet]) -> int:
+        """Delete cached older surveys of sheets whose newest survey is cached; how many."""
+        older = []
+        for sheet in sheets:
+            if os.path.exists(self.tile_path(cache_dir, sheet)):
+                older += [self.tile_path(cache_dir, v) for v in self._versions.get(sheet.godlo, ())
+                          if v != sheet and os.path.exists(self.tile_path(cache_dir, v))]
+        cache.forget(cache_dir, older)
+        return len(older)
+
+    def update_index_tile(self, cache_dir: str, lat: float, lon: float) -> Tuple[int, int, int]:
+        """Ask the index again for one tile and download the newer surveys of the cached
+        sheets there (the older files are deleted). Returns (new sheets, MB, deleted)."""
+        listed = [self._sheet(item) for item in self._index_tile(cache_dir, lat, lon, "all")]
+        newest: Dict[str, Sheet] = {}
+        for sheet in listed:
+            self._versions.setdefault(sheet.godlo, set()).add(sheet)
+            if sheet.godlo not in newest or _sheet_order(sheet) > _sheet_order(newest[sheet.godlo]):
+                newest[sheet.godlo] = sheet
+        cached = {s.godlo for s in listed if os.path.exists(self.tile_path(cache_dir, s))}
+        todo = [s for g, s in newest.items() if g in cached and not os.path.exists(self.tile_path(cache_dir, s))]
+        received = sum(self._download_and_record(s, cache_dir) for s in todo)
+        return len(todo), received / 1e6, self._prune(cache_dir, list(newest.values()))
 
     def _cached(self, grid: Grid, cache_dir: str) -> list:
         """Cached sheets over the grid, newest first (when the index cannot be reached)."""
@@ -473,7 +538,7 @@ class SheetTiles(Layer):
         return sorted(sheets, key=_sheet_order, reverse=True)
 
     def tiles(self, grid: Grid) -> list:
-        key = (grid.crs, tuple(grid.bounds))
+        key = (grid.crs, tuple(grid.bounds), self._update)
         if key not in self._listed:
             try:
                 self._listed[key] = self._query(grid, self._cache_dir)
@@ -483,25 +548,33 @@ class SheetTiles(Layer):
                 self._listed[key] = None
         return self._listed[key]
 
-    def missing(self, grid: Grid, cache_dir: str, refresh: bool) -> list:
-        self._cache_dir = cache_dir
+    def _use(self, cache_dir: str, update: Optional[str] = None):
+        """What tiles() needs (it gets only the grid)."""
+        self._cache_dir, self._update = cache_dir, update
+
+    def missing(self, grid: Grid, cache_dir: str, update: Optional[str]) -> list:
+        self._use(cache_dir, update)
         if self.tiles(grid) is None:
             return []
-        return super().missing(grid, cache_dir, refresh)
+        return super().missing(grid, cache_dir, update)
 
-    def estimate(self, grid: Grid, cache_dir: str, refresh: bool) -> Tuple[int, int, float]:
-        self._cache_dir = cache_dir
+    def estimate(self, grid: Grid, cache_dir: str, update: Optional[str]) -> Tuple[int, int, float]:
+        self._use(cache_dir, update)
         if self.tiles(grid) is None:
             return len(self._cached(grid, cache_dir)), 0, 0.0
-        return super().estimate(grid, cache_dir, refresh)
+        return super().estimate(grid, cache_dir, update)
 
-    def download(self, grid: Grid, cache_dir: str, refresh: bool, label: str):
-        self._cache_dir = cache_dir
-        if self.tiles(grid) is not None:
-            super().download(grid, cache_dir, refresh, label)
+    def download(self, grid: Grid, cache_dir: str, update: Optional[str], label: str):
+        self._use(cache_dir, update)
+        sheets = self.tiles(grid)
+        if sheets is not None:
+            super().download(grid, cache_dir, update, label)
+            pruned = self._prune(cache_dir, sheets)
+            if pruned:
+                print(f"{self.description}: {pruned} older surveys replaced by newer sheets (deleted)")
 
     def files(self, grid: Grid, cache_dir: str) -> List[str]:
-        self._cache_dir = cache_dir
+        self._use(cache_dir, self._update)
         if self.tiles(grid) is None:
             return [self.tile_path(cache_dir, s) for s in self._cached(grid, cache_dir)]
         return super().files(grid, cache_dir)
@@ -577,7 +650,7 @@ class FileLayer(Layer):
     def tile_path(self, cache_dir: str, tile) -> str:
         return tile
 
-    def missing(self, grid, cache_dir, refresh):
+    def missing(self, grid, cache_dir, update):
         return []
 
     def used(self, grid: Grid, cache_dir: str) -> Dict:
@@ -592,6 +665,11 @@ class OrthoService:
     layer: str
     folder: str      # in the cache; tiles go to <folder>/wm256/{z}/{x}/{y}.jpg
     attribution: str
+
+    @property
+    def ttl_days(self) -> Optional[int]:
+        """Days between update checks; None for a dated orthophoto that never changes."""
+        return cache.TTL_DAYS["live"] if "/live" in self.folder else None
 
 
 @dataclass
@@ -781,9 +859,9 @@ used_data: List[Dict] = []
 
 
 def prepare_layer(layer: Layer, grid: Grid, cache_dir: str, out_path: str, label: str,
-                  refresh: bool = False) -> str:
+                  update: Optional[str] = None) -> str:
     """Download what is missing and bring the layer onto the working grid (.npy)."""
-    layer.download(grid, cache_dir, refresh, label)
+    layer.download(grid, cache_dir, update, label)
     build_mosaic(layer.files(grid, cache_dir), grid, out_path, label, shift=layer.shift)
     used_data.append(layer.used(grid, cache_dir))
     return out_path
@@ -877,9 +955,9 @@ WATER_MASK = DegreeTiles("Copernicus water body mask", "copernicus30/2021/wbm",
                          bytes_per_tile=1e5)
 
 
-def water_body_mask(grid: Grid, cache_dir: str, out_path: str, refresh: bool = False) -> np.ndarray:
+def water_body_mask(grid: Grid, cache_dir: str, out_path: str, update: Optional[str] = None) -> np.ndarray:
     """Copernicus water body mask on the grid (OCEAN, LAKE...), open sea where tiles are missing."""
-    WATER_MASK.download(grid, cache_dir, refresh, "water mask")
+    WATER_MASK.download(grid, cache_dir, update, "water mask")
     wbm = build_mosaic(WATER_MASK.files(grid, cache_dir), grid, out_path, "water mask", categorical=True)
     used_data.append(WATER_MASK.used(grid, cache_dir))
     for tile in WATER_MASK.tiles(grid):
@@ -966,7 +1044,7 @@ def fill_water(elevation_path: str, surface_path: Optional[str], grid: Grid, wbm
 
 
 def fill_gaps(elevation_path: str, surface_path: Optional[str], grid: Grid, fallback: "Source",
-              cache_dir: str, out_path: str, refresh: bool = False,
+              cache_dir: str, out_path: str, update: Optional[str] = None,
               exclude: Optional[np.ndarray] = None) -> Tuple[str, int]:
     """Fill the remaining gaps in the data on land from another source.
 
@@ -998,7 +1076,7 @@ def fill_gaps(elevation_path: str, surface_path: Optional[str], grid: Grid, fall
         if not gaps.any():
             continue
         other = np.asarray(np.load(prepare_layer(layer, grid, cache_dir, os.path.join(work, name),
-                                                 f"gap fill ({fallback.name})", refresh), mmap_mode="r"))
+                                                 f"gap fill ({fallback.name})", update), mmap_mode="r"))
         values = np.asarray(target)
         gy, gx = np.gradient(np.where(np.isfinite(values), values, other), grid.res)
         flat = np.degrees(np.arctan(np.hypot(gx, gy))) < GAP_MATCH_SLOPE

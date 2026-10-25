@@ -13,7 +13,8 @@ is search.py.
 Example:
     python findaline.py --lat 50.1559508 --lon 19.7562722
 
-Run `python findaline.py --help` for all options.
+Run `python findaline.py --help` for all options. The cache commands
+(`python findaline.py cache status|update`, `osm download|update`) are update.py.
 """
 
 import gc
@@ -125,6 +126,9 @@ if __name__ == "__main__":
     # Output redirected to a file gets the Windows code page, which has no "²" and the like
     for stream in (sys.stdout, sys.stderr):
         stream.reconfigure(encoding="utf-8", errors="replace")
+    if len(sys.argv) > 1 and sys.argv[1] in ("cache", "osm"):
+        import update
+        sys.exit(update.main(sys.argv[1:]))
     searches, options = pm.parse_cli(description=DESCRIPTION)
     data_dir = cache.data_dir(options.data_dir)
     stopped = []

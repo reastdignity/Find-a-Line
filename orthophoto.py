@@ -12,7 +12,7 @@ import os
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import Dict, Iterable, List, Set, Tuple
+from typing import Dict, Iterable, List, Optional, Set, Tuple
 
 import requests
 from pyproj import Transformer
@@ -81,8 +81,29 @@ def tiles_to_cache(lines: List[Dict], area) -> Set[Tile]:
     return tiles
 
 
-def missing_tiles(tiles: Iterable[Tile], folder: str) -> List[Tile]:
+def missing_tiles(tiles: Iterable[Tile], folder: str, cache_dir: Optional[str] = None,
+                  update: Optional[str] = None, ttl: Optional[int] = None) -> List[Tile]:
+    """Tiles not cached yet, and with update ("stale" or "all") the ones due for a check."""
+    if update and ttl is not None:
+        return sorted(t for t in tiles if cache.due(cache_dir, tile_path(folder, *t), update=update, ttl=ttl))
     return sorted(t for t in tiles if not os.path.exists(tile_path(folder, *t)))
+
+
+def tile_of(path: str) -> Optional[Tile]:
+    """(z, x, y) of a cached tile (a path ending in z/x/y.jpg)."""
+    parts = path.replace("\\", "/").split("/")
+    if len(parts) < 3 or not parts[-1].endswith(".jpg"):
+        return None
+    try:
+        return int(parts[-3]), int(parts[-2]), int(parts[-1][:-4])
+    except ValueError:
+        return None
+
+
+def bounds_wgs84(z: int, x: int, y: int) -> Tuple[float, float, float, float]:
+    """(west, south, east, north) of an XYZ tile."""
+    south, west, north, east = map(float, _wms_bbox(z, x, y).split(","))
+    return west, south, east, north
 
 
 def _wms_bbox(z: int, x: int, y: int) -> str:
