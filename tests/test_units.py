@@ -149,3 +149,33 @@ def test_covered_metres_match_profiles():
     fast = ls.covered_metres(a1, a2, 2.0, mask)
     slow = [sh.line_profile(tuple(p), tuple(q), elevation, 2.0, water=mask)["water_m"] for p, q in zip(a1, a2)]
     assert fast == slow
+
+
+@pytest.mark.parametrize("model", ["formula", "sag"])
+def test_evaluate_lines_matches_evaluate_line(model):
+    """The numba check gives exactly (==) the decisions and values of helpers.evaluate_line."""
+    import helpers as sh
+    import linesearch as ls
+    import sag
+    rng = np.random.default_rng(7)
+    terrain = (rng.random((120, 120)) * 30 + 100).astype(np.float32)
+    terrain[rng.random((120, 120)) < 0.002] = np.nan          # a few pixels without data
+    surface = (terrain + rng.random((120, 120)) * 15).astype(np.float32)
+    surface[rng.random((120, 120)) < 0.3] = np.nan            # no surface model in places
+    terrain[:, :8] += 60                                     # cliffs on both sides, so lines pass
+    terrain[:, -8:] += 60
+    anchors = np.column_stack([rng.integers(0, 120, 400),  # on the cliffs, and some anywhere
+                               np.where(rng.random(400) < 0.5, rng.integers(0, 8, 400), rng.integers(112, 120, 400))])
+    anchors[:50] = rng.integers(0, 120, (50, 2))
+    found = rng.integers(0, 400, (3000, 2))
+    table = sag.EnvelopeTable(sag.Rigging(), 20, 200) if model == "sag" else None
+    for mode in ("mark", "reject"):
+        fast = ls.evaluate_lines(found, anchors, terrain, 1.0, surface, table, mode)
+        slow = []
+        for i, j in found:
+            result = sh.evaluate_line(anchors[i], anchors[j], terrain, 1.0, surface, table)
+            if sh.is_valid(result, mode):  # as find_valid_lines always made them
+                elev_a1, elev_a2, length, clearance, clearance_nmpt = result
+                slow.append(sh.Line(tuple(map(int, anchors[i])), tuple(map(int, anchors[j])),
+                                    length, elev_a1, elev_a2, clearance, clearance_nmpt))
+        assert slow and fast == slow

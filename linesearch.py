@@ -185,6 +185,114 @@ def _pairs(z, anchors, elev, rings, todo, order, starts, cell, cells_x, res,
         counts[q, 0], counts[q, 1], counts[q, 2] = candidates, checked, found
 
 
+@njit(cache=True)
+def _interp(x, xp, fp):
+    """np.interp of one value, with numpy's arithmetic (the same result to the last bit)."""
+    n = xp.size
+    if x != x:
+        return x
+    if x < xp[0]:
+        return fp[0]
+    if x > xp[n - 1]:
+        return fp[n - 1]
+    j = np.searchsorted(xp, x, side="right") - 1
+    if j == n - 1 or xp[j] == x:
+        return fp[j]
+    slope = (fp[j + 1] - fp[j]) / (xp[j + 1] - xp[j])
+    result = slope * (x - xp[j]) + fp[j]
+    if result != result:
+        result = slope * (x - xp[j + 1]) + fp[j + 1]
+        if result != result and fp[j] == fp[j + 1]:
+            result = fp[j]
+    return result
+
+
+@njit(parallel=True, cache=True)
+def _evaluate(z, s, has_s, anchors, found, res, use_sag, log_spans, span_index, ratios, ratio_index,
+              sag, fractions, fall_zone, out):
+    """helpers.evaluate_line for many lines, with the same arithmetic (identical results).
+
+    out[k]: elev_a1, elev_a2, length, clearance, clearance over the surface (NaN: none),
+    and 1 when the line has pixels between its anchors.
+    """
+    blend = np.empty(fractions.size)
+    for k in prange(found.shape[0]):
+        r1, c1 = anchors[found[k, 0], 0], anchors[found[k, 0], 1]
+        r2, c2 = anchors[found[k, 1], 0], anchors[found[k, 1], 1]
+        dr, dc = r2 - r1, c2 - c1
+        steps = max(abs(dr), abs(dc))
+        out[k, 5] = 0.0
+        if steps < 2:
+            continue
+        length = np.hypot(np.float64(dr), np.float64(dc)) * res
+        e1, e2 = np.float64(z[r1, c1]), np.float64(z[r2, c2])
+        emin = min(e1, e2)
+        i0, j0, a, b = 0, 0, 0.0, 0.0
+        if use_sag:  # sag.EnvelopeTable.__call__
+            si = _interp(math.log(length), log_spans, span_index)
+            ri = _interp((e1 - e2) / length, ratios, ratio_index)
+            i0, j0 = min(int(si), log_spans.size - 2), min(int(ri), ratios.size - 2)
+            a, b = si - i0, ri - j0
+        clearance, nmpt, seen = np.inf, np.inf, False
+        row = np.empty(fractions.size) if use_sag else blend
+        if use_sag:
+            for f in range(fractions.size):
+                row[f] = ((1 - a) * (1 - b) * sag[i0, j0, f] + a * (1 - b) * sag[i0 + 1, j0, f]
+                          + (1 - a) * b * sag[i0, j0 + 1, f] + a * b * sag[i0 + 1, j0 + 1, f])
+        for i in range(1, steps):
+            t = i / steps
+            r = r1 + int(np.rint(dr * t))
+            c = c1 + int(np.rint(dc * t))
+            if use_sag:
+                limit = e1 + (e2 - e1) * t - _interp(t, fractions, row) - fall_zone
+            else:
+                limit = emin - sh.SLOPE * min(t, 1 - t) * length - sh.LEASH_FALL
+            margin = limit - np.float64(z[r, c])
+            if margin != margin or clearance != clearance:
+                clearance = np.nan  # np.min: no data anywhere makes the line fail
+            elif margin < clearance:
+                clearance = margin
+            if has_s:
+                over = limit - np.float64(s[r, c])
+                if over == over:  # np.nanmin
+                    seen = True
+                    if over < nmpt:
+                        nmpt = over
+        out[k, 0], out[k, 1], out[k, 2], out[k, 3] = e1, e2, length, clearance
+        out[k, 4] = nmpt if seen else np.nan
+        out[k, 5] = 1.0
+
+
+def evaluate_lines(found: np.ndarray, anchors: np.ndarray, elevation: np.ndarray, res: float,
+                   surface: Optional[np.ndarray], sag_table, nmpt_mode: Optional[str]) -> List[sh.Line]:
+    """The lines among the pairs found (indices into anchors) that pass helpers.evaluate_line
+    and helpers.is_valid: the same decision and values, computed in parallel."""
+    out = np.zeros((len(found), 6))
+    if len(found):
+        if sag_table is None:
+            log_spans = span_index = ratios = ratio_index = fractions = np.zeros(2)
+            sag, fall_zone = np.zeros((2, 2, 2)), 0.0
+        else:
+            log_spans = np.log(sag_table.spans)  # as in EnvelopeTable.__call__
+            span_index = np.arange(len(sag_table.spans)).astype(np.float64)
+            ratios = sag_table.RATIOS.astype(np.float64)
+            ratio_index = np.arange(len(ratios)).astype(np.float64)
+            sag, fractions = np.ascontiguousarray(sag_table.sag), sag_table.fractions.astype(np.float64)
+            fall_zone = float(sag_table.rig.fall_zone)
+        z = np.asarray(elevation)
+        s = np.asarray(surface) if surface is not None else np.zeros((1, 1), dtype=z.dtype)
+        _evaluate(z, s, surface is not None, np.ascontiguousarray(anchors, dtype=np.int64),
+                  np.ascontiguousarray(found, dtype=np.int64), float(res), sag_table is not None, log_spans,
+                  span_index, ratios, ratio_index, sag, fractions, fall_zone, out)
+    lines = []
+    for (i, j), (e1, e2, length, clearance, nmpt, ok) in zip(found.tolist(), out.tolist()):
+        result = (e1, e2, length, clearance, None if nmpt != nmpt else nmpt) if ok else None
+        if sh.is_valid(result, nmpt_mode):
+            lines.append(sh.Line(tuple(anchors[i].tolist()), tuple(anchors[j].tolist()), length, e1, e2,
+                                 clearance, result[4]))
+    return lines
+
+
 @njit(parallel=True, cache=True)
 def _covered_pixels(a1, a2, mask, out):
     """Pixels of each line (anchors excluded, the pixels of helpers.line_profile) that are set in mask."""
@@ -288,19 +396,13 @@ def find_valid_lines(elevation: np.ndarray, surface: Optional[np.ndarray], ancho
         progress.compute.update(len(todo), pairs=f"{checked:,}", lines=sum(len(p) for p in pairs))
     progress.compute.finish()
 
-    # Final decision and clearances, exactly as in the pixel-by-pixel search
-    valid_lines: List[sh.Line] = []
+    # Final decision and clearances, exactly as in the pixel-by-pixel search (evaluate_line)
     found = np.concatenate(pairs) if pairs else np.zeros((0, 2), dtype=np.int64)
+    valid_lines: List[sh.Line] = []
     progress.compute.start("checking lines", len(found), unit="line")
-    for k, (i, j) in enumerate(found):
-        if k % 20000 == 0 and k:
-            progress.compute.update(20000, valid=len(valid_lines))
-        result = sh.evaluate_line(anchors[i], anchors[j], elevation, res, surface, sag_table)
-        if sh.is_valid(result, nmpt_mode):
-            elev_a1, elev_a2, length, clearance, clearance_nmpt = result
-            valid_lines.append(sh.Line(tuple(map(int, anchors[i])), tuple(map(int, anchors[j])),
-                                       length, elev_a1, elev_a2, clearance, clearance_nmpt))
-
+    for part in np.array_split(found, max(1, min(CHUNKS, len(found) // 10000))):
+        valid_lines += evaluate_lines(part, anchors, elevation, res, surface, sag_table, nmpt_mode)
+        progress.compute.update(len(part), valid=len(valid_lines))
     progress.compute.finish(f"{len(valid_lines)} valid")
     print(f"\n{'=' * 60}")
     print(f"Completed in {time.time() - start_time:.2f} seconds")
