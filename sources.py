@@ -354,6 +354,68 @@ def _hemi(value: int, positive: str, negative: str, digits: int) -> str:
     return f"{positive if value >= 0 else negative}{abs(value):0{digits}d}"
 
 
+def grid_tile_name(i: int, j: int, block: int = 10) -> str:
+    """Path of tile (i, j) of a GridTiles layer: blocks of block x block tiles per folder
+    (shared with tools/sk_tiles.py, which makes the tiles)."""
+    return f"{i // block}_{j // block}/{i}_{j}.tif"
+
+
+class GridTiles(Layer):
+    """Square tiles on a fixed grid in a metric CRS, downloaded from one of a list of
+    base URLs as <base>/<grid_tile_name> (our own hosted tiles: tools/sk_tiles.py).
+
+    Tile (i, j) covers [i, i + 1) x [j, j + 1) tile sizes in the CRS; a tile that none of
+    the servers has (404) is outside the data and recorded as missing.
+    """
+
+    def __init__(self, description: str, urls: List[str], crs: str, folder: str, tile_m: float,
+                 native_res: float, bytes_per_tile: float):
+        self.description, self.urls, self.crs, self.folder = description, urls, crs, folder
+        self.tile_m, self.native_res, self._bytes = tile_m, native_res, bytes_per_tile
+
+    def tiles(self, grid: Grid):
+        left, bottom, right, top = transform_bounds(grid.crs, self.crs, *grid.bounds)
+        shape = None
+        if grid.area_shape is not None:
+            from area import project
+            shape = project(grid.area_shape, grid.crs, self.crs)
+        found = []
+        for j in range(math.floor(bottom / self.tile_m), math.floor(top / self.tile_m) + 1):
+            for i in range(math.floor(left / self.tile_m), math.floor(right / self.tile_m) + 1):
+                if shape is not None:
+                    from shapely.geometry import box
+                    if not shape.intersects(box(i * self.tile_m, j * self.tile_m,
+                                                (i + 1) * self.tile_m, (j + 1) * self.tile_m)):
+                        continue
+                found.append((i, j))
+        return found
+
+    def tile_path(self, cache_dir: str, tile) -> str:
+        return os.path.join(cache_dir, self.folder, grid_tile_name(*tile))
+
+    def bytes_per_tile(self) -> float:
+        return self._bytes
+
+    def download_tile(self, tile, path: str) -> Fetched:
+        name, error = grid_tile_name(*tile), None
+        for base in self.urls:  # the first server that answers
+            url = f"{base}/{name}"
+            try:
+                response = _get(url)
+            except RuntimeError as e:
+                error = e
+                continue
+            if response is None:
+                return Fetched(0, url)  # not in the data
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            tmp = _part(path)
+            with open(tmp, "wb") as f:
+                f.write(response.content)
+            os.replace(tmp, path)
+            return Fetched.of(response, url)
+        raise RuntimeError(f"Could not download {self.description} tile {name}: {error}")
+
+
 class DegreeTiles(Layer):
     """1°×1° tiles in WGS84, downloaded whole at native resolution."""
 
@@ -848,7 +910,7 @@ SOURCES: Dict[str, Source] = {s.id: s for s in [
 
 # Rough boxes used when the country cannot be looked up (offline)
 OFFLINE_BOXES = {"mt": (35.78, 36.10, 14.15, 14.60), "pl": (49.0, 54.9, 14.1, 24.2),
-                 "es": (27.0, 43.9, -18.6, 4.4)}
+                 "es": (27.0, 43.9, -18.6, 4.4), "sk": (47.7, 49.65, 16.8, 22.6)}
 
 
 def country_code(lat: float, lon: float, cache_dir: str) -> Optional[str]:

@@ -30,6 +30,9 @@ dev = [
     "httpx2>=2.16.0",
     "pytest>=8",
 ]
+tools = [
+    "huggingface-hub>=2.3.0",
+]
 
 [tool.uv]
 package = false  # a set of scripts, not an installable package
