@@ -10,10 +10,11 @@ cache/<country>/osm-extract/ (deleting the country folder removes it too):
 applies the diffs of Geofabrik's replication service with pyosmium, so only the
 changes are downloaded.
 
-A theme tile (osm.py) is built from the extracts when their outlines together cover
-the tile whole: a tile on a border needs the extracts of both countries, otherwise
-it comes from Overpass. After a download or an update every cached theme tile the
-extracts cover is built again.
+A theme tile (osm.py) is built from the extracts when the part of the tile outside
+their outlines is open sea: it lies in no other country of the Geofabrik index. A
+tile on a border needs the extracts of both countries, otherwise it comes from
+Overpass. After a download or an update every cached theme tile the extracts cover
+is built again.
 """
 
 import glob
@@ -97,15 +98,37 @@ def _load(path: str):
     return _loaded[path][1]
 
 
+def _countries(cache_dir: str) -> List[Tuple[str, object]]:
+    """(id, outline) of the countries of the Geofabrik index (the regions below a continent)."""
+    path = os.path.join(cache_dir, "osm", "geofabrik-index.json")
+    if path not in _loaded or _loaded[path][0] != os.path.getmtime(path):
+        regions = _index(cache_dir)
+        countries = [(rid, shape(f["geometry"])) for rid, f in regions.items()
+                     if f["geometry"] and _country(regions, rid) == rid and "parent" in f["properties"]]
+        _loaded[path] = (os.path.getmtime(path), countries)
+    return _loaded[path][1]
+
+
+def _covered(cache_dir: str, tile, used: List[tuple]) -> bool:
+    """Whether the extracts give everything in the tile: what their outlines leave out lies
+    in no other country (open sea)."""
+    rest = tile.difference(unary_union([u[1] for u in used]))
+    if rest.is_empty:
+        return True
+    regions = _index(cache_dir)
+    mine = {_country(regions, u[0]) for u in used if u[0] in regions}
+    return not any(rid not in mine and outline.intersects(rest) for rid, outline in _countries(cache_dir))
+
+
 def build_tile(cache_dir: str, theme: str, lat: float, lon: float) -> bool:
-    """Build a theme tile from the extracts if they cover it whole; whether they did."""
+    """Build a theme tile from the extracts if they give all of it; whether they did."""
     tile = box(lon, lat, lon + osm.TILE_DEG, lat + osm.TILE_DEG)
     used = []
     for rid, pbf in extracts(cache_dir):
         outline, themes = pbf[:-len(".osm.pbf")] + ".geojson", pbf[:-len(".osm.pbf")] + ".themes.json"
         if os.path.exists(outline) and os.path.exists(themes) and _load(outline).intersects(tile):
             used.append((rid, _load(outline), _load(themes)))
-    if not used or not unary_union([u[1] for u in used]).covers(tile):
+    if not used or not _covered(cache_dir, tile, used):
         return False
     features: Dict[str, Dict] = {}
     for _, _, data in used:
@@ -191,6 +214,35 @@ def _rebuild_tiles(cache_dir: str) -> int:
             lat, lon = _tile_corner(parts[3][:-len(".geojson")])
             built += build_tile(cache_dir, parts[2], lat, lon)
     return built
+
+
+def regions_at(cache_dir: str, lat: float, lon: float) -> List[Dict]:
+    """The Geofabrik regions containing a point (a country, then its smaller regions)."""
+    import re
+    from shapely.geometry import Point
+    regions = _index(cache_dir)
+    downloaded = {rid for rid, _ in extracts(cache_dir)}
+    point, found = Point(lon, lat), []
+    for rid, feature in regions.items():
+        if "parent" not in feature["properties"] or not feature["geometry"]:
+            continue  # continents
+        if shape(feature["geometry"]).contains(point):
+            depth, parent = 0, rid
+            while regions.get(parent, {}).get("properties", {}).get("parent") in regions:
+                depth, parent = depth + 1, regions[parent]["properties"]["parent"]
+            name = re.sub(r"<br\s*/?>.*", "", feature["properties"]["name"])
+            found.append({"id": rid, "name": name, "depth": depth, "downloaded": rid in downloaded})
+    return sorted(found, key=lambda r: r["depth"])
+
+
+def downloaded(cache_dir: str) -> List[Dict]:
+    """The downloaded extracts: id, size, date of the data, last check."""
+    found = []
+    for rid, pbf in extracts(cache_dir):
+        row = cache.info(cache_dir, pbf) or {}
+        found.append({"id": rid, "mb": round(os.path.getsize(pbf) / 1e6), "data": row.get("source_date"),
+                      "checked": row.get("checked_at")})
+    return found
 
 
 def _tile_corner(name: str) -> Tuple[float, float]:

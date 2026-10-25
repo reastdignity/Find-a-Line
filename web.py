@@ -8,6 +8,8 @@ opens the browser.
   process, in two phases: downloading its data (search.download_data) and computing
   (the search itself). One job computes at a time, as it uses all cores and much
   memory; the next job may download its data meanwhile. Jobs can be cancelled.
+- OpenStreetMap extracts (osmextract.py) are downloaded and updated as jobs too, so the
+  coastline and cliffs of a region need no Overpass.
 - Messages and progress of the jobs are stored as events and sent to the page as
   Server-Sent Events. Results are ordinary runs: the page opens runs/<id>/map.html.
 
@@ -166,6 +168,8 @@ def search_params(request: Dict, folder: str) -> pm.SearchParams:
 
 def run_phase(data_dir: str, job_id: str, phase: str):
     """A worker process: download the data of a job, or compute it."""
+    import requests
+
     import progress as pg
     import runs as rn
     import search
@@ -190,6 +194,16 @@ def run_phase(data_dir: str, job_id: str, phase: str):
     paths = search.Paths(data_dir, cache.new_work(data_dir))
     failed = True
     try:
+        if "osm" in request:  # an OpenStreetMap extract: one phase only
+            import osmextract
+            region = request["osm"]["region"]
+            if request["osm"]["action"] == "download":
+                osmextract.download(paths.cache, region)
+            else:
+                osmextract.update(paths.cache, region, dict(osmextract.extracts(paths.cache))[region])
+            jobs.set(job_id, "done", error=None)
+            failed = False
+            return
         params = search_params(request, jobs.folder(job_id))
         if phase == "compute":
             params = params.model_copy(update={"update": None})  # updated while downloading
@@ -205,7 +219,7 @@ def run_phase(data_dir: str, job_id: str, phase: str):
             result = search.save_run(plan, lines, lambda kind, text: True, run)
             jobs.set(job_id, "done", run_id=result.run["id"], error=None)
         failed = False
-    except (search.SearchError, ValueError) as e:  # ValueError: parameters (pydantic)
+    except (search.SearchError, ValueError, RuntimeError, requests.RequestException) as e:  # ValueError: parameters
         jobs.set(job_id, "failed", error=str(e))
         failed = False
     except Exception as e:  # anything else: keep the work folder to look at
@@ -467,6 +481,35 @@ def create_app(data_dir: str, token: Optional[str] = None, port: int = PORT, sta
     def list_runs():
         return {"runs": [{k: r.get(k) for k in ("id", "name", "created", "summary", "has_map")}
                          | {"description": rn.params_summary(r)} for r in rn.list_runs(runs_dir)]}
+
+    @app.get("/api/osm")
+    async def osm_regions(lat: float, lon: float):
+        """The Geofabrik regions at a point and the downloaded extracts."""
+        import osmextract
+
+        def work():
+            return {"regions": osmextract.regions_at(cache_dir, lat, lon),
+                    "extracts": osmextract.downloaded(cache_dir)}
+        try:
+            return await run_in_threadpool(work)
+        except Exception as e:  # the Geofabrik index could not be fetched
+            raise HTTPException(502, f"Geofabrik index: {e}")
+
+    @app.post("/api/osm")
+    async def osm_job(body: Dict):
+        """Queue the download or the update of an extract: {"action": "download"|"update", "region": id}."""
+        import osmextract
+        action, region = body.get("action"), str(body.get("region", ""))
+        if action == "download":
+            if region not in await run_in_threadpool(osmextract._index, cache_dir):
+                raise HTTPException(400, "unknown Geofabrik region")
+        elif action == "update":
+            if region not in dict(osmextract.extracts(cache_dir)):
+                raise HTTPException(400, "no such extract downloaded")
+        else:
+            raise HTTPException(400, "action: download or update")
+        request = {"osm": {"action": action, "region": region}}
+        return {"id": jobs.add(request, f"OSM {action}: {region}")}
 
     profile_lock = threading.Lock()
 

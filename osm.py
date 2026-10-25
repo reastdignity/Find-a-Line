@@ -27,6 +27,8 @@ from shapely.geometry import LineString, MultiLineString, Point, shape
 import cache
 
 OVERPASS_URL = "https://overpass-api.de/api/interpreter"
+# Tried in turn when a server is overloaded (502, 504, timeouts); both serve the whole planet
+OVERPASS_URLS = [OVERPASS_URL, "https://maps.mail.ru/osm/tools/overpass/api/interpreter"]
 NOMINATIM_URL = "https://nominatim.openstreetmap.org/reverse"
 HEADERS = {"User-Agent": "Find-a-Line/1.0 (highline finder)"}
 TILE_DEG = 0.25
@@ -84,8 +86,16 @@ def fetch_tile(theme: str, lat: float, lon: float, cache_dir: str):
     path = theme_path(cache_dir, theme, lat, lon)
     bbox = f"{lat},{lon},{lat + TILE_DEG},{lon + TILE_DEG}"
     query = f"[out:json][timeout:90];({THEMES[theme].format(bbox=bbox)});out geom;"
-    response = requests.get(OVERPASS_URL, params={"data": query}, headers=HEADERS, timeout=120)
-    response.raise_for_status()
+    error = None
+    for url in OVERPASS_URLS:
+        try:
+            response = requests.get(url, params={"data": query}, headers=HEADERS, timeout=120)
+            response.raise_for_status()
+            break
+        except requests.RequestException as e:
+            error = e
+    else:
+        raise error
     features = []
     for element in response.json().get("elements", []):
         geometry = _geometry(element)
@@ -94,7 +104,7 @@ def fetch_tile(theme: str, lat: float, lon: float, cache_dir: str):
                              "properties": {"id": f"{element['type']}/{element['id']}",
                                             "tags": element.get("tags", {})}})
     write_tile(path, features)
-    cache.record(cache_dir, path, url=OVERPASS_URL)
+    cache.record(cache_dir, path, url=response.url.split("?")[0])
 
 
 def from_extract(row: Optional[Dict]) -> bool:

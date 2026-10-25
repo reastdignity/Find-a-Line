@@ -130,3 +130,17 @@ def test_profile_on_demand(tmp_path, monkeypatch):
             assert response.status_code == 200, response.text
             assert response.json() == row[16]  # the smaller grid samples the same pixels
         assert client.get("/api/profile?run=..&line=1,2,3,4", headers={"x-findaline-profile": "1"}).status_code == 404
+
+
+def test_osm_jobs(client, tmp_path):
+    import json
+    (tmp_path / "cache" / "osm").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "cache" / "osm" / "geofabrik-index.json").write_text(json.dumps({"features": [
+        {"properties": {"id": "malta", "name": "Malta", "parent": "europe"}, "geometry": None}]}))
+    headers = {"x-findaline-token": TOKEN}
+    assert client.post("/api/osm", json={"action": "download", "region": "atlantis"}, headers=headers).status_code == 400
+    assert client.post("/api/osm", json={"action": "update", "region": "malta"}, headers=headers).status_code == 400
+    assert client.post("/api/osm", json={"action": "delete", "region": "malta"}, headers=headers).status_code == 400
+    response = client.post("/api/osm", json={"action": "download", "region": "malta"}, headers=headers)
+    assert response.status_code == 200
+    assert web.Jobs(str(tmp_path)).get(response.json()["id"])["title"] == "OSM download: malta"

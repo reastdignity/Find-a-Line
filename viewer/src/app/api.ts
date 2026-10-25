@@ -50,6 +50,10 @@ export interface RunListed {
   has_map: boolean;
 }
 
+export interface OsmRegion { id: string; name: string; depth: number; downloaded: boolean }
+export interface OsmExtract { id: string; mb: number; data: string | null; checked: string | null }
+export interface OsmState { regions: OsmRegion[]; extracts: OsmExtract[] }
+
 export interface SearchRequest {
   params: Record<string, unknown>;
   geometry: GeoJSON | null;
@@ -81,6 +85,9 @@ export const api = {
   jobEvents: (id: string) => call<{events: JobEvent[]}>("GET", `/api/jobs/${encodeURIComponent(id)}/events`),
   cancel: (id: string) => call<{ok: boolean}>("DELETE", `/api/jobs/${encodeURIComponent(id)}`),
   runs: () => call<{runs: RunListed[]}>("GET", "/api/runs"),
+  osm: (lat: number, lon: number) => call<OsmState>("GET", `/api/osm?lat=${lat}&lon=${lon}`),
+  osmJob: (action: "download" | "update", region: string) =>
+    call<{id: string}>("POST", "/api/osm", {action, region}),
   areaFile: (file: File) => {
     const form = new FormData();
     form.append("file", file);

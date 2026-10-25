@@ -158,7 +158,7 @@ uv run findaline.py cache update
 
 `cache status` shows how much space each country takes, what is due for a check, and which of your saved searches were made on data that has changed since (run those again to see the new data). `cache update` downloads what changed, for example new laser scans published by geoportal.gov.pl. To free space, delete a country's folder inside `cache`: it is downloaded again when needed.
 
-If searches near the coast often warn that the coastline could not be downloaded, download OpenStreetMap for your country once (Poland: about 2 GB):
+If searches near the coast often warn that the coastline could not be downloaded, download OpenStreetMap for your country once: in the app, the **OSM** tab, **download** next to your country or region (Poland: about 2 GB, a single voivodeship much less). Or in the terminal:
 
 ```
 uv run findaline.py osm download poland
