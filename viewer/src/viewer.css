@@ -27,3 +27,9 @@ html, body { width: 100%; height: 100%; margin: 0; padding: 0; overflow: hidden;
 .fal-run { max-width: 300px; }
 .fal-run select { max-width: 100%; margin: 2px 0; }
 .fal-run .fal-params { color: #555; }
+.fal-others { margin-top: 6px; padding-top: 4px; border-top: 1px solid #eee; max-height: 40vh; overflow-y: auto; }
+.fal-others label.fal-other { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.fal-others .fal-dim { color: #888; }
+.fal-others a { text-decoration: none; }
+.fal-others summary { cursor: pointer; color: #555; }
+.fal-run-of { margin-bottom: 4px; }

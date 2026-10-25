@@ -87,3 +87,36 @@ export function RunPanel({current, runs}: {current: RunInfo; runs: RunInfo[]}) {
     <div class="fal-params">{current.description}</div>
   </div>;
 }
+
+export interface OtherItem {
+  run: RunInfo;
+  km: number;
+  color: string;
+  status: "off" | "loading" | "on" | "error";
+  lines?: number;
+}
+
+/** "Other runs": a checkbox per saved run, nearby ones first, the rest folded. */
+export function OtherRunsPanel({items, nearbyKm, onToggle}:
+                               {items: OtherItem[]; nearbyKm: number; onToggle(id: string): void}) {
+  if (!items.length) return null;
+  const row = (item: OtherItem) => <label class="fal-other" title={item.run.description}>
+    <input type="checkbox" checked={item.status === "on" || item.status === "loading"}
+           onChange={() => onToggle(item.run.id)} />{" "}
+    <span class="fal-swatch" style={"background:" + item.color}></span>{" "}
+    {item.run.created.slice(0, 10)} {item.run.name}
+    <span class="fal-dim"> {item.km < 1 ? "here" : item.km.toFixed(0) + " km"}
+      {item.status === "loading" ? ", loading…" : item.status === "error" ? ", no lines.js" :
+        item.lines !== undefined && item.status === "on" ? ", " + item.lines + " lines" : ""}</span>
+    {" "}<a href={"../" + encodeURIComponent(item.run.id) + "/map.html"} title="Open its map">↗</a>
+  </label>;
+  const near = items.filter((i) => i.km <= nearbyKm), far = items.filter((i) => i.km > nearbyKm);
+  return <div class="fal-others">
+    <b>Other runs</b>
+    {near.map(row)}
+    {far.length > 0 && <details open={far.some((i) => i.status !== "off")}>
+      <summary>More runs ({far.length})</summary>
+      {far.map(row)}
+    </details>}
+  </div>;
+}

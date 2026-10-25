@@ -26,14 +26,29 @@ export interface Profile {
 
 // One line as an array (compact):
 // [lat1, lon1, lat2, lon2, x1, y1, x2, y2, length, clearance, clearance_nmpt, elev1, elev2, over, profile]
+// (lines.js leaves out the profile)
 export type LineRow = [number, number, number, number, number, number, number, number, number, number,
-  number | null, number, number, boolean, Profile | null];
+  number | null, number, number, boolean, (Profile | null)?];
 
 export interface Line {
   lat1: number; lon1: number; lat2: number; lon2: number;
   x1: number; y1: number; x2: number; y2: number;  // metres in the grid CRS, for grouping
   len: number; clr: number; clrN: number | null; e1: number; e2: number;
   over: boolean; prof: Profile | null;
+  run?: OtherRun;  // set for the lines of another run
+}
+
+/** Another run shown with this one ("Other runs"). */
+export interface OtherRun {
+  info: RunInfo;
+  color: string;
+}
+
+/** <run>/lines.js: window.FINDALINE_LINES[id], the lines without profiles. */
+export interface RunLines {
+  crs: string;
+  area: Geometry;
+  lines: LineRow[];  // without the profile at the end
 }
 
 export interface Ortho {
@@ -50,12 +65,16 @@ export interface RunInfo {
   created: string;
   description: string;
   has_map?: boolean;
+  has_lines?: boolean;
+  center?: {lat: number; lon: number};
+  bbox?: [number, number, number, number] | null;  // west, south, east, north
 }
 
 export interface RunData {
   run: RunInfo;
   center: [number, number];
   area: Geometry;
+  crs: string;                    // of x1, y1, x2, y2
   ortho: Ortho | null;
   distance: number;               // grouping distance, m
   by: "clearance" | "longest";
@@ -71,10 +90,11 @@ declare global {
   interface Window {
     FINDALINE_RUN?: RunData;
     FINDALINE_RUNS?: RunInfo[];
+    FINDALINE_LINES?: Record<string, RunLines>;
   }
 }
 
-export function toLine(d: LineRow): Line {
+export function toLine(d: LineRow, run?: OtherRun): Line {
   return {lat1: d[0], lon1: d[1], lat2: d[2], lon2: d[3], x1: d[4], y1: d[5], x2: d[6], y2: d[7],
-          len: d[8], clr: d[9], clrN: d[10], e1: d[11], e2: d[12], over: d[13], prof: d[14]};
+          len: d[8], clr: d[9], clrN: d[10], e1: d[11], e2: d[12], over: d[13], prof: d[14] || null, run};
 }

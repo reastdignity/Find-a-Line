@@ -37,7 +37,7 @@ Finds possible highlines in elevation data: anchors on steep pixels, every pair 
 ## Things that must stay in sync
 - `mapping.group_lines` (Python) and `groupLines` (`viewer/src/grouping.ts`): the same greedy algorithm with the same cell index; the browser must produce the same groups. Values used for grouping are passed to the viewer unrounded.
 - `sag.py` and `viewer/src/sag.ts`: the same solver; results match to 1e-6 m. `tests/test_viewer.py` checks both pairs with Node, and that `viewer/dist` is built from `viewer/src`.
-- The run data written by `mapping.save_map` (`data.js`) and its type in `viewer/src/types.ts`.
+- The run data written by `mapping.save_map` (`data.js`, `lines.js`), the list in `runs.write_index` (`runs.js`) and their types in `viewer/src/types.ts`.
 - `params.py` help texts and the options table in README.md describe the same options.
 - Tiled areas (`search.search_lines`): a line belongs to the tile whose core holds its first anchor (smaller x, then y); the overlap is `--max-length` + 2 pixels so slopes at the edge match one grid. R14 and `tests/test_offline.py::test_area_in_tiles` check that tiles give exactly the lines of one grid (inland, no water: water and gap filling work per tile and may differ at tile borders).
 - `helpers.max_safe_elevation` defines the clearance limit; `evaluate_line` and `line_profile` use it. `linesearch._line_ok` repeats it in numba (formula and sag table) and `find_valid_lines` derives the weakest per-anchor limit from it (`gain`, `cap`, `offset`): change all three together. The kernels may only pass too much, never too little (EPS); `evaluate_line` makes the final decision, so results equal the plain pixel-by-pixel search.

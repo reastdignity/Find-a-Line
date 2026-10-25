@@ -199,25 +199,42 @@ MAP_HTML = """<!doctype html>
 """
 
 
-def save_map(results: List[Dict], area, run_path: str, runs_dir: str, run: Dict,
+def _write_js(path: str, target: str, value):
+    """A script that assigns a value (pages opened from disk cannot fetch JSON)."""
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(f"{target} = ")
+        json.dump(value, f, separators=(",", ":"))
+        f.write(";\n")
+
+
+def save_map(results: List[Dict], area, run_path: str, runs_dir: str, run: Dict, crs: str,
              group_distance: float = 20, group_by: str = "clearance", ortho_cache: Optional[str] = None,
              ortho_service=None, model: str = "formula", rigging: Optional[Rigging] = None) -> str:
-    """Save the interactive map of a run: map.html and data.js in its folder.
+    """Save the interactive map of a run: map.html, data.js and lines.js in its folder.
 
     The map is the viewer (viewer/src, TypeScript), the same bundle for every run in
     runs/_viewer; data.js holds the run's lines with their profiles
-    (window.FINDALINE_RUN, read by viewer/src/types.ts). Lines are grouped in the
+    (window.FINDALINE_RUN, read by viewer/src/types.ts), lines.js the same lines
+    without profiles, which other maps load to show this run with theirs
+    (window.FINDALINE_LINES[id]). Lines are grouped in the
     browser like group_lines. Orthophoto tiles are read from ortho_cache (a
     {z}/{x}/{y}.jpg folder) when present there, and from the WMS of ortho_service
     (a sources.OrthoService) otherwise. Returns the path of map.html.
     """
     install_viewer(runs_dir)
     path = os.path.join(run_path, "map.html")
+    # Values used for grouping are not rounded, so the browser groups exactly like group_lines()
+    rows = [[round(r["anchor1"][0], 7), round(r["anchor1"][1], 7),
+             round(r["anchor2"][0], 7), round(r["anchor2"][1], 7),
+             *r["a1_xy"], *r["a2_xy"], r["length"], r["clearance"],
+             None if r["clearance_nmpt"] is None else round(r["clearance_nmpt"], 2),
+             round(r["elev_a1"], 2), round(r["elev_a2"], 2), r["over_obstacles"]] for r in results]
     data = {
         "run": {"id": run["id"], "name": run["name"], "created": run["created"],
                 "description": run.get("description", "")},
         "center": list(area.center),
         "area": area.shape_wgs84().__geo_interface__,
+        "crs": crs,
         "ortho": None if ortho_service is None else {
             "name": ortho_service.name, "url": ortho_service.url, "layer": ortho_service.layer,
             "attribution": ortho_service.attribution,
@@ -225,18 +242,12 @@ def save_map(results: List[Dict], area, run_path: str, runs_dir: str, run: Dict,
         "distance": group_distance, "by": group_by, "model": model,
         "rigging": dataclasses.asdict(rigging or Rigging()),
         "slope": SLOPE, "leash_fall": LEASH_FALL, "max_zoom": MAX_ZOOM,
-        # Values used for grouping are not rounded, so the browser groups exactly like group_lines()
-        "lines": [[round(r["anchor1"][0], 7), round(r["anchor1"][1], 7),
-                   round(r["anchor2"][0], 7), round(r["anchor2"][1], 7),
-                   *r["a1_xy"], *r["a2_xy"], r["length"], r["clearance"],
-                   None if r["clearance_nmpt"] is None else round(r["clearance_nmpt"], 2),
-                   round(r["elev_a1"], 2), round(r["elev_a2"], 2), r["over_obstacles"], r.get("profile")]
-                  for r in results],
+        "lines": [row + [r.get("profile")] for row, r in zip(rows, results)],
     }
-    with open(os.path.join(run_path, "data.js"), "w", encoding="utf-8") as f:
-        f.write("window.FINDALINE_RUN = ")
-        json.dump(data, f, separators=(",", ":"))
-        f.write(";\n")
+    _write_js(os.path.join(run_path, "data.js"), "window.FINDALINE_RUN", data)
+    _write_js(os.path.join(run_path, "lines.js"),
+              f"(window.FINDALINE_LINES = window.FINDALINE_LINES || {{}})[{json.dumps(run['id'])}]",
+              {"crs": crs, "area": data["area"], "lines": rows})
     with open(path, "w", encoding="utf-8") as f:
         f.write(MAP_HTML.format(title=html.escape(run["name"]), viewer=VIEWER_FOLDER))
     return path

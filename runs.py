@@ -4,6 +4,7 @@ Saving every run (map, results, parameters) so earlier runs can be browsed.
 Layout:
     runs/<date>_<place>/map.html       interactive map (the viewer, see mapping.save_map)
     runs/<date>_<place>/data.js        its data: lines and profiles
+    runs/<date>_<place>/lines.js       its lines without profiles, for the "Other runs" of other maps
     runs/<date>_<place>/lines.csv      every valid line with its group
     runs/<date>_<place>/lines.geojson  the same as GeoJSON
     runs/<date>_<place>/run.json       parameters and summary
@@ -152,6 +153,7 @@ def list_runs(runs_dir: str) -> List[Dict]:
                 with open(path, encoding="utf-8") as f:
                     run = json.load(f)
                 run["has_map"] = os.path.isfile(os.path.join(runs_dir, run_id, "map.html"))
+                run["has_lines"] = os.path.isfile(os.path.join(runs_dir, run_id, "lines.js"))
                 runs.append(run)
     return sorted(runs, key=lambda r: r["created"], reverse=True)
 
@@ -178,12 +180,32 @@ def params_summary(meta: Dict) -> str:
     return text
 
 
+def _bbox(run: Dict) -> Optional[List[float]]:
+    """(west, south, east, north) of a run's search area."""
+    area = run.get("area") or {}
+    if area.get("type") == "polygon":
+        from shapely.geometry import shape
+        return list(shape(area["geometry"]).bounds)
+    if area.get("type") == "circle":
+        dlat = area["radius"] / 111320
+        dlon = dlat / max(math.cos(math.radians(area["lat"])), 0.01)
+        return [area["lon"] - dlon, area["lat"] - dlat, area["lon"] + dlon, area["lat"] + dlat]
+    return None
+
+
+def _listed(run: Dict) -> Dict:
+    """A run as runs.js lists it: without the data files and the area outline, with its box."""
+    listed = {k: v for k, v in run.items() if k not in ("data", "area")}
+    listed["bbox"] = _bbox(run)
+    return listed
+
+
 def write_index(runs_dir: str):
     """Rewrite runs.js (used by the maps) and index.html from the saved runs."""
     runs = list_runs(runs_dir)
     with open(os.path.join(runs_dir, "runs.js"), "w", encoding="utf-8") as f:
         f.write("window.FINDALINE_RUNS = ")
-        json.dump([{k: v for k, v in r.items() if k != "data"} for r in runs], f, ensure_ascii=False)
+        json.dump([_listed(r) for r in runs], f, ensure_ascii=False)
         f.write(";\n")
 
     def e(value):

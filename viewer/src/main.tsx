@@ -1,5 +1,6 @@
 // The result viewer: one bundle for every run. A run's map.html loads this bundle,
-// its data (data.js: window.FINDALINE_RUN) and the list of runs (../runs.js).
+// its data (data.js: window.FINDALINE_RUN) and the list of runs (../runs.js); the
+// lines of other runs come from their lines.js ("Other runs").
 
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
@@ -10,11 +11,12 @@ import { render } from "preact";
 import "./viewer.css";
 import { groupLines, type Group } from "./grouping";
 import { baseLayers } from "./layers";
-import { control, LinesPanel, RunPanel, type LinesState } from "./panels";
+import { inLocalPlane, listOthers, loadLines, colorOf, NEARBY_KM, saveChoice, savedChoice } from "./others";
+import { control, LinesPanel, OtherRunsPanel, RunPanel, type LinesState, type OtherItem } from "./panels";
 import { draggablePopups } from "./popups";
 import { ProfilePanel } from "./Profile";
 import { COLORS } from "./style";
-import { toLine, type Line, type RunData } from "./types";
+import { toLine, type Line, type RunData, type RunInfo } from "./types";
 
 // The default marker icon finds its images through the CSS path, which a bundle does not have
 L.Icon.Default.mergeOptions({iconRetinaUrl, iconUrl, shadowUrl});
@@ -26,8 +28,18 @@ function range(values: number[], digits: number, unit: string): string {
     : lo.toFixed(digits) + "&ndash;" + hi.toFixed(digits) + unit;
 }
 
+function escape(text: string): string {
+  return text.replace(/[&<>"']/g, (c) => "&#" + c.charCodeAt(0) + ";");
+}
+
 function lineInfo(l: Line): string {
-  let html = "<b>Length:</b> " + l.len.toFixed(0) + " m<br>" +
+  let html = "";
+  if (l.run) {
+    html += "<b>Run:</b> <span class='fal-swatch' style='background:" + l.run.color + "'></span> " +
+      escape(l.run.info.created.slice(0, 10) + " " + l.run.info.name) + " (<a href='../" +
+      encodeURIComponent(l.run.info.id) + "/map.html'>its map, with the profile</a>)<br>";
+  }
+  html += "<b>Length:</b> " + l.len.toFixed(0) + " m<br>" +
     "<b>Anchor 1:</b> " + l.lat1.toFixed(6) + ", " + l.lon1.toFixed(6) + " (" + l.e1.toFixed(1) + " m)<br>" +
     "<b>Anchor 2:</b> " + l.lat2.toFixed(6) + ", " + l.lon2.toFixed(6) + " (" + l.e2.toFixed(1) + " m)<br>" +
     "<b>Min. clearance over terrain:</b> " + l.clr.toFixed(1) + " m";
@@ -49,7 +61,7 @@ function groupInfo(g: Group<Line>, by: string): string {
 }
 
 function start(data: RunData) {
-  const lines = data.lines.map(toLine);
+  const lines = data.lines.map((row) => toLine(row));
   const map = L.map("map", {center: data.center, zoom: 15, maxZoom: data.max_zoom});
   (window as any).FINDALINE_MAP = map;  // for tests and the browser console
   L.control.scale().addTo(map);
@@ -66,9 +78,11 @@ function start(data: RunData) {
   const renderer = L.canvas({padding: 0.5});
   const linesLayer = L.layerGroup().addTo(map);
   const variantsLayer = L.layerGroup().addTo(map);
+  // Lines of other runs in the run's colour, dashed over trees/buildings
   const polyline = (l: Line, options: L.PolylineOptions) => L.polyline(
     [[l.lat1, l.lon1], [l.lat2, l.lon2]],
-    {color: l.over ? COLORS.over : COLORS.clean, renderer, bubblingMouseEvents: false, ...options});
+    {color: l.run ? l.run.color : l.over ? COLORS.over : COLORS.clean, renderer, bubblingMouseEvents: false,
+     dashArray: l.run && l.over ? "6 4" : undefined, ...options});
 
   // Profile of the clicked line, along the bottom of the map
   const profileDiv = L.DomUtil.create("div", "", map.getContainer());
@@ -91,8 +105,8 @@ function start(data: RunData) {
            profileDiv);
   };
   const showProfile = (l: Line) => {
-    if (!l.prof) return;
-    profileLine = l;
+    profileLine = l.prof ? l : null;  // lines of other runs come without profiles
+    if (!profileLine) onHover(null);
     drawProfile();
   };
 
@@ -120,11 +134,12 @@ function start(data: RunData) {
 
   let state: LinesState = {group: true, distance: data.distance, by: data.by, showClean: true, showOver: true};
   let shown = {spots: 0, lines: 0};
-  const nClean = lines.filter((l) => !l.over).length, nOver = lines.length - nClean;
+  let all = lines;  // with the lines of the other runs shown
   const panel = control(map, "bottomleft", "fal-panel");
   const drawPanel = () => panel(
-    <LinesPanel state={state} maxDistance={Math.max(100, Math.round(3 * data.distance))} nClean={nClean}
-                nOver={nOver} shown={shown} focused={focused !== null}
+    <LinesPanel state={state} maxDistance={Math.max(100, Math.round(3 * data.distance))}
+                nClean={all.filter((l) => !l.over).length} nOver={all.filter((l) => l.over).length}
+                shown={shown} focused={focused !== null}
                 onChange={(next) => { state = next; drawLines(); }}
                 onShowAll={() => { map.closePopup(); unfocus(); }} />);
 
@@ -132,14 +147,14 @@ function start(data: RunData) {
     unfocus();
     linesLayer.clearLayers();
     variantsLayer.clearLayers();
-    const visible = lines.filter((l) => l.over ? state.showOver : state.showClean);
+    const visible = framed(all).filter((l) => l.over ? state.showOver : state.showClean);
     const groups = state.group ? groupLines(visible, state.distance, state.by)
       : visible.map((l) => ({rep: l, members: [l]}));
     // Lines over trees/buildings first, so clear lines stay on top
     groups.sort((a, b) => +b.rep.over - +a.rep.over);
     for (const g of groups) {
-      const l = g.rep, pl = polyline(l, {weight: 3, opacity: 0.9});
-      pl.bindTooltip(l.len.toFixed(0) + " m, clearance " + l.clr.toFixed(1) + " m" +
+      const l = g.rep, pl = polyline(l, {weight: l.run ? 2.5 : 3, opacity: 0.9});
+      pl.bindTooltip((l.run ? escape(l.run.info.name) + ": " : "") + l.len.toFixed(0) + " m, clearance " + l.clr.toFixed(1) + " m" +
                      (g.members.length > 1 ? " (" + g.members.length + " similar lines)" : ""));
       pl.bindPopup("<div class='fal-drag'>&#10021; drag to move</div>" + groupInfo(g, state.by) +
                    "<div class='fal-popup-tools'><button class='fal-zoom'>Zoom to line</button></div>");
@@ -159,9 +174,60 @@ function start(data: RunData) {
     drawPanel();
   };
 
+  // Other runs: their lines (from lines.js) and areas, grouped together with this run's
   const runs = (window.FINDALINE_RUNS || [data.run]).filter((r) => r.has_map !== false || r.id === data.run.id);
-  control(map, "topleft", "fal-panel fal-run")(<RunPanel current={data.run} runs={runs} />);
+  const bounds = area.getBounds();
+  const items: OtherItem[] = listOthers(runs, data.run.id, [bounds.getWest(), bounds.getSouth(), bounds.getEast(),
+                                                            bounds.getNorth()])
+    .map(({run, km}) => ({run, km, color: colorOf(run.id), status: "off"}));
+  const shownRuns = new Map<string, {lines: Line[]; area: L.Layer; crs: string}>();
+  // Runs in another coordinate system are grouped in a local plane around this run
+  const framed = (lines: Line[]) => Array.from(shownRuns.values()).some((r) => r.crs !== data.crs)
+    ? inLocalPlane(lines, data.center[0], data.center[1]) : lines;
+  const runPanel = control(map, "topleft", "fal-panel fal-run");
+  const drawRunPanel = () => runPanel(<div>
+    <RunPanel current={data.run} runs={runs} />
+    <OtherRunsPanel items={items} nearbyKm={NEARBY_KM} onToggle={toggle} />
+  </div>);
+  const update = () => {
+    all = lines.concat(...Array.from(shownRuns.values()).map((r) => r.lines));
+    saveChoice(items.filter((i) => i.status === "on" || i.status === "loading").map((i) => i.run.id));
+    drawRunPanel();
+    drawLines();
+  };
+  const show = (item: OtherItem) => {
+    item.status = "loading";
+    drawRunPanel();
+    loadLines(item.run.id).then((loaded) => {
+      if (item.status !== "loading") return;  // switched off meanwhile
+      const run = {info: item.run as RunInfo, color: item.color};
+      const runLines = loaded.lines.map((row) => toLine(row, run));
+      const outline = L.geoJSON(loaded.area as any, {interactive: false,
+                                                     style: {color: item.color, weight: 1, dashArray: "6", fill: false}});
+      outline.addTo(map);
+      shownRuns.set(item.run.id, {lines: runLines, area: outline, crs: loaded.crs});
+      item.status = "on";
+      item.lines = runLines.length;
+      update();
+    }, () => {
+      item.status = "error";
+      update();
+    });
+  };
+  function toggle(id: string) {
+    const item = items.find((i) => i.run.id === id)!;
+    if (item.status === "on" || item.status === "loading") {
+      const shownRun = shownRuns.get(id);
+      if (shownRun) map.removeLayer(shownRun.area);
+      shownRuns.delete(id);
+      item.status = "off";
+      update();
+    } else show(item);
+  }
+  drawRunPanel();
   drawLines();
+  const chosen = savedChoice();
+  items.filter((i) => chosen.includes(i.run.id)).forEach(show);
 }
 
 if (window.FINDALINE_RUN) start(window.FINDALINE_RUN);
