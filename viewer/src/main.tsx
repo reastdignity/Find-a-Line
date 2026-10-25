@@ -17,7 +17,7 @@ import { control, LinesPanel, OtherRunsPanel, RunPanel, type LinesState, type Ot
 import { draggablePopups } from "./popups";
 import { ProfilePanel } from "./Profile";
 import { COLORS } from "./style";
-import { toLine, type Line, type RunData, type RunInfo } from "./types";
+import { toLine, type Line, type Profile, type RunData, type RunInfo } from "./types";
 
 // The default marker icon finds its images through the CSS path, which a bundle does not have
 L.Icon.Default.mergeOptions({iconRetinaUrl, iconUrl, shadowUrl});
@@ -48,10 +48,7 @@ function lineInfo(l: Line): string {
   if (l.water > 0) html += "<br><b>Over water:</b> " + l.water.toFixed(0) + " m of " + l.len.toFixed(0) + " m";
   if (l.filled > 0)
     html += "<br><b>Over filled gaps in the data:</b> " + l.filled.toFixed(0) + " m (less precise)";
-  if (!l.prof && !l.run) {
-    html += "<br><i>No profile: in the map of an area only the line saved for each group has one " +
-      "(the filters or the grouping chose another line here).</i>";
-  }
+  if (!l.prof && !l.run) html += "<div class='fal-profile-note'></div>";
   return html;
 }
 
@@ -112,6 +109,32 @@ function start(data: RunData) {
     profileLine = l.prof ? l : null;  // lines of other runs come without profiles
     if (!profileLine) onHover(null);
     drawProfile();
+  };
+  // Maps of areas keep a profile only for the line saved for each group; the app's server
+  // computes the others from the cached data (web.py /api/profile)
+  const computed = new Map<string, Profile>();
+  const fromServer = location.protocol.startsWith("http");
+  const fetchProfile = (l: Line, note: HTMLElement | null | undefined, stillOpen: () => boolean) => {
+    const key = [l.lat1, l.lon1, l.lat2, l.lon2].join(",");
+    const known = computed.get(key);
+    if (known) { l.prof = known; showProfile(l); return; }
+    if (!fromServer) {
+      if (note) note.innerHTML = "<i>No profile saved for this line (in the map of an area only the line saved " +
+        "for each group has one). Open this map from the app (<code>findaline.py web</code>) to compute it.</i>";
+      return;
+    }
+    if (note) note.innerHTML = "<i>Computing the terrain profile…</i>";
+    fetch("/api/profile?run=" + encodeURIComponent(data.run.id) + "&line=" + key,
+          {headers: {"X-Findaline-Profile": "1"}})
+      .then((response) => response.json().then((body) => ({ok: response.ok, body})))
+      .then(({ok, body}) => {
+        if (!ok) throw new Error(body.detail || "error");
+        computed.set(key, body);
+        l.prof = body;
+        if (note) note.innerHTML = "<i>Profile computed again from the cached data.</i>";
+        if (stillOpen()) showProfile(l);
+      })
+      .catch((e) => { if (note) note.innerHTML = "<i>The profile could not be computed: " + escape(String(e.message)) + "</i>"; });
   };
 
   // Clicking a line hides all the others (its group's variants stay, thin) until
@@ -175,6 +198,9 @@ function start(data: RunData) {
       pl.on("popupopen", (e) => {
         focusOn(pl);
         showProfile(l);
+        if (!l.prof && !l.run) {
+          fetchProfile(l, e.popup.getElement()?.querySelector<HTMLElement>(".fal-profile-note"), () => focused === pl);
+        }
         const button = e.popup.getElement()?.querySelector<HTMLButtonElement>(".fal-zoom");
         if (button) button.onclick = () => zoomTo(pl);
         for (const m of g.members) {

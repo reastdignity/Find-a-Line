@@ -64,6 +64,8 @@ Suggested sets:
 
 **Tiles at the edge of a coverage.** Malta's WCS answers 404 to a request reaching beyond the coverage (2026-10-25: the north coast of Gozo was "missing" and filled from FABDEM). `tests/test_sources.py` checks the clipping offline with a fake WCS (an edge tile gets the data inside the coverage on its own pixel grid, a tile outside stays missing); R15 checks it on the real service.
 
+**Profiles on demand.** `tests/test_web.py::test_profile_on_demand`: a profile computed again on a small grid (`search.profile_of_line`) equals the one the search saved. Checked 2026-10-25 on five random lines of a Gozo coast area (water and gap filling): identical, 0.4–0.5 s each.
+
 **Malta 2012 georeference.** With `MALTA_2012_SHIFT` applied, the 2012 DTM matches Copernicus GLO-30 with a median absolute difference of about 0.5 m and the 2018 DTM with 0.19 m (radius 1500 m, 10 m grid, Dingli). Without the shift it is 9 m. Do the same shift search (move one model ±200 m, minimise the median absolute difference) for any new national source.
 
 **Pair search.** `linesearch.py` must find exactly the lines of the plain search (every pair within the length and height-difference limits checked with `helpers.evaluate_line`). After changing it, compare `lines.csv` of R1 and R3 with `--nmpt reject` against a run of the plain search: sorted, the files must be identical. The plain search is in git history before `linesearch.py` was added (`helpers.find_valid_lines`); run that version from a `git archive` copy with `--cache-dir` pointing at the real cache.

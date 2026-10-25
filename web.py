@@ -468,6 +468,39 @@ def create_app(data_dir: str, token: Optional[str] = None, port: int = PORT, sta
         return {"runs": [{k: r.get(k) for k in ("id", "name", "created", "summary", "has_map")}
                          | {"description": rn.params_summary(r)} for r in rn.list_runs(runs_dir)]}
 
+    profile_lock = threading.Lock()
+
+    @app.get("/api/profile")
+    async def line_profile(request: Request, run: str, line: str):
+        """The profile of a line of a saved run, computed from the cached data (search.profile_of_line).
+
+        A GET that costs computing time: it needs the X-Findaline-Profile header, which a
+        foreign website cannot send without a CORS preflight this server does not allow.
+        """
+        if not request.headers.get("x-findaline-profile"):
+            raise HTTPException(403, "header X-Findaline-Profile missing")
+        meta_path = os.path.join(runs_dir, run, "run.json")
+        if os.path.basename(run) != run or run in ("", ".", "..") or not os.path.isfile(meta_path):
+            raise HTTPException(404, "no such run")
+        try:
+            lat1, lon1, lat2, lon2 = (float(v) for v in line.split(","))
+        except ValueError:
+            raise HTTPException(400, "line: lat1,lon1,lat2,lon2")
+        with open(meta_path, encoding="utf-8") as f:
+            meta = json.load(f)
+
+        def work():
+            with profile_lock:  # one at a time: each builds grids around the line
+                paths = search.Paths(data_dir, cache.new_work(data_dir))
+                try:
+                    return search.profile_of_line(meta, paths, (lat1, lon1), (lat2, lon2))
+                finally:
+                    cache.remove_work(paths.work)
+        try:
+            return await run_in_threadpool(work)
+        except (ValueError, search.SearchError) as e:
+            raise HTTPException(400, str(e))
+
     @app.post("/api/area-file")
     async def area_file(file: UploadFile):
         """An uploaded GeoJSON/KML/GPX file as GeoJSON (shown on the map, then sent as the geometry)."""

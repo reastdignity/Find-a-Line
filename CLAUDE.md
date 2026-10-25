@@ -30,7 +30,7 @@ Finds possible highlines in elevation data: anchors on steep pixels, every pair 
 | `sag.py` | Sag estimator (elastic catenary + point load) and envelope table for `--model sag` |
 | `mapping.py` | Coordinates, grouping, matplotlib map; `save_map` writes a run's `map.html` + `data.js` for the viewer |
 | `viewer/` | The result viewer (TypeScript, Preact, Leaflet; `src/`), bundled by esbuild into `dist/` (committed); copied to `runs/_viewer/` by every run |
-| `web.py` | `findaline.py web`: FastAPI on 127.0.0.1 (Host check, session token, CSP), job queue in `jobs.sqlite`, worker processes (download, then compute), SSE events; the page is `viewer/src/app` |
+| `web.py` | `findaline.py web`: FastAPI on 127.0.0.1 (Host check, session token, CSP), job queue in `jobs.sqlite`, worker processes (download, then compute), SSE events, `/api/profile` (a line's profile computed again: `search.profile_of_line`); the page is `viewer/src/app` |
 | `update.py` | `findaline.py cache status/update` and `osm download/update`: which cached data can change, checks, runs on changed data |
 | `osmextract.py` | Geofabrik OSM extracts: download, replication diffs (pyosmium), theme features, theme tiles built from extracts |
 | `orthophoto.py` | Orthophoto tile cache (XYZ tiles requested from a WMS in EPSG:4326) |

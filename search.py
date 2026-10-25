@@ -613,6 +613,49 @@ def save_run(plan: Plan, lines: Lines, confirm: Optional[Confirm] = None, run: O
     return Result(results, spot_groups, meta, run, map_path)
 
 
+_sag_tables: Dict[str, "sg.EnvelopeTable"] = {}
+
+
+def profile_of_line(meta: Dict, paths: Paths, anchor1: Tuple[float, float], anchor2: Tuple[float, float]) -> Dict:
+    """The profile of a line of a saved run (meta: its run.json), computed again from the cache.
+
+    Maps of areas keep a profile only for the line shown for each group; this gives any
+    other line its profile. A small grid around the line is built with the run's source,
+    resolution and filling, on the same pixel grid as the search, so terrain and surface
+    are the same; offsets of filled gaps may differ a little (they come from a smaller
+    surrounding). anchor1, anchor2: (lat, lon) of the anchors as the run saved them.
+    """
+    p, rig = meta["params"], meta["params"]["rigging"]
+    values = {k: p[k] for k in ("resolution", "min_length", "max_length", "max_anchor_diff", "max_anchor_diff_m",
+                                "slope_threshold", "water", "coastline", "shore_buffer", "fill_gaps", "model")}
+    values.update(rig, nmpt=p["nmpt"] or "off", source=meta["source"]["id"], ortho="never", no_html=True)
+    if values["source"] == "files":
+        files = {d.get("layer"): d.get("file") for d in meta.get("data", [])}
+        values.update(elevation_file=files.get("Terrain file"), surface_file=files.get("Surface file"))
+    to_xy = ar._to(meta["center"]["crs"])
+    (x1, y1), (x2, y2) = to_xy(anchor1[1], anchor1[0]), to_xy(anchor2[1], anchor2[0])
+    length = math.hypot(x2 - x1, y2 - y1)
+    lat, lon = (anchor1[0] + anchor2[0]) / 2, (anchor1[1] + anchor2[1]) / 2
+    values.update(lat=lat, lon=lon, radius=length / 2 + 10 * p["resolution"] + 20)
+    plan = plan_search(SearchParams(**values), paths, lambda kind, text: None)
+    if plan.crs != meta["center"]["crs"]:
+        raise SearchError(f"the run used {meta['center']['crs']}, a search here would use {plan.crs}")
+    data = prepare_data(plan)
+    grid, res = plan.grid, plan.resolution
+    pixel = lambda x, y: (int(round((grid.top - y) / res - 0.5)), int(round((x - grid.left) / res - 0.5)))
+    sag_table = None
+    if p["model"] == "sag":
+        key = json.dumps([rig, p["min_length"], p["max_length"]], sort_keys=True)
+        if key not in _sag_tables:  # the same table as the search, so the same limits
+            _sag_tables[key] = sg.EnvelopeTable(plan.rigging, p["min_length"], p["max_length"])
+        sag_table = _sag_tables[key]
+    profile = sh.line_profile(pixel(x1, y1), pixel(x2, y2), data.elevation, res, data.surface,
+                              sag_table=sag_table, water=data.water, filled=data.filled)
+    del data
+    gc.collect()  # close the memory-mapped grids before the work folder is deleted (Windows)
+    return profile
+
+
 def run_search(params: SearchParams, paths: Paths, on_event: Optional[OnEvent] = None,
                confirm: Optional[Confirm] = None) -> Result:
     """The whole search; confirm("expensive", reasons) is asked before downloading."""

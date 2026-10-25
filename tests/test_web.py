@@ -104,3 +104,29 @@ def test_download_process_ending_late(tmp_path):
     scheduler.running["compute"] = (job, _Ended())
     scheduler._check()
     assert jobs.get(job)["status"] == "failed"
+
+
+def test_profile_on_demand(tmp_path, monkeypatch):
+    """A profile computed again from the cache equals the one the search saved."""
+    import json
+    import subprocess
+    _offline(monkeypatch)
+    result = subprocess.run(
+        [sys.executable, "findaline.py", "--elevation-file", os.path.join(DATA, "zabi_kon_nmt.tif"),
+         "--surface-file", os.path.join(DATA, "zabi_kon_nmpt.tif"), "--northing", "254608", "--easting", "553966",
+         "--radius", "150", "--model", "sag", "--water", "off", "--fill-gaps", "off", "--no-plot", "--yes",
+         "--ortho", "never", "--data-dir", str(tmp_path)],
+        cwd=REPO, capture_output=True, text=True, encoding="utf-8", timeout=600, env=dict(os.environ))
+    assert result.returncode == 0, result.stdout + result.stderr
+    run_id = next(d for d in os.listdir(tmp_path / "runs") if os.path.isfile(tmp_path / "runs" / d / "run.json"))
+    text = (tmp_path / "runs" / run_id / "data.js").read_text(encoding="utf-8")
+    rows = json.loads(text.partition(" = ")[2].rstrip().rstrip(";"))["lines"]
+    app = web.create_app(str(tmp_path), token=TOKEN, start_scheduler=False)
+    with TestClient(app) as client:
+        for row in rows[:3]:
+            line = ",".join(str(v) for v in row[:4])
+            assert client.get(f"/api/profile?run={run_id}&line={line}").status_code == 403  # header needed
+            response = client.get(f"/api/profile?run={run_id}&line={line}", headers={"x-findaline-profile": "1"})
+            assert response.status_code == 200, response.text
+            assert response.json() == row[16]  # the smaller grid samples the same pixels
+        assert client.get("/api/profile?run=..&line=1,2,3,4", headers={"x-findaline-profile": "1"}).status_code == 404
