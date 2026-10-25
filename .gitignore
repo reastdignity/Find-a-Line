@@ -213,3 +213,7 @@ cache/
 findaline_map.html
 runs/
 work/
+
+# Viewer build tools (viewer/dist is committed)
+viewer/node_modules/
+!viewer/dist/

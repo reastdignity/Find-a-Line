@@ -584,9 +584,8 @@ def save_run(plan: Plan, lines: Lines, confirm: Optional[Confirm] = None, run: O
                 tiles = []
             ortho.download(source.ortho, tiles, ortho_folder, plan.paths.cache)
             ortho_cache = ortho_folder
-        map_path = os.path.join(run["path"], "map.html")
-        mp.save_html_map(results, plan.area, map_path, plan.group_distance, p.group_by, ortho_cache,
-                         source.ortho, meta, plan.paths.runs, p.model, plan.rigging)
+        map_path = mp.save_map(results, plan.area, run["path"], plan.paths.runs, meta, plan.group_distance,
+                               p.group_by, ortho_cache, source.ortho, p.model, plan.rigging)
     rn.write_index(plan.paths.runs)
     return Result(results, spot_groups, meta, run, map_path)
 

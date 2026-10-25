@@ -6,9 +6,7 @@ readme = "README.md"
 requires-python = ">=3.12"  # scipy 1.18 needs it
 dependencies = [
     "affine>=2.4",
-    "branca>=0.8",
     "contextily>=1.6",
-    "folium>=0.20",
     "geopandas>=1.1",
     "matplotlib>=3.10",
     "numba>=0.68",
@@ -22,7 +20,6 @@ dependencies = [
     "scipy>=1.18",
     "shapely>=2.1",
     "tqdm>=4.67",
-    "xyzservices>=2025.4",
 ]
 
 [dependency-groups]

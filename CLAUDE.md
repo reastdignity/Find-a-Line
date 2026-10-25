@@ -26,7 +26,8 @@ Finds possible highlines in elevation data: anchors on steep pixels, every pair 
 | `helpers.py` | Anchors, line evaluation (DDA), line profiles |
 | `linesearch.py` | The pair search (numba): free directions per anchor, bucketed pairs, early-exit line check |
 | `sag.py` | Sag estimator (elastic catenary + point load) and envelope table for `--model sag` |
-| `mapping.py` | Coordinates, grouping, matplotlib map, HTML map (all browser JS lives here as Jinja templates) |
+| `mapping.py` | Coordinates, grouping, matplotlib map; `save_map` writes a run's `map.html` + `data.js` for the viewer |
+| `viewer/` | The result viewer (TypeScript, Preact, Leaflet; `src/`), bundled by esbuild into `dist/` (committed); copied to `runs/_viewer/` by every run |
 | `update.py` | `findaline.py cache status/update` and `osm download/update`: which cached data can change, checks, runs on changed data |
 | `osmextract.py` | Geofabrik OSM extracts: download, replication diffs (pyosmium), theme features, theme tiles built from extracts |
 | `orthophoto.py` | Orthophoto tile cache (XYZ tiles requested from a WMS in EPSG:4326) |
@@ -34,15 +35,16 @@ Finds possible highlines in elevation data: anchors on steep pixels, every pair 
 | `progress.py` | Two tqdm bars (Download / Compute) |
 
 ## Things that must stay in sync
-- `mapping.group_lines` (Python) and `groupLines` (JS in `GROUPING_SCRIPT`): the same greedy algorithm; the browser must produce the same groups. Values used for grouping are passed to JS unrounded.
-- `sag.py` and the `Sag` JS object in `mapping.py`: the same solver; results match to 1e-6 m. Check with Node after changes (see docs/regression-tests.md).
+- `mapping.group_lines` (Python) and `groupLines` (`viewer/src/grouping.ts`): the same greedy algorithm with the same cell index; the browser must produce the same groups. Values used for grouping are passed to the viewer unrounded.
+- `sag.py` and `viewer/src/sag.ts`: the same solver; results match to 1e-6 m. `tests/test_viewer.py` checks both pairs with Node, and that `viewer/dist` is built from `viewer/src`.
+- The run data written by `mapping.save_map` (`data.js`) and its type in `viewer/src/types.ts`.
 - `params.py` help texts and the options table in README.md describe the same options.
 - Tiled areas (`search.search_lines`): a line belongs to the tile whose core holds its first anchor (smaller x, then y); the overlap is `--max-length` + 2 pixels so slopes at the edge match one grid. R14 and `tests/test_offline.py::test_area_in_tiles` check that tiles give exactly the lines of one grid (inland, no water: water and gap filling work per tile and may differ at tile borders).
 - `helpers.max_safe_elevation` defines the clearance limit; `evaluate_line` and `line_profile` use it. `linesearch._line_ok` repeats it in numba (formula and sag table) and `find_valid_lines` derives the weakest per-anchor limit from it (`gain`, `cap`, `offset`): change all three together. The kernels may only pass too much, never too little (EPS); `evaluate_line` makes the final decision, so results equal the plain pixel-by-pixel search.
 
 ## Pitfalls learned the hard way
 - **numba** compiles `linesearch.py` on the first run (a few seconds, cached in `__pycache__`). Inside `@njit` code only numpy/math and module constants work; keep the float operations in `_line_ok` in the same order as `max_safe_elevation`.
-- **Jinja templates** in `mapping.py`: never write `{#` in JS; use `tojavascript` (not `tojson`) for options that contain `JsCode`; inside the Python string, JS escapes need double backslashes.
+- **The viewer** works from `file://`: no `fetch`, so a run's data is a script (`data.js`) and the list of runs too (`runs.js`); everything it needs (Leaflet, its CSS and marker images) is in the bundle, no CDN. After changing `viewer/src`: `cd viewer; npm install` (once), `npm run check` (types), `npm run build`, and commit `dist/`. Users need no Node.
 - **Pipes and heredocs**: piping the script's output into `head` kills it before the map is saved. Complex multi-line edits are safer as a Python script written to the scratchpad than as a bash heredoc.
 - **geoportal.gov.pl data comes from sheet files**, not WCS (`SheetTiles`): the EVRF2007 WCS takes 30–50 s per ASCII tile (generating the text, not downsampling, is the cost), its own downsampling leaves holes at coarse resolutions (Tatras at 5 m), its GeoTIFF output is an 8-bit picture, and the KRON86 coverages stop at 2019. Index answers are cached per 0.25° tile in `cache/poland/sheet-index/`. The sheet files on opendata.geoportal.gov.pl download at ~17 MB/s; the geoportal pages give no request limits (technical contact service.desk@gugik.gov.pl). Sheet attributes and coverage are in docs/roadmap.md ("To check").
 - **Half-pixel grid alignment**: data whose pixel centres lie on whole metres (geoportal sheets: `xllcenter`) must get `grid_origin=0.5`, otherwise the mosaic interpolates it bilinearly half a pixel off and smooths cliff edges (R2 at 1 m lost 40% of its lines). Comparing rasters from two services needs the same care.

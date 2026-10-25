@@ -2,11 +2,13 @@
 Saving every run (map, results, parameters) so earlier runs can be browsed.
 
 Layout:
-    runs/<date>_<place>/map.html       interactive map
+    runs/<date>_<place>/map.html       interactive map (the viewer, see mapping.save_map)
+    runs/<date>_<place>/data.js        its data: lines and profiles
     runs/<date>_<place>/lines.csv      every valid line with its group
     runs/<date>_<place>/lines.geojson  the same as GeoJSON
     runs/<date>_<place>/run.json       parameters and summary
     runs/runs.js                       list of all runs, loaded by every map
+    runs/_viewer/                      the viewer bundle shared by every map
     runs/index.html                    table of all runs
 A page opened from disk cannot list a folder, so runs.js and index.html are
 rewritten after every run.
@@ -181,7 +183,7 @@ def write_index(runs_dir: str):
     runs = list_runs(runs_dir)
     with open(os.path.join(runs_dir, "runs.js"), "w", encoding="utf-8") as f:
         f.write("window.FINDALINE_RUNS = ")
-        json.dump(runs, f, ensure_ascii=False)
+        json.dump([{k: v for k, v in r.items() if k != "data"} for r in runs], f, ensure_ascii=False)
         f.write(";\n")
 
     def e(value):

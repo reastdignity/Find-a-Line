@@ -1,0 +1,2 @@
+# The built viewer is compared byte for byte with a fresh build (tests/test_viewer.py)
+viewer/dist/** -text
