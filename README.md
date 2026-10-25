@@ -137,7 +137,7 @@ The search centre can be given in either of two coordinate systems:
 - **PL-1992 / EPSG:2180** (`--northing`, `--easting`), in metres. Note that geoportal.gov.pl labels the northing as **X** and the easting as **Y**. Example: `--northing 152074 --easting 571448`
 
 Instead of a circle, `--area` searches any area; both anchors of a line lie inside it, while the webbing may leave it (e.g. over a bay):
-- `--area coast --buffer 100 --within osm:"Gozo"`: within 100 m of the OpenStreetMap coastline, inside the named area (or a box: `--within S,W,N,E`);
+- `--area coast --buffer 100 --within osm:"Gozo"`: within 100 m of the OpenStreetMap coastline of Gozo and of everything within `--max-length` of it: islets off its coast, the sea side of the coastline and the cliff edges are included (the named area itself is only the land of the island); coastline a little further away is reported. A box (`--within S,W,N,E`) clips the band instead;
 - `--area cliffs --buffer 50 --within 50.14,19.73,50.18,19.78`: within 50 m of OSM cliffs (`natural=cliff`) and crags (`climbing=crag`);
 - `--area my-area.geojson` (or KML, GPX): polygons as they are, points and lines grown by `--buffer`;
 - `--area osm:"Ojcowski Park Narodowy"`: a named OpenStreetMap area (Nominatim).
@@ -153,7 +153,7 @@ Several places at once: give `--point LAT,LON` (WGS84) once per place, optionall
 | Option | Default | Description |
 | --- | --- | --- |
 | `--point` | | `LAT,LON[,NAME]`: search around this point; repeat for several places (one run each) |
-| `--area` / `--buffer` / `--within` | – / 100 / – | Search an area instead of a circle: `coast`, `cliffs`, a GeoJSON/KML/GPX file or `osm:<name>`; `--buffer` around coastline, cliffs, points and lines; `--within osm:<name>` or `S,W,N,E` limits it (needed for `coast` and `cliffs`) |
+| `--area` / `--buffer` / `--within` | – / 100 / – | Search an area instead of a circle: `coast`, `cliffs`, a GeoJSON/KML/GPX file or `osm:<name>`; `--buffer` around coastline, cliffs, points and lines; `--within` (needed for `coast` and `cliffs`): `osm:<name>` takes the coastline or cliffs within `--max-length` of that area, a box `S,W,N,E` clips the band |
 | `--tile-size` | from the free memory | Side of the square tiles a large area is computed in, metres |
 | `--ortho-detail` | 50 | For an area: detailed orthophoto only around this many best groups |
 | `--source` | `auto` | Data source: `auto`, `geoportal`, `malta`, `malta2012`, `spain`, `spain_canarias`, `europe`, `nasadem`, `files` (see *Data sources*) |

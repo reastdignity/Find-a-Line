@@ -161,7 +161,7 @@ def plan_search(params: SearchParams, paths: Paths, on_event: Optional[OnEvent] 
     cache.check_layout(paths.cache)
     if params.area is not None:
         try:
-            area = ar.from_spec(params.area, params.buffer, params.within, paths.cache)
+            area = ar.from_spec(params.area, params.buffer, params.within, paths.cache, params.max_length)
         except (ValueError, requests.RequestException) as e:
             raise SearchError(f"Area: {e}")
         center_lat, center_lon = area.center
@@ -227,6 +227,8 @@ def plan_search(params: SearchParams, paths: Paths, on_event: Optional[OnEvent] 
     lines.append("=" * 60)
     for line in lines:
         emit("info", line)
+    for note in getattr(area, "notes", []):
+        emit("warning", note)
     return Plan(params, paths, area, source, grid, resolution, group_distance, nmpt, rigging, layers,
                 emit, crs, (x, y), tiles, core)
 

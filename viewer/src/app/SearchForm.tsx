@@ -72,7 +72,7 @@ export function SearchForm({place, fields, groups, onStarted}: SearchFormProps) 
   useEffect(() => place.setMode(mode), [place, mode]);
   useEffect(() => { if (point) place.setPoint(point[0], point[1], radius); }, [place, point, radius]);
   // Any change makes the estimate stale
-  useEffect(() => { setEstimate(null); setError(""); },
+  useEffect(() => { setEstimate(null); setError(""); place.showPreview(null); },
             [mode, point, radius, buffer, preset, osmName, within, file, drawn, values]);
 
   const request = (): SearchRequest | string => {
@@ -114,7 +114,11 @@ export function SearchForm({place, fields, groups, onStarted}: SearchFormProps) 
       if (start) {
         const {id} = await api.start(r);
         onStarted(id);
-      } else setEstimate(await api.estimate(r));
+      } else {
+        const result = await api.estimate(r);
+        setEstimate(result);
+        place.showPreview(result.area);
+      }
     } catch (e) {
       setError((e as Error).message);
     } finally {
@@ -203,6 +207,9 @@ export function SearchForm({place, fields, groups, onStarted}: SearchFormProps) 
         `, ${estimate.km2.toFixed(2)} km² in ${estimate.tiles} tile(s)`}, about {estimate.download_mb} MB
       to download, {estimate.work_gb} GB of working grids.
       {estimate.reasons.length > 0 && <ul class="fa-warn">{estimate.reasons.map((r) => <li>{r}</li>)}</ul>}
+      {estimate.messages.some(([kind]) => kind === "warning") && <ul class="fa-warn">
+        {estimate.messages.filter(([kind]) => kind === "warning").map(([, text]) => <li>{text}</li>)}</ul>}
+      <p class="fa-hint">The area to be searched is drawn on the map (orange, dashed).</p>
       <details><summary>Details</summary>
         <pre>{estimate.messages.map(([, text]) => text).join("\n")}</pre></details>
     </div>}

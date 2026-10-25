@@ -165,22 +165,66 @@ def _read_file(path: str) -> list:
     return geometries
 
 
-def from_spec(spec: str, buffer: float, within: str, cache_dir: str) -> "Polygon":
+def _near(theme: str, limit, reach: float, buffer: float, cache_dir: str):
+    """Land and sea within `buffer` of the parts of an OSM theme within `reach` metres of
+    `limit` (WGS84), not clipped to it; and the notes about parts a little further away.
+
+    A named area (osm:Gozo) is the land of an island: clipping the band to it would cut
+    off its sea side, the edges of its cliffs and the islets off its coast. The parts
+    within `reach` (the longest line) are those a line could reach from the area.
+    """
+    from shapely.ops import unary_union
+    import osm
+    crs = _metric(limit)
+    zone = project(limit, "EPSG:4326", crs)
+    near_zone, far_zone = zone.buffer(reach), zone.buffer(2 * reach)
+    features = osm.theme(theme, *project(far_zone, crs, "EPSG:4326").bounds, cache_dir)
+    near, beyond = [], []
+    for feature in features:
+        geometry = project(feature["geometry"], "EPSG:4326", crs)
+        part = geometry.intersection(near_zone)
+        if not part.is_empty:
+            near.append(part)
+        rest = geometry.difference(near_zone).intersection(far_zone)
+        if not rest.is_empty:
+            beyond.append(rest)
+    if not near:
+        raise ValueError(f"no {theme} within {reach:g} m of the area")
+    grown = unary_union(near).buffer(buffer)
+    notes = []
+    if beyond:
+        pieces = list(getattr(unary_union(beyond), "geoms", [unary_union(beyond)]))
+        where = project(pieces[0].representative_point(), crs, "EPSG:4326")
+        name = "coastline" if theme == "coastline" else "cliffs and crags"
+        notes.append(f"{len(pieces)} piece(s) of {name} lie {reach:g}-{2 * reach:g} m from the area and are left out "
+                     f"(e.g. at {where.y:.5f}, {where.x:.5f}): a longer --max-length or a box as --within "
+                     f"takes them in")
+    return project(grown, crs, "EPSG:4326"), notes
+
+
+def from_spec(spec: str, buffer: float, within: str, cache_dir: str, reach: float = 0.0) -> "Polygon":
     """The search area of --area (with --buffer and --within):
-    coast    land and sea within `buffer` of the OSM coastline, inside `within`
-    cliffs   within `buffer` of OSM cliffs (natural=cliff) and crags (climbing=crag), inside `within`
+    coast    land and sea within `buffer` of the OSM coastline
+    cliffs   within `buffer` of OSM cliffs (natural=cliff) and crags (climbing=crag)
     <file>   polygons of a GeoJSON/KML/GPX file as they are, points and lines grown by `buffer`
     osm:<name>  the area of a named OpenStreetMap object (Nominatim)
+    For coast and cliffs, `within osm:<name>` takes the coastline or cliffs within `reach`
+    metres of that area (the longest line: islets off its coast, its sea side and cliff
+    edges stay in); a box S,W,N,E clips the band. Notes for the user are in area.notes.
     """
     import os
     import osm
     limit = region(within, cache_dir) if within else None
+    notes = []
     if spec in ("coast", "cliffs"):
         if limit is None:
             raise ValueError(f"--area {spec} needs --within (osm:<name> or S,W,N,E)")
         theme = "coastline" if spec == "coast" else "cliff"
-        features = osm.theme(theme, *limit.bounds, cache_dir)
-        geometry = _buffered([f["geometry"] for f in features], buffer, limit)
+        if within.startswith("osm:"):
+            geometry, notes = _near(theme, limit, reach, buffer, cache_dir)
+        else:
+            features = osm.theme(theme, *limit.bounds, cache_dir)
+            geometry = _buffered([f["geometry"] for f in features], buffer, limit)
     elif spec.startswith("osm:"):
         geometry = region(spec, cache_dir)
         if limit is not None:
@@ -202,6 +246,7 @@ def from_spec(spec: str, buffer: float, within: str, cache_dir: str) -> "Polygon
         raise ValueError(f"--area {spec}: the area is empty")
     area = Polygon(geometry)
     area.spec = {"area": spec, "buffer": buffer, "within": within}
+    area.notes = notes
     return area
 
 

@@ -430,7 +430,8 @@ def create_app(data_dir: str, token: Optional[str] = None, port: int = PORT, sta
             return {"messages": messages, "reasons": result.reasons, "download_mb": round(result.download_mb),
                     "work_gb": round(result.work_gb, 2), "source": plan.source.name,
                     "tiles": len(plan.tiles) if plan.tiles else 1, "resolution": plan.resolution,
-                    "km2": size_km2(plan.area.geometry) if isinstance(plan.area, Polygon) else None}
+                    "km2": size_km2(plan.area.geometry) if isinstance(plan.area, Polygon) else None,
+                    "area": plan.area.shape_wgs84().__geo_interface__}  # drawn on the map before the start
         try:
             return await run_in_threadpool(work)
         except (ValueError, search.SearchError) as e:

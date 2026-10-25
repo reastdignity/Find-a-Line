@@ -3,7 +3,7 @@
 
 import "@geoman-io/leaflet-geoman-free";
 import "@geoman-io/leaflet-geoman-free/dist/leaflet-geoman.css";
-import type { FeatureCollection } from "geojson";
+import type { FeatureCollection, GeoJSON } from "geojson";
 import L from "leaflet";
 import { baseLayers } from "../layers";
 
@@ -18,6 +18,8 @@ export class PlaceMap {
   private circle: L.Circle | null = null;
   private drawn = L.featureGroup();
   private shown = L.geoJSON(undefined, {style: {color: COLOR, weight: 2}});
+  private preview = L.geoJSON(undefined, {interactive: false,
+                                          style: {color: "#d95f02", weight: 2, dashArray: "6 4", fillOpacity: 0.08}});
   private mode: Mode = "point";
   onPoint: (lat: number, lon: number) => void = () => {};
   onDrawn: () => void = () => {};
@@ -30,6 +32,7 @@ export class PlaceMap {
     L.control.layers(layers, {}, {position: "topright"}).addTo(this.map);
     this.drawn.addTo(this.map);
     this.shown.addTo(this.map);
+    this.preview.addTo(this.map);
     this.map.pm.setGlobalOptions({layerGroup: this.drawn, pathOptions: {color: COLOR}} as any);
     this.map.on("pm:create", (e: any) => {
       e.layer.on("pm:edit", () => this.onDrawn());
@@ -80,6 +83,12 @@ export class PlaceMap {
       this.shown.addData(collection);
       this.map.fitBounds(this.shown.getBounds(), {maxZoom: 16});
     }
+  }
+
+  /** The area the estimate says will be searched (null: none). */
+  showPreview(area: GeoJSON | null) {
+    this.preview.clearLayers();
+    if (area) this.preview.addData(area as any);
   }
 
   /** The visible part of the map as S,W,N,E (for --within). */

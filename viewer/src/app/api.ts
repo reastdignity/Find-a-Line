@@ -22,6 +22,7 @@ export interface Estimate {
   tiles: number;
   resolution: number;
   km2: number | null;
+  area: GeoJSON;     // the area that will be searched
 }
 
 export interface Job {

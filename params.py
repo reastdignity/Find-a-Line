@@ -55,8 +55,10 @@ class SearchParams(BaseModel):
                                       "osm:<name> (a named OpenStreetMap area); both anchors of a line lie inside, "
                                       "the webbing may leave it", "centre")
     buffer: float = field(100, "metres around the coastline, cliffs, points or lines of --area", "centre")
-    within: Optional[str] = field(None, "limit --area to osm:<name> or a box S,W,N,E in degrees (needed for "
-                                        "coast and cliffs)", "centre")
+    within: Optional[str] = field(None, "where --area coast or cliffs applies: osm:<name> takes the coastline or "
+                                        "cliffs within --max-length of that area (islets off its coast, its sea "
+                                        "side and cliff edges included); a box S,W,N,E in degrees clips the band",
+                                  "centre")
 
     # Elevation data
     source: str = field("auto", "data source; 'auto' picks the national source for the country of "

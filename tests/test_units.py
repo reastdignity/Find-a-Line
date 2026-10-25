@@ -179,3 +179,23 @@ def test_evaluate_lines_matches_evaluate_line(model):
                 slow.append(sh.Line(tuple(map(int, anchors[i])), tuple(map(int, anchors[j])),
                                     length, elev_a1, elev_a2, clearance, clearance_nmpt))
         assert slow and fast == slow
+
+
+def test_coast_within_osm_keeps_islets_and_the_sea_side(monkeypatch):
+    """coast within osm:<name>: the coastline within the reach of the area, not clipped to its land."""
+    import osm
+    from shapely.geometry import Point, box
+    m = 1 / 111320  # about a metre in degrees here (near the equator)
+    island = box(0, 0, 1000 * m, 1000 * m)
+    rings = {"island": island.exterior, "islet": Point(1300 * m, 500 * m).buffer(50 * m).exterior,
+             "far": Point(2600 * m, 500 * m).buffer(50 * m).exterior, "away": Point(5000 * m, 500 * m).buffer(50 * m).exterior}
+    monkeypatch.setattr(osm, "search", lambda name, cache_dir: {"geojson": island.__geo_interface__})
+    monkeypatch.setattr(osm, "theme", lambda theme, *bounds_and_cache: [
+        {"id": k, "geometry": g} for k, g in rings.items()])
+    area = ar.from_spec("coast", 100, "osm:Island", "unused", reach=1000)
+    assert area.geometry.contains(Point(1300 * m, 550 * m))     # the islet 300 m off the coast
+    assert area.geometry.contains(Point(1050 * m, 500 * m))     # the sea side of the coastline
+    assert not area.geometry.contains(Point(2600 * m, 550 * m))  # 1.6 km away: left out...
+    assert len(area.notes) == 1 and "1 piece(s)" in area.notes[0]  # ...with a note; 4 km away: nothing
+    clipped = ar.from_spec("coast", 100, f"0,0,{1000 * m},{1000 * m}", "unused", reach=1000)
+    assert not clipped.geometry.contains(Point(1050 * m, 500 * m))  # a box clips the band
