@@ -14,7 +14,8 @@ Example:
     python findaline.py --lat 50.1559508 --lon 19.7562722
 
 Run `python findaline.py --help` for all options. The cache commands
-(`python findaline.py cache status|update`, `osm download|update`) are update.py.
+(`python findaline.py cache status|update`, `osm download|update`) are update.py,
+the web application (`python findaline.py web`) is web.py.
 """
 
 import gc
@@ -129,6 +130,9 @@ if __name__ == "__main__":
     if len(sys.argv) > 1 and sys.argv[1] in ("cache", "osm"):
         import update
         sys.exit(update.main(sys.argv[1:]))
+    if len(sys.argv) > 1 and sys.argv[1] == "web":
+        import web
+        sys.exit(web.main(sys.argv[2:]))
     searches, options = pm.parse_cli(description=DESCRIPTION)
     data_dir = cache.data_dir(options.data_dir)
     stopped = []

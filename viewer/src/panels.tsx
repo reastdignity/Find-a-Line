@@ -80,7 +80,8 @@ function DistanceSlider({value, max, onChange}: {value: number; max: number; onC
 export function RunPanel({current, runs}: {current: RunInfo; runs: RunInfo[]}) {
   const label = (r: RunInfo) => r.created.slice(0, 16).replace("T", " ") + " - " + r.name;
   return <div>
-    <b>Run</b> · <a href="../index.html">all runs</a><br />
+    <b>Run</b> · <a href="../index.html">all runs</a>
+    {location.protocol.startsWith("http") && <span> · <a href="/">app</a></span>}<br />
     <select onChange={(e) => { location.href = "../" + encodeURIComponent(e.currentTarget.value) + "/map.html"; }}>
       {runs.map((r) => <option value={r.id} selected={r.id === current.id}>{label(r)}</option>)}
     </select>

@@ -6,6 +6,7 @@ Finds possible highlines in elevation data: anchors on steep pixels, every pair 
 - Python 3.12+ (scipy 1.18 needs it). Dependencies in `pyproject.toml`, pinned in `uv.lock` (`uv sync`, `uv run findaline.py ...`; the user's `.venv` is git-ignored). For a session environment outside the repo: `UV_PROJECT_ENVIRONMENT=<dir> uv sync --frozen` (uv itself can be pip-installed into any venv: `python -m uv`). After changing dependencies run `uv lock` and the full regression set.
 - Tests: `pytest` (offline, ~25 s: synthetic canyon + Żabi Koń clip in `tests/data`) and `python tests/regression.py` (real searches, see docs/regression-tests.md).
 - `python findaline.py --lat 50.1559508 --lon 19.7562722` (Żabi Koń, Poland). `--help` lists everything.
+- `python findaline.py web --no-browser --port 8799 --data-dir <scratch>` runs the web app for tests (start it in the background). Headless Edge waits for the open event stream: stub `EventSource` in a test page (see docs/regression-tests.md) or use `--timeout` for screenshots.
 - `--no-plot` is required when running without a desktop session (the matplotlib window blocks). `--yes` skips the confirmation questions; without a terminal they default to "no".
 - Long runs: start them in the background and wait for the notification. Each search has its own `work/<id>/` and downloads write unique `.part` files, so searches may overlap, but tests run one after another (each search uses all cores).
 - Data folder (`--data-dir`, `FINDALINE_DATA`, default the repo): `cache/`, `runs/`, `work/`; layout and index in `cache.py`. A cache without the current `cache/LAYOUT` is refused: no migration code, move or delete the user's folders by hand.
@@ -28,6 +29,7 @@ Finds possible highlines in elevation data: anchors on steep pixels, every pair 
 | `sag.py` | Sag estimator (elastic catenary + point load) and envelope table for `--model sag` |
 | `mapping.py` | Coordinates, grouping, matplotlib map; `save_map` writes a run's `map.html` + `data.js` for the viewer |
 | `viewer/` | The result viewer (TypeScript, Preact, Leaflet; `src/`), bundled by esbuild into `dist/` (committed); copied to `runs/_viewer/` by every run |
+| `web.py` | `findaline.py web`: FastAPI on 127.0.0.1 (Host check, session token, CSP), job queue in `jobs.sqlite`, worker processes (download, then compute), SSE events; the page is `viewer/src/app` |
 | `update.py` | `findaline.py cache status/update` and `osm download/update`: which cached data can change, checks, runs on changed data |
 | `osmextract.py` | Geofabrik OSM extracts: download, replication diffs (pyosmium), theme features, theme tiles built from extracts |
 | `orthophoto.py` | Orthophoto tile cache (XYZ tiles requested from a WMS in EPSG:4326) |

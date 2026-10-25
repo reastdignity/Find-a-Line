@@ -46,6 +46,7 @@ import helpers as sh
 import linesearch as ls
 import mapping as mp
 import orthophoto as ortho
+import osm
 import runs as rn
 import sag as sg
 import sources as src
@@ -290,6 +291,28 @@ def estimate_search(plan: Plan) -> Estimate:
     if work_gb > CONFIRM_DISK_GB:
         estimate.reasons.append(f"working grids take about {work_gb:.1f} GB of disk in {plan.paths.work}")
     return estimate
+
+
+def download_data(plan: Plan):
+    """Download what the search area needs into the cache, without building grids.
+
+    The web worker does this for the next job while the current one computes; the
+    search itself then finds the data cached. Gap filling data is left to the search
+    (whether it is needed shows only on the grid).
+    """
+    p, grid, cache_dir = plan.params, plan.grid, plan.paths.cache
+    try:
+        for layer, label in zip(plan.layers, ("terrain", "surface")):
+            layer.download(grid, cache_dir, p.update, label)
+        if p.water == "fill" or (p.fill_gaps == "on" and plan.source.fallback):
+            src.WATER_MASK.download(grid, cache_dir, p.update, "water mask")
+        if p.water == "fill" and p.coastline == "overpass" and coast.world_file(cache_dir) is None:
+            try:
+                osm.theme("coastline", *coast._grid_bbox_wgs84(grid), cache_dir, p.update)
+            except requests.RequestException:
+                pass  # the search falls back to the Copernicus mask with a warning
+    except RuntimeError as e:
+        raise SearchError(f"Download failed: {e}")
 
 
 def prepare_data(plan: Plan) -> Data:

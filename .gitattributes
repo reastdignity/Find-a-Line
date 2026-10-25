@@ -1,2 +1,6 @@
 # The built viewer is compared byte for byte with a fresh build (tests/test_viewer.py)
 viewer/dist/** -text
+# Start scripts keep the line endings of their platform
+*.sh text eol=lf
+*.command text eol=lf
+*.bat text eol=crlf

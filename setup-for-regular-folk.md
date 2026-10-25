@@ -69,6 +69,15 @@ Open the `Find-a-Line` folder (in File Explorer or Finder) and double-click **`f
 
 Every search is kept in the `runs` folder. Open `runs/index.html` for a list of all searches with links to their maps and results; the `lines.csv` file of a search opens in Excel or any spreadsheet program.
 
+## Searching in the browser instead
+Instead of typing commands, you can use Find-a-Line as a page in your web browser:
+
+- **Windows:** double-click **`start.bat`** in the `Find-a-Line` folder.
+- **macOS:** double-click **`start.command`** (the first time: right-click it, choose *Open* and confirm; if it does not start, run `chmod +x start.command` in the Terminal in the `Find-a-Line` folder once).
+- Or in the terminal: `uv run findaline.py web`.
+
+A window with the server stays open (closing it stops Find-a-Line) and the page opens in your browser. Click the map where you want to search (or draw an area), press **Estimate**, then **Start**. The **Queue** tab shows the progress; when the search is done, **open map** shows the results, the same map as above.
+
 ## 6. Change the search
 Add options to the command to change what is searched. Some useful ones:
 

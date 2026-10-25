@@ -1,0 +1,38 @@
+html, body { width: 100%; height: 100%; margin: 0; padding: 0; overflow: hidden; font: 13px/1.5 sans-serif; color: #222; }
+.fa-app { position: absolute; inset: 0; display: flex; }
+.fa-map { flex: 1; }
+.fa-side { width: 400px; max-width: 45vw; display: flex; flex-direction: column; border-left: 1px solid #ccc; background: #fafafa; }
+.fa-tabs { display: flex; border-bottom: 1px solid #ccc; }
+.fa-tabs button { flex: 1; padding: 8px; border: 0; background: #eee; cursor: pointer; font: inherit; }
+.fa-tabs button.fa-on { background: #fafafa; font-weight: bold; }
+.fa-panel-body { flex: 1; overflow-y: auto; padding: 8px 12px; }
+.fa-form h3 { margin: 4px 0; }
+.fa-modes { display: flex; gap: 4px; margin-bottom: 6px; }
+.fa-modes button { flex: 1; font: inherit; cursor: pointer; padding: 4px; border: 1px solid #bbb; background: white; border-radius: 4px; }
+.fa-modes button.fa-on { background: #1f77b4; color: white; border-color: #1f77b4; }
+.fa-row { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin: 3px 0; }
+.fa-row input[type=number], .fa-row input[type=text], .fa-row select { width: 150px; font: inherit; }
+.fa-row .fa-changed { font-weight: bold; }
+.fa-form details { margin: 6px 0; border-top: 1px solid #ddd; padding-top: 4px; }
+.fa-form summary { cursor: pointer; color: #333; font-weight: bold; }
+.fa-hint { color: #777; margin: 4px 0; }
+.fa-error { color: #b00020; white-space: pre-wrap; }
+.fa-warn { color: #a05a00; padding-left: 18px; }
+.fa-actions { margin: 10px 0; }
+.fa-actions button { font: inherit; padding: 5px 14px; cursor: pointer; }
+.fa-primary { background: #1f77b4; color: white; border: 1px solid #1f77b4; border-radius: 4px; }
+.fa-primary:disabled { background: #9bbbd8; border-color: #9bbbd8; }
+.fa-small { font: inherit; font-size: 12px; cursor: pointer; }
+.fa-estimate { background: white; border: 1px solid #ddd; border-radius: 4px; padding: 6px 8px; }
+.fa-estimate pre, .fa-log { white-space: pre-wrap; font-size: 11px; max-height: 300px; overflow-y: auto; background: #f4f4f4; padding: 4px; }
+.fa-job { background: white; border: 1px solid #ddd; border-radius: 4px; padding: 6px 8px; margin-bottom: 8px; }
+.fa-job-head { display: flex; flex-wrap: wrap; gap: 6px; align-items: baseline; }
+.fa-job-tools { margin-left: auto; display: flex; gap: 6px; align-items: baseline; }
+.fa-status { color: #555; }
+.fa-done .fa-status { color: #2a7a2a; }
+.fa-failed .fa-status, .fa-cancelled .fa-status { color: #b00020; }
+.fa-bar { margin-top: 4px; }
+.fa-bar-text { font-size: 12px; color: #444; }
+.fa-bar-track { height: 6px; background: #e4e4e4; border-radius: 3px; overflow: hidden; }
+.fa-bar-fill { height: 100%; background: #1f77b4; }
+.fa-run { border-bottom: 1px solid #e4e4e4; padding: 6px 0; }
