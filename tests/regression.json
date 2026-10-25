@@ -351,7 +351,7 @@
     "expected": {
       "anchors": 7558,
       "open": 1100,
-      "checked": 13358,
+      "checked": 0,
       "lines": 1248,
       "spots": 104,
       "csv_sha256": "b3870ff01d7398ded9c19e6f8ab918eeba56ff47cfce206dc11d7ade9ce0644a",
@@ -365,7 +365,7 @@
     },
     "notes": "anchors, open anchors and checked pairs are those of the first tile; must equal R1 in lines and spots",
     "same_as": "R1",
-    "seconds": 8.9
+    "seconds": 7.9
   },
   "R15": {
     "place": "Ta' Għammar, north coast of Gozo: a tile at the northern edge of the Malta coverage",
@@ -406,7 +406,7 @@
     "expected": {
       "anchors": 5130,
       "open": 3750,
-      "checked": 74477,
+      "checked": 32577,
       "lines": 25906,
       "spots": 657,
       "csv_sha256": "0bdc63b64aa89850594a647b2cbf5d255ee567c1ed99a9e88e7cdc9a5fa0c279",
@@ -424,7 +424,7 @@
       "water_spots": 617
     },
     "notes": "",
-    "seconds": 51.6
+    "seconds": 47.5
   },
   "R17": {
     "place": "Gozo and Malta: coastline and cliff tiles from the Malta extract equal those from Overpass",

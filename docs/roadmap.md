@@ -215,3 +215,7 @@ These apply from stage 3 on, the local version included.
   - Esri World Imagery: Esri Master License Agreement; the layer is not meant for offline tile export (there is a separate "for Export" layer), so it stays online only.
 - **Public services:** the public Nominatim and Overpass instances forbid heavy use. A public site needs caching or its own instances.
 - **Accounts** (stage 4): a decision, not a check; to be made when stage 4 starts.
+
+## Open pits and other terraced walls (looked at 2026-10-25, Bełchatów)
+- The Bełchatów and Szczerców pits (200–250 m deep, walls of benches, about 20° overall) gave lines of 1.1 km at most, all near the bottom: the rims have no pixels of 45° or more, and with 5.5 kN and 70 g/m the sag is about 45 m at 1 km, 114 m at 2 km, 207 m at 3 km and 475 m at 5 km, deeper than the pits for lines from rim to rim. With 10 kN and 45° lines of up to 1.9 km appear across the Bełchatów pit.
+- Considered, not chosen for now: anchors on edges (the terrain drops by X m within Y m) instead of the slope of one pixel, so that the rim of a terraced wall is an anchor. *Measure* in the map (two points, the profile from the run's data, anchors above the ground) was built instead, to see why a line expected there is missing.

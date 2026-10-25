@@ -98,10 +98,13 @@ function start(data: RunData) {
                                    interactive: false}).addTo(map);
     } else marker.setLatLng(at);
   };
+  let measuredLine: Line | null = null, endMeasure = () => {};
   const drawProfile = () => {
     map.getContainer().classList.toggle("fal-profile-open", profileLine !== null);
+    if (profileLine !== measuredLine) endMeasure();
     render(profileLine && <ProfilePanel line={profileLine} model={data.model} slope={data.slope}
                                         leashFall={data.leash_fall} rigging={data.rigging} onHover={onHover}
+                                        measured={profileLine === measuredLine}
                                         onClose={() => { profileLine = null; onHover(null); drawProfile(); }} />,
            profileDiv);
   };
@@ -136,6 +139,60 @@ function start(data: RunData) {
       })
       .catch((e) => { if (note) note.innerHTML = "<i>The profile could not be computed: " + escape(String(e.message)) + "</i>"; });
   };
+
+  // Measuring: the profile between two points clicked on the map, computed by the server
+  // like that of a line (anchors on the ground; their height above it is set in the panel)
+  if (fromServer) {
+    const measureLayer = L.layerGroup().addTo(map);
+    let measuring = false, points: L.LatLng[] = [];
+    const box = control(map, "topleft", "fal-measure leaflet-bar");
+    const drawBox = (note = "") => box(<div>
+      <button class={measuring ? "fal-active" : ""} title="Profile between two points"
+              onClick={() => measuring ? stop() : begin()}>{measuring ? "Cancel" : "Measure"}</button>
+      {note && <span class="fal-measure-note">{note}</span>}
+    </div>);
+    const setMode = (on: boolean) => {
+      measuring = on;
+      map.getContainer().classList.toggle("fal-measuring", on);  // clicks go through the lines (CSS)
+    };
+    const begin = () => {
+      measureLayer.clearLayers();
+      points = [];
+      setMode(true);
+      drawBox("Click the first point");
+    };
+    const stop = (note = "") => { setMode(false); points = []; drawBox(note); };
+    endMeasure = () => { if (measuredLine) { measuredLine = null; measureLayer.clearLayers(); drawBox(); } };
+    map.on("click", (e: L.LeafletMouseEvent) => {
+      if (!measuring) return;
+      points.push(e.latlng);
+      L.circleMarker(e.latlng, {radius: 5, color: "#000", weight: 2, fillColor: "#fff", fillOpacity: 1,
+                                interactive: false}).addTo(measureLayer);
+      if (points.length < 2) { drawBox("Click the second point"); return; }
+      const [a, b] = points;
+      L.polyline([a, b], {color: "#000", weight: 2, dashArray: "6 4", interactive: false}).addTo(measureLayer);
+      stop("Computing the profile…");
+      const key = [a.lat, a.lng, b.lat, b.lng].map((v) => v.toFixed(7)).join(",");
+      fetch("/api/profile?run=" + encodeURIComponent(data.run.id) + "&line=" + key,
+            {headers: {"X-Findaline-Profile": "1"}})
+        .then((response) => response.json().then((body) => ({ok: response.ok, body})))
+        .then(({ok, body}) => {
+          if (!ok) throw new Error(body.detail || "error");
+          const p = body as Profile, n = p.d.length - 1;
+          if (p.z[0] === null || p.z[n] === null) throw new Error("no terrain data at a point");
+          measuredLine = {lat1: a.lat, lon1: a.lng, lat2: b.lat, lon2: b.lng, x1: 0, y1: 0, x2: 0, y2: 0,
+                          len: p.d[n], clr: p.min[1], clrN: p.min_nmpt ? p.min_nmpt[1] : null,
+                          e1: p.z[0]!, e2: p.z[n]!, over: false, water: p.water_m, filled: p.filled_m, prof: p};
+          drawBox();
+          showProfile(measuredLine);
+        })
+        .catch((e) => { measureLayer.clearLayers(); drawBox("Not computed: " + e.message); });
+    });
+    L.DomEvent.on(document as any, "keydown", (e: Event) => {
+      if ((e as KeyboardEvent).key === "Escape" && measuring) { measureLayer.clearLayers(); stop(); }
+    });
+    drawBox();
+  }
 
   // Clicking a line hides all the others (its group's variants stay, thin) until
   // its popup is closed or "Show all lines" is pressed

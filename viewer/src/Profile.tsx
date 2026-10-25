@@ -1,6 +1,7 @@
 // Terrain profile of the clicked line, in a panel along the bottom of the map:
 // terrain, trees/buildings, water, the safety limit of the search, the sag
-// estimator (webbing, envelope, fall zone, athlete under the cursor).
+// estimator (webbing, envelope, fall zone, athlete under the cursor). The same panel shows
+// two points measured on the map, with their anchors at a height above the ground.
 
 import { useEffect, useMemo, useRef, useState } from "preact/hooks";
 import * as Sag from "./sag";
@@ -38,14 +39,18 @@ export interface ProfileProps {
   slope: number;
   leashFall: number;
   rigging: Rigging;                      // initial values (the run's)
+  measured?: boolean;                    // two points measured on the map, not a found line
   onClose(): void;
   onHover(at: [number, number] | null): void;   // (lat, lon) under the cursor
 }
 
 export function ProfilePanel(props: ProfileProps) {
-  const {line: l, model} = props;
-  const p = l.prof!;
+  const {model, measured} = props;
   const [rigging, setRigging] = useState<Rigging>({...props.rigging});
+  const [heights, setHeights] = useState<[number, number]>([0, 0]);  // anchors above the ground (measured)
+  const l = useMemo(() => measured ? {...props.line, e1: props.line.e1 + heights[0], e2: props.line.e2 + heights[1]}
+    : props.line, [props.line, measured, heights]);
+  const p = l.prof!;
   const [show, setShow] = useState<Record<LayerName, boolean>>(
     {webbing: true, athlete: true, envelope: true, fall: true});
   const [equal, setEqual] = useState(false);
@@ -133,7 +138,19 @@ export function ProfilePanel(props: ProfileProps) {
     flush();
   }
 
-  // Smallest clearance over terrain and over trees/buildings (from the search)
+  // Smallest clearance over terrain and over trees/buildings: from the search, or for
+  // measured points here (their length and anchor heights may lie outside the search's)
+  const smallest = (above: (i: number) => number | null): [number, number] | null => {
+    let best: [number, number] | null = null;
+    for (let i = 0; i < p.d.length; i++) {
+      const z = above(i), lim = limit(p.d[i]);
+      if (z !== null && isFinite(lim) && (!best || lim - z < best[1])) best = [p.d[i], lim - z];
+    }
+    return best;
+  };
+  const minTerrain = measured ? smallest((i) => p.z[i]) : p.min;
+  const minSurface = !measured ? p.min_nmpt || null : p.s ? smallest((i) =>
+    p.s![i] === null || p.z[i] === null ? null : Math.max(p.s![i]!, p.z[i]!)) : null;
   const minMarker = (min: [number, number], stroke: string, label: string, below: boolean) => {
     const topZ = limit(min[0]), bottomZ = topZ - min[1];
     if (!isFinite(topZ)) return null;
@@ -198,12 +215,26 @@ export function ProfilePanel(props: ProfileProps) {
     } else input.value = String(rigging[key]);
   };
   const dh = Math.abs(l.e1 - l.e2);
+  const setHeight = (k: 0 | 1, input: HTMLInputElement) => {
+    const v = parseFloat(input.value);
+    if (isFinite(v) && v >= 0) setHeights(k ? [heights[0], v] : [v, heights[1]]);
+    else input.value = String(heights[k]);
+  };
+  let title = "Profile: " + l.len.toFixed(0) + " m, A1 " + l.e1.toFixed(1) + " m → A2 " + l.e2.toFixed(1) +
+    " m (Δh " + dh.toFixed(1) + " m), min. clearance " + l.clr.toFixed(1) + " m";
+  if (measured) {
+    const clr = minTerrain ? minTerrain[1] : NaN, clrN = minSurface ? minSurface[1] : null;
+    title = "Measured: " + l.len.toFixed(0) + " m, A1 " + l.e1.toFixed(1) + " m → A2 " + l.e2.toFixed(1) +
+      " m (Δh " + dh.toFixed(1) + " m), min. clearance " + (isFinite(clr) ? clr.toFixed(1) + " m" : "–") +
+      (clrN !== null ? " (over trees/buildings " + clrN.toFixed(1) + " m)" : "") +
+      (!isFinite(clr) ? "" : clr < 0 ? " – does not fit" : clrN !== null && clrN < 0 ? " – fits over terrain only"
+        : " – fits");
+  }
 
   return <div class="fal-profile" onClick={(e) => e.stopPropagation()}>
     <div class="fal-profile-head">
       <div>
-        <b class="fal-profile-title">{"Profile: " + l.len.toFixed(0) + " m, A1 " + l.e1.toFixed(1) + " m → A2 " +
-          l.e2.toFixed(1) + " m (Δh " + dh.toFixed(1) + " m), min. clearance " + l.clr.toFixed(1) + " m"}</b>
+        <b class="fal-profile-title">{title}</b>
         <span class="fal-profile-legend">
           <span><Swatch style={"height:8px;background:" + PROFILE.terrainFill + ";border:1px solid " + PROFILE.terrain} /> terrain</span>
           <span><Swatch style={"height:8px;background:" + PROFILE.treesFill} /> trees/buildings</span>
@@ -219,6 +250,9 @@ export function ProfilePanel(props: ProfileProps) {
       </div>
     </div>
     <div class="fal-profile-controls">
+      {measured && <span class="fal-heights">{(["A1", "A2"] as const).map((name, k) =>
+        <label><input type="number" min={0} step={0.5} value={heights[k]}
+                      onChange={(e) => setHeight(k as 0 | 1, e.currentTarget)} /> m {name} above ground</label>)}</span>}
       <span class="fal-rigging">{RIGGING.map(([key, label, step]) =>
         <label><input type="number" min={0} step={step} value={rigging[key]}
                       onChange={(e) => setRig(key, e.currentTarget)} /> {label}</label>)}</span>
@@ -249,9 +283,9 @@ export function ProfilePanel(props: ProfileProps) {
                               points={athlete.curve.map((e) => pt(e[0], l.e1 - e[1])).join(" ")} />}
         {athlete && hover !== null && <circle class="fal-athlete" r={4} fill={PROFILE.athlete} cx={X(hover)}
                                               cy={Y(chord(hover) - athlete.sag)} />}
-        {minMarker(p.min, PROFILE.terrain, "min. clearance", true)}
-        {p.min_nmpt && p.min_nmpt[1] < p.min[1] - 0.05 &&
-          minMarker(p.min_nmpt, PROFILE.trees, "over trees", false)}
+        {minTerrain && minMarker(minTerrain, PROFILE.terrain, "min. clearance", true)}
+        {minTerrain && minSurface && minSurface[1] < minTerrain[1] - 0.05 &&
+          minMarker(minSurface, PROFILE.trees, "over trees", false)}
         {([[0, l.e1, "A1", "start"], [l.len, l.e2, "A2", "end"]] as [number, number, string, string][]).map(
           ([d, z, name, anchor]) => <g>
             <circle cx={X(d)} cy={Y(z)} r={4} fill={color} />

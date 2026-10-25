@@ -244,6 +244,8 @@ def save_map(results: List[Dict], area, run_path: str, runs_dir: str, run: Dict,
         "ortho": None if ortho_service is None else {
             "name": ortho_service.name, "url": ortho_service.url, "layer": ortho_service.layer,
             "attribution": ortho_service.attribution,
+            "base": {"url": ortho_service.base_url, "max_zoom": ortho_service.base_max_zoom}
+                    if ortho_service.base_url else None,
             "cache": _relative_url(ortho_cache, path) if ortho_cache else None},
         "distance": group_distance, "by": group_by, "model": model,
         "rigging": dataclasses.asdict(rigging or Rigging()),

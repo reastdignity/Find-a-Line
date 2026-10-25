@@ -107,6 +107,7 @@ def test_area_in_tiles(tmp_path):
     tiled_out, tiled = run_search(tmp_path / "tiled", *common, "--tile-size", "150")
     assert "one grid" in one_out and "tiles)" in tiled_out
     assert one and _lines(one) == _lines(tiled)
+    assert one == tiled  # every column, the order of the anchors too (their pixels depend on it)
     assert len(glob.glob(str(tmp_path / "tiled" / "runs" / "*" / "tiles" / "*.pkl.gz"))) > 1
     # The map of an area keeps the profiles of the lines shown for the groups, no others
     for name, rows in (("one", one), ("tiled", tiled)):

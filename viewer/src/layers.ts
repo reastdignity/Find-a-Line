@@ -1,5 +1,6 @@
 // Background layers: OpenTopoMap, OpenStreetMap, the orthophoto of the data source
-// (from the local tile cache when there, else its WMS) and Esri World Imagery.
+// (from the local tile cache when there, else its WMS over its base tiles, if any) and
+// Esri World Imagery.
 
 import L from "leaflet";
 import type { Ortho } from "./types";
@@ -37,11 +38,15 @@ export function baseLayers(ortho: Ortho | null, maxZoom: number): Record<string,
   if (ortho) {
     // National WMS (e.g. geoportal) may not support Web Mercator, so tiles are requested
     // in WGS84. WMS renders at any scale, so the orthophoto stays sharp up to maxZoom.
+    const base = ortho.base;
     const layer = new (CachedWMS as any)(ortho.url, {
-      layers: ortho.layer, format: "image/jpeg", version: "1.3.0", transparent: false,
+      layers: ortho.layer, format: base ? "image/png" : "image/jpeg", version: "1.3.0", transparent: !!base,
       attribution: ortho.attribution, maxZoom, crs: L.CRS.EPSG4326}) as L.TileLayer.WMS;
     (layer as any)._cache = ortho.cache;
-    layers[ortho.name] = layer;
+    // Where the WMS has no imagery its PNG is transparent and shows the base under it
+    // (cached tiles have both already and cover the base)
+    layers[ortho.name] = base ? L.layerGroup([L.tileLayer(base.url, {maxZoom, maxNativeZoom: base.max_zoom}), layer])
+      : layer;
   }
   // Worldwide imagery, online only (Esri's terms do not allow caching tiles for offline use)
   layers["Esri World Imagery (online)"] = L.tileLayer(

@@ -206,11 +206,21 @@ def run_phase(data_dir: str, job_id: str, phase: str):
             failed = False
             return
         params = search_params(request, jobs.folder(job_id))
+        # Tiles are sized from the free memory: the computing phase uses the size the
+        # download phase announced, not one from the memory free by then
+        tile_file = os.path.join(jobs.folder(job_id), "tile_core.json")
         if phase == "compute":
             params = params.model_copy(update={"update": None})  # updated while downloading
+            if params.tile_size is None and os.path.exists(tile_file):
+                with open(tile_file, encoding="utf-8") as f:
+                    params = params.model_copy(update={"tile_size": json.load(f)})
         plan = search.plan_search(params, paths, on_event)
         if phase == "download":
             search.download_data(plan)
+            if plan.tile_core:
+                os.makedirs(jobs.folder(job_id), exist_ok=True)
+                with open(tile_file, "w", encoding="utf-8") as f:
+                    json.dump(plan.tile_core, f)
             jobs.set(job_id, "ready")
         else:
             if request.get("geometry") and not params.name:

@@ -144,8 +144,11 @@ def _sector(dr, dc):
 @njit(parallel=True, cache=True)
 def _pairs(z, anchors, elev, rings, todo, order, starts, cell, cells_x, res,
            min_length, max_length, max_dh_ratio, max_dh,
-           use_sag, log_spans, ratios, table, fall_zone, offsets, out, counts):
-    """Partners of the anchors in todo that pass all tests (only partners with a higher index).
+           use_sag, log_spans, ratios, table, fall_zone, first_only, offsets, out, counts):
+    """Partners of the anchors in todo that pass all tests: only partners with a higher index,
+    or with first_only those for which the anchor is the first (smaller x, then y; a tile
+    keeps the lines whose first anchor lies in its core). A pair is always checked and
+    written from its lower index: the pixels sampled depend on the direction (rint).
 
     With offsets None, counts[q] = [candidate pairs, pairs checked, lines] for todo[q].
     Otherwise the pairs are written to out from offsets[q] on.
@@ -163,24 +166,28 @@ def _pairs(z, anchors, elev, rings, todo, order, starts, cell, cells_x, res,
                 end = starts[g + 1] if g + 1 < starts.size else order.size
                 for p in range(starts[g], end):
                     j = order[p]
-                    if j <= i:
+                    if first_only:
+                        if anchors[j, 1] < ci or (anchors[j, 1] == ci and anchors[j, 0] >= ri):
+                            continue
+                    elif j <= i:
                         continue
-                    dr, dc = anchors[j, 0] - ri, anchors[j, 1] - ci
+                    a, b = (i, j) if i < j else (j, i)
+                    dr, dc = anchors[b, 0] - anchors[a, 0], anchors[b, 1] - anchors[a, 1]
                     length = math.hypot(dr, dc) * res
                     if length > max_length or length < min_length:
                         continue
-                    if not (abs(elev[j] - elev[i]) <= min(max_dh_ratio * length, max_dh)):
+                    if not (abs(elev[b] - elev[a]) <= min(max_dh_ratio * length, max_dh)):
                         continue
                     candidates += 1
                     need = min(RINGS, max(abs(dr), abs(dc)) // 2)
-                    if rings[i, _sector(dr, dc)] < need or rings[j, _sector(-dr, -dc)] < need:
+                    if rings[a, _sector(dr, dc)] < need or rings[b, _sector(-dr, -dc)] < need:
                         continue
                     checked += 1
-                    if _line_ok(z, ri, ci, anchors[j, 0], anchors[j, 1], res,
+                    if _line_ok(z, anchors[a, 0], anchors[a, 1], anchors[b, 0], anchors[b, 1], res,
                                 use_sag, log_spans, ratios, table, fall_zone):
                         if offsets is not None:
-                            out[offsets[q] + found, 0] = i
-                            out[offsets[q] + found, 1] = j
+                            out[offsets[q] + found, 0] = a
+                            out[offsets[q] + found, 1] = b
                         found += 1
         counts[q, 0], counts[q, 1], counts[q, 2] = candidates, checked, found
 
@@ -327,7 +334,7 @@ def find_valid_lines(elevation: np.ndarray, surface: Optional[np.ndarray], ancho
                      res: float, min_length: float, max_length: float,
                      nmpt_mode: Optional[str] = None, threads: Optional[int] = None,
                      sag_table=None, max_dh_ratio: float = np.inf,
-                     max_dh: float = np.inf) -> List[sh.Line]:
+                     max_dh: float = np.inf, first: Optional[np.ndarray] = None) -> List[sh.Line]:
     """Finds valid lines between anchors.
 
     Args:
@@ -341,6 +348,8 @@ def find_valid_lines(elevation: np.ndarray, surface: Optional[np.ndarray], ancho
         sag_table: sag.EnvelopeTable to use the sag estimator instead of the formula
         max_dh_ratio, max_dh: The anchors may differ in elevation by at most
             max_dh_ratio of the line length, and never more than max_dh
+        first: Optional mask of the anchors whose lines are wanted when they are the
+            first anchor (smaller x, then y): the anchors in the core of a tile
 
     Returns:
         Valid lines, longest first
@@ -370,6 +379,8 @@ def find_valid_lines(elevation: np.ndarray, surface: Optional[np.ndarray], ancho
     need_min = min(RINGS, int(min_length / (res * math.sqrt(2))) // 2)
     useful = np.flatnonzero(rings.max(axis=1) >= need_min)
     print(f"Anchors with an open direction: {len(useful)} of {len(anchors)}")
+    # Pairs are searched from the anchors in todo; partners may be any useful anchor
+    todo_all = useful if first is None else useful[np.asarray(first)[useful]]
 
     # Step 2 + 3: bucket the useful anchors, then find and check the pairs
     cell = max(1, int(max_length / res) // 4)
@@ -381,10 +392,11 @@ def find_valid_lines(elevation: np.ndarray, surface: Optional[np.ndarray], ancho
 
     args = (z, anchors, elev, rings)
     tail = (order, starts, cell, cells_x, res, float(min_length), float(max_length),
-            float(max_dh_ratio), float(max_dh), use_sag, log_spans, ratios, table, float(fall_zone))
+            float(max_dh_ratio), float(max_dh), use_sag, log_spans, ratios, table, float(fall_zone),
+            first is not None)
     pairs, candidates, checked = [], 0, 0
-    progress.compute.start("anchor pairs", len(useful), unit="anchor")
-    for todo in np.array_split(useful, min(CHUNKS, max(1, len(useful)))):
+    progress.compute.start("anchor pairs", len(todo_all), unit="anchor")
+    for todo in np.array_split(todo_all, min(CHUNKS, max(1, len(todo_all)))):
         counts = np.zeros((len(todo), 3), dtype=np.int64)
         _pairs(*args, todo, *tail, None, np.zeros((0, 2), dtype=np.int64), counts)
         offsets = np.concatenate([[0], np.cumsum(counts[:, 2])[:-1]]).astype(np.int64)

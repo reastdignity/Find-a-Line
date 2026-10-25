@@ -111,9 +111,8 @@ def test_download_process_ending_late(tmp_path):
     assert jobs.get(job)["status"] == "failed"
 
 
-def test_profile_on_demand(tmp_path, monkeypatch):
-    """A profile computed again from the cache equals the one the search saved."""
-    import json
+def _clip_run(tmp_path, monkeypatch) -> str:
+    """A run of the Żabi Koń clip (sag model) in the data folder tmp_path; its id."""
     import subprocess
     _offline(monkeypatch)
     result = subprocess.run(
@@ -123,9 +122,18 @@ def test_profile_on_demand(tmp_path, monkeypatch):
          "--ortho", "never", "--data-dir", str(tmp_path)],
         cwd=REPO, capture_output=True, text=True, encoding="utf-8", timeout=600, env=dict(os.environ))
     assert result.returncode == 0, result.stdout + result.stderr
-    run_id = next(d for d in os.listdir(tmp_path / "runs") if os.path.isfile(tmp_path / "runs" / d / "run.json"))
+    return next(d for d in os.listdir(tmp_path / "runs") if os.path.isfile(tmp_path / "runs" / d / "run.json"))
+
+
+def _lines_of(tmp_path, run_id):
     text = (tmp_path / "runs" / run_id / "data.js").read_text(encoding="utf-8")
-    rows = json.loads(text.partition(" = ")[2].rstrip().rstrip(";"))["lines"]
+    return json.loads(text.partition(" = ")[2].rstrip().rstrip(";"))["lines"]
+
+
+def test_profile_on_demand(tmp_path, monkeypatch):
+    """A profile computed again from the cache equals the one the search saved."""
+    run_id = _clip_run(tmp_path, monkeypatch)
+    rows = _lines_of(tmp_path, run_id)
     app = web.create_app(str(tmp_path), token=TOKEN, start_scheduler=False)
     with TestClient(app) as client:
         for row in rows[:3]:
@@ -135,6 +143,23 @@ def test_profile_on_demand(tmp_path, monkeypatch):
             assert response.status_code == 200, response.text
             assert response.json() == row[16]  # the smaller grid samples the same pixels
         assert client.get("/api/profile?run=..&line=1,2,3,4", headers={"x-findaline-profile": "1"}).status_code == 404
+
+        # Two points measured on the map: a line shorter than --min-length gets the sag of its own span
+        import numpy as np
+        import sag
+        lat1, lon1, lat2, lon2 = rows[0][:4]
+        f = 15 / rows[0][8]
+        line = f"{lat1},{lon1},{lat1 + (lat2 - lat1) * f},{lon1 + (lon2 - lon1) * f}"
+        p = client.get(f"/api/profile?run={run_id}&line={line}", headers={"x-findaline-profile": "1"}).json()
+        d, z = np.array(p["d"]), np.array(p["z"], dtype=float)
+        assert 13 < d[-1] < 17
+        rig = sag.Rigging(**json.loads((tmp_path / "runs" / run_id / "run.json").read_text("utf-8"))["params"]["rigging"])
+        fractions, envelope = sag.envelope(d[-1], z[0] - z[-1], rig)
+        limit = z[0] + (z[-1] - z[0]) * d / d[-1] - np.interp(d / d[-1], fractions, envelope) - rig.fall_zone
+        assert p["min"][1] == pytest.approx(np.min((limit - z)[1:-1]), abs=0.05)  # between the anchors
+        for far in (f"{lat1},{lon1},{lat1 + 0.1},{lon1}", f"{lat1},{lon1},{lat1},{lon1 + 0.000001}"):
+            response = client.get(f"/api/profile?run={run_id}&line={far}", headers={"x-findaline-profile": "1"})
+            assert response.status_code == 400 and ("km apart" in response.text or "too close" in response.text)
 
 
 def test_osm_jobs(client, tmp_path):
@@ -172,3 +197,72 @@ def test_run_again_and_edit(client, tmp_path):
     jobs.set(osm_job, "done")
     copy = client.post(f"/api/jobs/{osm_job}/again", headers=headers).json()["id"]
     assert json.loads(jobs.get(copy)["request"]) == {"osm": {"action": "download", "region": "malta"}}
+
+
+EDGE = r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe"
+
+MEASURE_SCRIPT = """
+(function () {
+  const out = document.createElement("pre");
+  out.id = "result";
+  document.body.appendChild(out);
+  const row = window.FINDALINE_RUN.lines[0], map = window.FINDALINE_MAP;
+  const title = () => (document.querySelector(".fal-profile-title") || {}).textContent || "";
+  const wait = (ok, then, tries = 100) => ok() ? then() : tries ? setTimeout(() => wait(ok, then, tries - 1), 200)
+                                                    : (out.textContent += " | timeout: " + title());
+  setTimeout(() => {
+    document.querySelector(".fal-measure button").click();
+    map.fire("click", {latlng: {lat: row[0], lng: row[1]}});
+    map.fire("click", {latlng: {lat: row[2], lng: row[3]}});
+    wait(() => title().startsWith("Measured"), () => {
+      out.textContent = title();
+      const input = document.querySelector(".fal-heights input");
+      input.value = "5";
+      input.dispatchEvent(new Event("change"));
+      setTimeout(() => { out.textContent += " | " + title(); }, 300);
+    });
+  }, 500);
+})();
+"""
+
+
+@pytest.mark.skipif(not os.path.exists(EDGE), reason="needs Microsoft Edge")
+def test_measure_in_the_map(tmp_path, monkeypatch):
+    """The Measure button of a map served by the app: two clicks give the profile between
+    them, and a height above the ground raises its anchor."""
+    import re
+    import socket
+    import subprocess
+    import threading
+
+    import uvicorn
+    run_id = _clip_run(tmp_path, monkeypatch)
+    row = _lines_of(tmp_path, run_id)[0]
+    folder = tmp_path / "runs" / run_id
+    (folder / "measure_test.js").write_text(MEASURE_SCRIPT, encoding="utf-8")
+    page = (folder / "map.html").read_text(encoding="utf-8")
+    (folder / "measure_test.html").write_text(
+        page.replace("</body>", '<script src="measure_test.js"></script></body>'), encoding="utf-8")
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        port = s.getsockname()[1]
+    server = uvicorn.Server(uvicorn.Config(web.create_app(str(tmp_path), token=TOKEN, port=port,
+                                                          start_scheduler=False),
+                                           host="127.0.0.1", port=port, log_level="warning"))
+    thread = threading.Thread(target=server.run, daemon=True)
+    thread.start()
+    try:
+        while not server.started:
+            time.sleep(0.1)
+        result = subprocess.run(
+            [EDGE, "--headless", "--disable-gpu", f"--user-data-dir={tmp_path / 'edge'}", "--no-first-run",
+             "--virtual-time-budget=60000", "--dump-dom",
+             f"http://127.0.0.1:{port}/runs/{run_id}/measure_test.html"],
+            capture_output=True, text=True, encoding="utf-8", timeout=180)
+    finally:
+        server.should_exit = True
+        thread.join(10)
+    text = re.search(r'<pre id="result">(.*?)</pre>', result.stdout, re.S).group(1)
+    first, _, raised = text.partition(" | ")
+    assert first.startswith(f"Measured: {row[8]:.0f} m, A1 {row[11]:.1f} m"), text
+    assert raised.startswith(f"Measured: {row[8]:.0f} m, A1 {row[11] + 5:.1f} m"), text

@@ -57,6 +57,9 @@ export interface Ortho {
   url: string;          // WMS
   layer: string;
   attribution: string;
+  // tiles ({z}/{x}/{y}) with full coverage under the WMS, where it has no imagery (the WMS
+  // is then requested as a transparent PNG; cached tiles have both already)
+  base: {url: string; max_zoom: number} | null;
   cache: string | null; // {z}/{x}/{y}.jpg folder relative to the map, or null
 }
 

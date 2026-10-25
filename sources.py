@@ -765,6 +765,11 @@ class OrthoService:
     layer: str
     folder: str      # in the cache; tiles go to <folder>/wm256/{z}/{x}/{y}.jpg
     attribution: str
+    # Tiles ({z}/{x}/{y} in Web Mercator, up to base_max_zoom) with full coverage under this
+    # service, where it has no imagery and answers with white (geoportal's HighResolution
+    # covers only sheets of 10 cm or finer)
+    base_url: Optional[str] = None
+    base_max_zoom: int = 19
 
     @property
     def ttl_days(self) -> Optional[int]:
@@ -884,7 +889,12 @@ SOURCES: Dict[str, Source] = {s.id: s for s in [
                         "SkorowidzNMPT", "poland/nmpt", native_res=1.0),
         countries=("pl",), crs="EPSG:2180", default_resolution=2, grid_origin=(0.5, 0.5),
         ortho=OrthoService("Orthophoto (geoportal.gov.pl)", f"{GEOPORTAL}/ORTO/WMS/HighResolution",
-                           "Raster", "poland/ortho/live", "GUGiK")),
+                           "Raster", "poland/ortho/live", "GUGiK",
+                           # the WMS of StandardResolution answers about half of the requests
+                           # with 404 (2026-10-25); its WMTS answers all
+                           base_url=f"{GEOPORTAL}/ORTO/WMTS/StandardResolution?SERVICE=WMTS&REQUEST=GetTile"
+                                    "&VERSION=1.0.0&LAYER=ORTOFOTOMAPA&STYLE=default&FORMAT=image/jpeg"
+                                    "&TILEMATRIXSET=EPSG:3857&TILEMATRIX=EPSG:3857:{z}&TILEROW={y}&TILECOL={x}")),
     _malta(2018, note="Malta 2018 heights are published in whole metres, which makes slopes and "
                       "clearances coarser; --source malta2012 has centimetre precision but gaps "
                       "along the coast (filled from 2018)."),

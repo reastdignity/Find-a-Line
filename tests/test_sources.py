@@ -1,6 +1,7 @@
 """Download code against fake services (no network)."""
 
 import hashlib
+import io
 import json
 import math
 import os
@@ -143,3 +144,64 @@ def test_slovak_tiles_cut_and_downloaded(tmp_path, monkeypatch):
     # A tile outside the data is recorded as missing, not fetched again
     outside = (math.floor(left / 2000) - 5, math.floor(top / 2000))
     assert layer.download_tile(outside, str(tmp_path / "x.tif")).received == 0
+
+
+def _image(fmt, color, covered):
+    """A 256 px tile: color where covered (columns), white (JPEG) or transparent (PNG) elsewhere."""
+    from PIL import Image
+    tile = np.zeros((256, 256, 4), np.uint8)
+    tile[:, :] = (255, 255, 255, 0 if fmt == "PNG" else 255)
+    tile[:, covered] = (*color, 255)
+    out = io.BytesIO()
+    Image.fromarray(tile if fmt == "PNG" else tile[:, :, :3]).save(out, fmt)
+    return out.getvalue()
+
+
+def test_orthophoto_falls_back_to_the_base_tiles(tmp_path, monkeypatch):
+    """Where the WMS has no imagery (white), the cached tile comes from the base tiles."""
+    import orthophoto
+    from PIL import Image
+    service = src.OrthoService("Fake", "https://high/wms", "top", "fake/ortho/live", "test",
+                               base_url="https://base/{z}/{x}/{y}.jpg", base_max_zoom=16)
+    tiles = {"full": (16, 1, 1), "none": (16, 2, 1), "edge": (16, 3, 1), "deep": (18, 4 * 5 + 1, 4 * 1 + 2)}
+    covered = {"full": slice(0, 256), "none": slice(0, 0), "edge": slice(0, 128), "deep": slice(0, 0)}
+    by_bbox = {orthophoto._wms_bbox(*t): name for name, t in tiles.items()}
+    asked = []
+
+    def get(url, params, timeout):
+        if params is None:  # a base tile: left half dark, right half light green
+            z, x, y = (int(v) for v in url[len("https://base/"):-len(".jpg")].split("/"))
+            asked.append(("base", z, x, y))
+            tile = np.zeros((256, 256, 3), np.uint8)
+            tile[:, :128], tile[:, 128:] = (20, 90, 20), (60, 220, 60)
+            out = io.BytesIO()
+            Image.fromarray(tile).save(out, "JPEG")
+            content, kind = out.getvalue(), "jpeg"
+        else:
+            name, kind = by_bbox[params["BBOX"]], "png" if params["FORMAT"] == "image/png" else "jpeg"
+            asked.append((name, kind))
+            content = _image(kind.upper(), (200, 40, 40), covered[name])
+        response = FakeResponse(content)
+        response.status_code, response.headers = 200, {"content-type": f"image/{kind}"}
+        return response
+    monkeypatch.setattr(orthophoto.requests, "get", get)
+
+    def colour(name):
+        path = str(tmp_path / f"{name}.jpg")
+        orthophoto._download_tile(service, *tiles[name], path)
+        return np.asarray(Image.open(path).convert("RGB")).astype(int)
+
+    full, none, edge, deep = colour("full"), colour("none"), colour("edge"), colour("deep")
+    assert abs(full - (200, 40, 40)).max() < 10                 # the WMS has imagery: its tile
+    assert ("base", 16, 1, 1) not in asked
+    assert abs(none[:, :120] - (20, 90, 20)).max() < 10         # none: the base's tile, never white
+    assert abs(none[:, 136:] - (60, 220, 60)).max() < 10
+    assert abs(edge[:, :120] - (200, 40, 40)).max() < 10        # the edge of its coverage:
+    assert abs(edge[:, 136:] - (60, 220, 60)).max() < 10        # the WMS over the base
+    assert ("edge", "png") in asked
+    # deeper than the base goes: a quarter of its tile at zoom 16 (x 21 = 4 * 5 + 1: the
+    # second quarter from the left, all of it in the dark half), enlarged
+    assert ("base", 16, 5, 1) in asked and abs(deep[:, :200] - (20, 90, 20)).max() < 10
+    # without a base the tile is kept as the WMS sent it
+    plain = src.OrthoService("Fake", "https://high/wms", "top", "fake/ortho/live", "test")
+    assert orthophoto.tile_content(plain, *tiles["none"]) == _image("JPEG", (200, 40, 40), slice(0, 0))

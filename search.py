@@ -63,6 +63,7 @@ ORTHO_SECONDS_PER_TILE = 0.3  # measured download rate with orthophoto.DOWNLOAD_
 TILE_MEMORY_SHARE = 0.25
 TILE_BYTES_PER_PIXEL = 64
 DOWNLOAD_MB_PER_S = 5  # for the time estimate of area searches
+MAX_MEASURED_PX = 6000  # the longest line measured on the map, in pixels (profile_of_line builds a square grid around it)
 
 OnEvent = Callable[[str, str], None]
 Confirm = Callable[[str, str], bool]
@@ -424,9 +425,14 @@ def _lines(plan: Plan, data: Data, core: Optional[tuple] = None) -> Tuple[List[D
     if p.model == "sag":
         emit("info", "Precomputing the sag estimator for all line lengths...")
         sag_table = sg.EnvelopeTable(plan.rigging, p.min_length, p.max_length)
+    first = None
+    if core is not None:  # pairs only from the anchors in the core: the overlap is for partners
+        left, bottom, right, top = core
+        x, y = grid.pixel_to_xy(anchors[:, 0], anchors[:, 1])
+        first = (left <= x) & (x < right) & (bottom <= y) & (y < top)
     valid_lines = ls.find_valid_lines(data.elevation, data.surface, anchors, plan.resolution,
                                       p.min_length, p.max_length, plan.nmpt, p.threads,
-                                      sag_table, p.max_anchor_diff / 100, p.max_anchor_diff_m)
+                                      sag_table, p.max_anchor_diff / 100, p.max_anchor_diff_m, first)
     if not valid_lines and core is None:
         raise SearchError("No lines found matching elevation requirements.")
 
@@ -688,7 +694,8 @@ def profile_of_line(meta: Dict, paths: Paths, anchor1: Tuple[float, float], anch
     """The profile of a line of a saved run (meta: its run.json), computed again from the cache.
 
     Maps of areas keep a profile only for the line shown for each group; this gives any
-    other line its profile. A small grid around the line is built with the run's source,
+    other line its profile, and any two points measured on the map (at most MAX_MEASURED_PX
+    pixels apart) theirs. A small grid around the line is built with the run's source,
     resolution and filling, on the same pixel grid as the search, so terrain and surface
     are the same; offsets of filled gaps may differ a little (they come from a smaller
     surrounding). anchor1, anchor2: (lat, lon) of the anchors as the run saved them.
@@ -703,6 +710,11 @@ def profile_of_line(meta: Dict, paths: Paths, anchor1: Tuple[float, float], anch
     to_xy = ar._to(meta["center"]["crs"])
     (x1, y1), (x2, y2) = to_xy(anchor1[1], anchor1[0]), to_xy(anchor2[1], anchor2[0])
     length = math.hypot(x2 - x1, y2 - y1)
+    if length > MAX_MEASURED_PX * p["resolution"]:
+        raise SearchError(f"the points are {length / 1000:.1f} km apart; at the {p['resolution']:g} m resolution "
+                          f"of this run profiles reach {MAX_MEASURED_PX * p['resolution'] / 1000:g} km")
+    if length < 2 * p["resolution"]:
+        raise SearchError("the points are too close")
     lat, lon = (anchor1[0] + anchor2[0]) / 2, (anchor1[1] + anchor2[1]) / 2
     values.update(lat=lat, lon=lon, radius=length / 2 + 10 * p["resolution"] + 20)
     plan = plan_search(SearchParams(**values), paths, lambda kind, text: None)
@@ -713,9 +725,14 @@ def profile_of_line(meta: Dict, paths: Paths, anchor1: Tuple[float, float], anch
     pixel = lambda x, y: (int(round((grid.top - y) / res - 0.5)), int(round((x - grid.left) / res - 0.5)))
     sag_table = None
     if p["model"] == "sag":
-        key = json.dumps([rig, p["min_length"], p["max_length"]], sort_keys=True)
-        if key not in _sag_tables:  # the same table as the search, so the same limits
-            _sag_tables[key] = sg.EnvelopeTable(plan.rigging, p["min_length"], p["max_length"])
+        # The same table as the search, so the same limits; a line measured on the map
+        # may be shorter or longer than the search allowed: a table that reaches it
+        spans = (min(p["min_length"], 0.99 * length), max(p["max_length"], 1.01 * length))
+        if p["min_length"] <= length <= p["max_length"]:
+            spans = (p["min_length"], p["max_length"])
+        key = json.dumps([rig, *spans], sort_keys=True)
+        if key not in _sag_tables:
+            _sag_tables[key] = sg.EnvelopeTable(plan.rigging, *spans)
         sag_table = _sag_tables[key]
     profile = sh.line_profile(pixel(x1, y1), pixel(x2, y2), data.elevation, res, data.surface,
                               sag_table=sag_table, water=data.water, filled=data.filled)
