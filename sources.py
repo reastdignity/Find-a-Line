@@ -900,6 +900,10 @@ def prepare_layer(layer: Layer, grid: Grid, cache_dir: str, out_path: str, label
                   update: Optional[str] = None) -> str:
     """Download what is missing and bring the layer onto the working grid (.npy)."""
     layer.download(grid, cache_dir, update, label)
+    tiles = (layer.tiles(grid) or []) if layer.folder else []  # local files are not in the cache
+    empty = sum(cache.state(cache_dir, layer.tile_path(cache_dir, t)) == "missing" for t in tiles)
+    if empty:  # normal over the sea; on land a sign of a lost tile (see the regression tests)
+        print(f"{layer.description}: {empty} of {len(tiles)} tiles without data (the service has none there)")
     build_mosaic(layer.files(grid, cache_dir), grid, out_path, label, shift=layer.shift)
     used_data.append(layer.used(grid, cache_dir))
     return out_path

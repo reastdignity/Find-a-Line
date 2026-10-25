@@ -7,14 +7,23 @@ The search is deterministic: for the same data and code, every number below is r
 
 ```
 uv run tests/regression.py                # quick set (R13)
-uv run tests/regression.py --set pl       # sets: quick, pl, search, sources, water
+uv run tests/regression.py --set pl       # sets: quick, pl, search, sources, water, network
 uv run tests/regression.py R1 R7          # chosen tests
-uv run tests/regression.py --all          # everything (about 4 min with a filled cache)
+uv run tests/regression.py --all          # everything (about 4 min with a filled cache, plus R17's ~7 min)
+uv run tests/regression.py --all --browser   # also count the spots of every map in headless Edge
 uv run tests/regression.py R1 --update --write-doc   # store new results, rewrite the table below
 ```
 
 - Each test gets its own temporary data folder whose `cache` links to the real cache; `--cache <temp>/cache` uses another one (an empty folder tests the downloads).
-- Compared: the source name, `Found N potential anchors`, `Anchors with an open direction: N`, `Checked pixel by pixel: N`, the lines and spots of `lines.csv`, `Filled ... km²` with its source, `sea X km²`, and lines/spots with `water_m > 0`; only the values stored for a test are checked.
+- Compared (only the values stored for a test):
+  - the counts: the source name, `Found N potential anchors`, `Anchors with an open direction: N`, `Checked pixel by pixel: N`, the lines and spots of `lines.csv`, `Filled ... km²` with its source, `sea X km²`, lines/spots with `water_m > 0`;
+  - the content: the sha256 of `lines.csv`, with totals that show what changed when it differs (length in km, smallest/mean/largest clearance, lines over trees). The counts alone missed a swap of length and anchor height (2026-10-25): same lines and spots, `length_km` 95.55 → 1034.51;
+  - the data: `Elevation data: X% of the search area` (before any filling, first tile of an area) and the tiles without data (`N of M tiles without data`): a tile lost by the download shows here, whatever the terrain (the north coast of Gozo, 2026-10-25);
+  - `same_as`: `lines.csv` identical to another test's (R14 in tiles = R1 as one grid).
+- Always checked: the map data (`data.js` has every line; profiles for every line of a circle and for the line shown for each group of an area; `lines.js` the same lines); with `check_profiles` (R16) that profiles computed again from the cache (`search.profile_of_line`) equal the saved ones; with `--browser` that the map shows the spots of `lines.csv`.
+- Each test records its time (`seconds`); one more than twice as slow (and 5 s slower) gets a warning, not a failure.
+- R17 (`kind: osm`, set `network`) builds the coastline and cliff tiles of Malta from the Geofabrik extract and fetches them from Overpass: the features and geometries must be the same. It is skipped without the extract (`findaline.py osm download malta`) or when Overpass does not answer.
+- After upgrading libraries (`uv lock`), checksums may change with identical lines: compare two log folders' `lines.csv` files to see what changed, then re-baseline.
 - The table below is generated from `tests/regression.json` (`--write-doc`); edit the JSON, not the table. Each test's log stays in the folder printed at the end.
 - The offline tests (`uv run pytest`, ~25 s) need no network and no cache: a synthetic canyon and a 600 × 600 m clip of Żabi Koń (`tests/data`, cut by `make_fixture.py`).
 
@@ -30,21 +39,23 @@ Baseline: 2026-10-23, commit `26c02a3`; open anchors and checked pairs from the 
 <!-- regression-table:start -->
 | ID | Place / what it covers | Arguments | Anchors | Open anchors / checked pairs | Lines / spots | Also check |
 | --- | --- | --- | --- | --- | --- | --- |
-| R1 | Żabi Koń, Poland: geoportal source, defaults | `--lat 50.1559508 --lon 19.7562722` | 8 900 | 1 261 / 13 929 | 1 248 / 104 | source `geoportal.gov.pl`; Spot 1: 102 m, clearance 8.0 m, 50.156507, 19.755129 → 50.155960, 19.756268; no coastline lookup (inland) |
-| R2 | Dolina Bolechowicka, Poland: 1 m grid | `--lat 50.1528584 --lon 19.7846212 --resolution 1 --min-length 15 --max-length 2000 --slope-threshold 60` | 4 503 | 437 / 2 340 | 333 / 19 | `Coastline: no sea in the area` |
-| R3 | as R2 with the sag estimator | R2 + `--model sag` | 4 503 | 2 060 / 90 196 | 11 989 / 101 |  |
-| R4 | Dolina Będkowska, Poland: 1 m grid, many anchors | `--lat 50.1733209 --lon 19.7409174 --resolution 1 --min-length 15 --max-length 2000 --slope-threshold 60` | 20 460 | 2 926 / 37 361 | 1 965 / 68 | no gaps (the WCS data had 0.05 km² filled from FABDEM) |
-| R5 | as R4 with the sag estimator | R4 + `--model sag` | 20 460 | 10 485 / 1 322 582 | 52 660 / 456 | map ~150 MB |
-| R6 | Dingli cliffs, Malta 2018: sea filling, lines over water | `--lat 35.8565 --lon 14.3830` | 12 865 | 4 958 / 218 849 | 10 923 / 364 | sea 0.42 km²; 342 spots over water; 10 829 lines with `water_m > 0` |
-| R7 | as R6 with Malta 2012: georeference correction, gap filling from 2018 | R6 + `--source malta2012` | 10 550 | 3 389 / 65 564 | 6 774 / 382 | `Filled 0.19 km² ... from Malta 2018 (MSDI)`; sea 0.43 km²; 377 spots over water; 6 761 lines with `water_m > 0` |
-| R8 | Dingli – zatoka (centre over the sea) | `--lat 35.848778 --lon 14.383533 --slope-threshold 60` | 10 697 | 6 646 / 262 091 | 11 308 / 416 | sea 1.94 km²; 364 spots over water; 10 853 lines with `water_m > 0` |
-| R9 | Montserrat, Spain: IGN WCS (ASCII grid) | `--lat 41.5930 --lon 1.8100 --min-length 40` | 27 401 | 20 979 / 549 299 | 85 671 / 3 972 | source `IGN Spain (MDT05/MDS05)` |
-| R10 | Los Gigantes, Tenerife: Canary Islands source, sea at 0 m in the data | `--lat 28.2640 --lon -16.8460 --radius 800 --min-length 40` | 14 711 | 11 654 / 196 868 | 34 652 / 2 053 | source `IGN Canary Islands (MDT05/MDS05)`; 676 spots over water; 15 008 lines with `water_m > 0` |
-| R11 | Meteora, Greece: Europe-wide FABDEM + Copernicus, 30 m | `--lat 39.7217 --lon 21.6306 --radius 2000 --min-length 60` | 257 | 257 / 887 | 451 / 81 | grouping distance 60 m |
-| R12 | Meteora with NASADEM (needs `OPENTOPOGRAPHY_API_KEY`) | R11 + `--source nasadem` | 433 | 433 / 2 137 | 920 / 152 |  |
-| R13 | Quick smoke test, Kasprowy Wierch (~15 s with cache) | `--northing 152074 --easting 571448 --radius 500 --resolution 5 --slope-threshold 50 --min-length 50 --max-length 400` | 2 796 | 2 396 / 8 628 | 566 / 143 | `Filled 0.03 km² ... from FABDEM + Copernicus DEM`; PL-1992 input; the filled gaps are on the Slovak side; with `--cache` on an empty folder it also tests the geoportal sheet download (index WFS, ASCII grid sheets, NMPT at 0.5 m) |
-| R14 | R1's circle as a polygon file, computed in tiles of 600 m: same lines as R1 | `--area tests/data/r1_circle.geojson --tile-size 600` | 7 558 | 1 100 / 13 358 | 1 248 / 104 | anchors, open anchors and checked pairs are those of the first tile; must equal R1 in lines and spots |
-| R15 | Ta' Għammar, north coast of Gozo: a tile at the northern edge of the Malta coverage | `--lat 36.07967 --lon 14.22867 --radius 300 --resolution 1 --min-length 20` | 15 056 | 708 / 5 134 | 606 / 26 | sea 0.10 km²; 26 spots over water; 606 lines with `water_m > 0`; the edge tile must come from Malta 2018: when it was lost (404 beyond the coverage) FABDEM filled the land, leaving 19 anchors and no lines |
+| R1 | Żabi Koń, Poland: geoportal source, defaults | `--lat 50.1559508 --lon 19.7562722` | 8 900 | 1 261 / 13 929 | 1 248 / 104 | source `geoportal.gov.pl`; data 100%; Spot 1: 102 m, clearance 8.0 m, 50.156507, 19.755129 → 50.155960, 19.756268; no coastline lookup (inland) |
+| R2 | Dolina Bolechowicka, Poland: 1 m grid | `--lat 50.1528584 --lon 19.7846212 --resolution 1 --min-length 15 --max-length 2000 --slope-threshold 60` | 4 503 | 437 / 2 340 | 333 / 19 | data 100%; `Coastline: no sea in the area` |
+| R3 | as R2 with the sag estimator | R2 + `--model sag` | 4 503 | 2 060 / 90 196 | 11 989 / 101 | data 100% |
+| R4 | Dolina Będkowska, Poland: 1 m grid, many anchors | `--lat 50.1733209 --lon 19.7409174 --resolution 1 --min-length 15 --max-length 2000 --slope-threshold 60` | 20 460 | 2 926 / 37 361 | 1 965 / 68 | data 100%; no gaps (the WCS data had 0.05 km² filled from FABDEM) |
+| R5 | as R4 with the sag estimator | R4 + `--model sag` | 20 460 | 10 485 / 1 322 582 | 52 660 / 456 | data 100%; map ~150 MB |
+| R6 | Dingli cliffs, Malta 2018: sea filling, lines over water | `--lat 35.8565 --lon 14.3830` | 12 865 | 4 958 / 218 849 | 10 923 / 364 | data 93.21%; sea 0.42 km²; 342 spots over water; 10 829 lines with `water_m > 0` |
+| R7 | as R6 with Malta 2012: georeference correction, gap filling from 2018 | R6 + `--source malta2012` | 10 550 | 3 389 / 65 564 | 6 774 / 382 | data 87.3%; `Filled 0.19 km² ... from Malta 2018 (MSDI)`; sea 0.43 km²; 377 spots over water; 6 761 lines with `water_m > 0` |
+| R8 | Dingli – zatoka (centre over the sea) | `--lat 35.848778 --lon 14.383533 --slope-threshold 60` | 10 697 | 6 646 / 262 091 | 11 308 / 416 | data 51.94%; sea 1.94 km²; 364 spots over water; 10 853 lines with `water_m > 0` |
+| R9 | Montserrat, Spain: IGN WCS (ASCII grid) | `--lat 41.5930 --lon 1.8100 --min-length 40` | 27 401 | 20 979 / 549 299 | 85 671 / 3 972 | source `IGN Spain (MDT05/MDS05)`; data 100% |
+| R10 | Los Gigantes, Tenerife: Canary Islands source, sea at 0 m in the data | `--lat 28.2640 --lon -16.8460 --radius 800 --min-length 40` | 14 711 | 11 654 / 196 868 | 34 652 / 2 053 | source `IGN Canary Islands (MDT05/MDS05)`; data 100%; 676 spots over water; 15 008 lines with `water_m > 0` |
+| R11 | Meteora, Greece: Europe-wide FABDEM + Copernicus, 30 m | `--lat 39.7217 --lon 21.6306 --radius 2000 --min-length 60` | 257 | 257 / 887 | 451 / 81 | data 100%; grouping distance 60 m |
+| R12 | Meteora with NASADEM (needs `OPENTOPOGRAPHY_API_KEY`) | R11 + `--source nasadem` | 433 | 433 / 2 137 | 920 / 152 | data 100% |
+| R13 | Quick smoke test, Kasprowy Wierch (~15 s with cache) | `--northing 152074 --easting 571448 --radius 500 --resolution 5 --slope-threshold 50 --min-length 50 --max-length 400` | 2 796 | 2 396 / 8 628 | 566 / 143 | data 97.64%; `Filled 0.03 km² ... from FABDEM + Copernicus DEM`; PL-1992 input; the filled gaps are on the Slovak side; with `--cache` on an empty folder it also tests the geoportal sheet download (index WFS, ASCII grid sheets, NMPT at 0.5 m) |
+| R14 | R1's circle as a polygon file, computed in tiles of 600 m: same lines as R1 | `--area tests/data/r1_circle.geojson --tile-size 600` | 7 558 | 1 100 / 13 358 | 1 248 / 104 | data 100%; lines.csv identical to R1; anchors, open anchors and checked pairs are those of the first tile; must equal R1 in lines and spots |
+| R15 | Ta' Għammar, north coast of Gozo: a tile at the northern edge of the Malta coverage | `--lat 36.07967 --lon 14.22867 --radius 300 --resolution 1 --min-length 20` | 15 056 | 708 / 5 134 | 606 / 26 | data 74.72%; sea 0.10 km²; 26 spots over water; 606 lines with `water_m > 0`; the edge tile must come from Malta 2018: when it was lost (404 beyond the coverage) FABDEM filled the land, leaving 19 anchors and no lines |
+| R16 | North coast of Gozo as a coast area in tiles, with the sag model: sea, gap filling at tile borders, profiles of the lines shown for groups (no group of this area joins two tiles, so the profiles computed after the tiles are not exercised) | `--area coast --buffer 100 --within 36.06,14.20,36.085,14.27 --model sag --tile-size 800 --min-length 20` | 5 130 | 3 750 / 74 477 | 25 906 / 657 | data 53%; `Filled 0.19 km² ... from FABDEM + Copernicus DEM`; sea 0.77 km²; 617 spots over water; 25 178 lines with `water_m > 0`; 3 profiles computed again |
+| R17 | Gozo and Malta: coastline and cliff tiles from the Malta extract equal those from Overpass | extract `malta`, box [14.15, 35.78, 14.6, 36.1] | | | | 93 coastline features; 217 cliff features, the same from Overpass |
 <!-- regression-table:end -->
 
 Suggested sets:

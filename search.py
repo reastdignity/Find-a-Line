@@ -333,6 +333,9 @@ def prepare_data(plan: Plan) -> Data:
     try:
         elevation_path = src.prepare_layer(source.nmt, grid, cache_dir,
                                            os.path.join(work, "nmt.npy"), "terrain", p.update)
+        mask = plan.area.mask(grid)
+        with_data = float(np.isfinite(np.load(elevation_path, mmap_mode="r")[mask]).mean()) if mask.any() else 0.0
+        emit("info", f"Elevation data: {100 * with_data:.2f}% of the search area from {source.name}")
         surface_path = None
         if plan.nmpt:
             surface_path = src.prepare_layer(source.nmpt, grid, cache_dir,
