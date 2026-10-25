@@ -85,6 +85,8 @@ export const api = {
   jobs: () => call<{jobs: Job[]; seq: number}>("GET", "/api/jobs"),
   jobEvents: (id: string) => call<{events: JobEvent[]}>("GET", `/api/jobs/${encodeURIComponent(id)}/events`),
   cancel: (id: string) => call<{ok: boolean}>("DELETE", `/api/jobs/${encodeURIComponent(id)}`),
+  job: (id: string) => call<Job & {request: SearchRequest & {osm?: unknown}}>("GET", `/api/jobs/${encodeURIComponent(id)}`),
+  again: (id: string) => call<{id: string}>("POST", `/api/jobs/${encodeURIComponent(id)}/again`),
   runs: () => call<{runs: RunListed[]}>("GET", "/api/runs"),
   osm: (lat: number, lon: number) => call<OsmState>("GET", `/api/osm?lat=${lat}&lon=${lon}`),
   osmJob: (action: "download" | "update", region: string) =>

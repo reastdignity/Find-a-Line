@@ -25,6 +25,7 @@ import contextlib
 import json
 import multiprocessing
 import os
+import re
 import secrets
 import shutil
 import sqlite3
@@ -451,6 +452,26 @@ def create_app(data_dir: str, token: Optional[str] = None, port: int = PORT, sta
     @app.get("/api/jobs")
     def list_jobs():
         return {"jobs": jobs.all(), "seq": jobs.last_seq()}
+
+    @app.get("/api/jobs/{job_id}")
+    def get_job(job_id: str):
+        """A job with its request (parameters and drawn or uploaded area), for "edit"."""
+        job = jobs.get(job_id)
+        if not job:
+            raise HTTPException(404, "no such job")
+        return {**{k: job[k] for k in ("id", "created", "status", "title", "run_id", "error")},
+                "request": json.loads(job["request"])}
+
+    @app.post("/api/jobs/{job_id}/again")
+    def run_again(job_id: str):
+        """Queue a finished job again with the same request (a tiled area resumes where it stopped)."""
+        job = jobs.get(job_id)
+        if not job:
+            raise HTTPException(404, "no such job")
+        if job["status"] not in ("done", "failed", "cancelled"):
+            raise HTTPException(409, "the job is still waiting or running")
+        title = re.sub(r"( \(again\))+$", "", job["title"]) + " (again)"
+        return {"id": jobs.add(json.loads(job["request"]), title)}
 
     @app.get("/api/jobs/{job_id}/events")
     def job_events(job_id: str):

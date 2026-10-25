@@ -1,6 +1,7 @@
 """The web application (web.py): what it refuses, and a job through the queue with
 real worker processes (offline: local files, any request goes to a closed port)."""
 
+import json
 import os
 import sys
 import time
@@ -148,3 +149,26 @@ def test_osm_jobs(client, tmp_path):
     response = client.post("/api/osm", json={"action": "download", "region": "malta"}, headers=headers)
     assert response.status_code == 200
     assert web.Jobs(str(tmp_path)).get(response.json()["id"])["title"] == "OSM download: malta"
+
+
+def test_run_again_and_edit(client, tmp_path):
+    jobs = web.Jobs(str(tmp_path))
+    request = {"params": {"name": "Cliff", "radius": 300}, "geometry": {"type": "Point", "coordinates": [14.2, 36.0]}}
+    job = jobs.add(request, "Cliff")
+    headers = {"x-findaline-token": TOKEN}
+    assert client.post(f"/api/jobs/{job}/again", headers=headers).status_code == 409   # still queued
+    assert client.post(f"/api/jobs/{job}/again").status_code == 403                    # no token
+    jobs.set(job, "failed", error="interrupted")
+    again = client.post(f"/api/jobs/{job}/again", headers=headers).json()["id"]
+    assert client.post(f"/api/jobs/{again}/again", headers=headers).status_code == 409  # the copy waits
+    jobs.set(again, "done")
+    twice = client.post(f"/api/jobs/{again}/again", headers=headers).json()["id"]
+    assert jobs.get(again)["title"] == jobs.get(twice)["title"] == "Cliff (again)"
+    assert json.loads(jobs.get(twice)["request"]) == request
+    detail = client.get(f"/api/jobs/{job}").json()
+    assert detail["request"] == request and detail["status"] == "failed"
+    assert client.get("/api/jobs/nothing").status_code == 404
+    osm_job = jobs.add({"osm": {"action": "download", "region": "malta"}}, "OSM download: malta")
+    jobs.set(osm_job, "done")
+    copy = client.post(f"/api/jobs/{osm_job}/again", headers=headers).json()["id"]
+    assert json.loads(jobs.get(copy)["request"]) == {"osm": {"action": "download", "region": "malta"}}

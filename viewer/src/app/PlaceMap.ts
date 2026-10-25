@@ -71,6 +71,17 @@ export class PlaceMap {
     this.circle!.setLatLng([lat, lon]).setRadius(radius);
   }
 
+  /** Areas to edit (a job's drawn or uploaded area): they replace the drawn ones. */
+  loadDrawn(areas: GeoJSON) {
+    this.drawn.clearLayers();
+    L.geoJSON(areas as any, {style: {color: COLOR}}).eachLayer((layer) => {
+      layer.on("pm:edit", () => this.onDrawn());
+      this.drawn.addLayer(layer);
+    });
+    if (this.drawn.getLayers().length) this.map.fitBounds(this.drawn.getBounds(), {maxZoom: 17});
+    this.onDrawn();
+  }
+
   /** The drawn polygons and rectangles, or null. */
   drawnAreas(): FeatureCollection | null {
     const collection = this.drawn.toGeoJSON() as FeatureCollection;

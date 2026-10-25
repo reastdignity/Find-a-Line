@@ -45,22 +45,45 @@ export interface SearchFormProps {
   place: PlaceMap;
   fields: Field[];
   groups: Record<string, string>;
+  initial?: SearchRequest | null;  // a job to edit ("edit" in the queue)
   onStarted(id: string): void;
 }
 
-export function SearchForm({place, fields, groups, onStarted}: SearchFormProps) {
+/** The form's starting state from a job's request. */
+function fromRequest(request: SearchRequest | null | undefined, byName: Record<string, Field>) {
+  const p = (request?.params || {}) as Record<string, any>;
+  const values: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(p)) {
+    if (!PLACE_FIELDS.has(key) && byName[key] && value !== byName[key].default) values[key] = value;
+  }
+  const area = p.area as string | undefined;
+  return {
+    mode: (request?.geometry ? "draw" : area ? "preset" : "point") as Mode,
+    point: p.lat !== undefined && p.lat !== null ? [p.lat, p.lon] as [number, number] : null,
+    radius: Number(p.radius ?? byName.radius?.default ?? 1000),
+    buffer: Number(p.buffer ?? byName.buffer?.default ?? 100),
+    preset: area?.startsWith("osm:") ? "osm" : area || "cliffs",
+    osmName: area?.startsWith("osm:") ? area.slice(4) : "",
+    within: (p.within as string) || "",
+    name: (p.name as string) || "",
+    values,
+  };
+}
+
+export function SearchForm({place, fields, groups, initial, onStarted}: SearchFormProps) {
   const byName = Object.fromEntries(fields.map((f) => [f.name, f]));
-  const [mode, setMode] = useState<Mode>("point");
-  const [point, setPoint] = useState<[number, number] | null>(null);
-  const [radius, setRadius] = useState(Number(byName.radius?.default ?? 1000));
-  const [buffer, setBuffer] = useState(Number(byName.buffer?.default ?? 100));
-  const [preset, setPreset] = useState("cliffs");
-  const [osmName, setOsmName] = useState("");
-  const [within, setWithin] = useState("");
-  const [name, setName] = useState("");
+  const start = fromRequest(initial, byName);
+  const [mode, setMode] = useState<Mode>(start.mode);
+  const [point, setPoint] = useState<[number, number] | null>(start.point);
+  const [radius, setRadius] = useState(start.radius);
+  const [buffer, setBuffer] = useState(start.buffer);
+  const [preset, setPreset] = useState(start.preset);
+  const [osmName, setOsmName] = useState(start.osmName);
+  const [within, setWithin] = useState(start.within);
+  const [name, setName] = useState(start.name);
   const [file, setFile] = useState<{name: string; areas: FeatureCollection} | null>(null);
   const [drawn, setDrawn] = useState(0);  // changes when the drawn areas change
-  const [values, setValues] = useState<Record<string, unknown>>({});
+  const [values, setValues] = useState<Record<string, unknown>>(start.values);
   const [estimate, setEstimate] = useState<Estimate | null>(null);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
@@ -70,6 +93,10 @@ export function SearchForm({place, fields, groups, onStarted}: SearchFormProps) 
     place.onDrawn = () => setDrawn((n) => n + 1);
   }, [place]);
   useEffect(() => place.setMode(mode), [place, mode]);
+  useEffect(() => {  // a job to edit: its drawn or uploaded area becomes editable on the map
+    if (initial?.geometry) place.loadDrawn(initial.geometry);
+    if (start.point) place.map.setView(start.point, Math.max(place.map.getZoom(), 14));
+  }, [place, initial]);
   useEffect(() => { if (point) place.setPoint(point[0], point[1], radius); }, [place, point, radius]);
   // Any change makes the estimate stale
   useEffect(() => { setEstimate(null); setError(""); place.showPreview(null); },

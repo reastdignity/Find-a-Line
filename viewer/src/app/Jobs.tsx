@@ -34,7 +34,7 @@ function ProgressBar({bar}: {bar: Bar}) {
   </div>;
 }
 
-function JobItem({job}: {job: JobView}) {
+function JobItem({job, onEdit}: {job: JobView; onEdit(id: string): void}) {
   const [open, setOpen] = useState(false);
   const [history, setHistory] = useState<JobEvent[] | null>(null);
   const active = job.status === "downloading" || job.status === "computing";
@@ -52,6 +52,12 @@ function JobItem({job}: {job: JobView}) {
           <a href={`/runs/${encodeURIComponent(job.run_id)}/map.html`} target="_blank">open map</a>}
         {!["done", "failed", "cancelled"].includes(job.status) &&
           <button class="fa-small" onClick={() => api.cancel(job.id).catch(() => {})}>cancel</button>}
+        {["done", "failed", "cancelled"].includes(job.status) && <span>
+          <button class="fa-small" title="queue the same search again (a large area resumes where it stopped)"
+                  onClick={() => api.again(job.id).catch(() => {})}>run again</button>{" "}
+          {!job.title.startsWith("OSM ") && <button class="fa-small" title="load it into New search to change it"
+                                                    onClick={() => onEdit(job.id)}>edit</button>}
+        </span>}
         <button class="fa-small" onClick={toggle}>{open ? "hide log" : "log"}</button>
       </span>
     </div>
@@ -62,7 +68,7 @@ function JobItem({job}: {job: JobView}) {
   </div>;
 }
 
-export function JobList({jobs}: {jobs: JobView[]}) {
+export function JobList({jobs, onEdit}: {jobs: JobView[]; onEdit(id: string): void}) {
   if (!jobs.length) return <p class="fa-hint">No searches yet.</p>;
-  return <div>{jobs.map((job) => <JobItem key={job.id} job={job} />)}</div>;
+  return <div>{jobs.map((job) => <JobItem key={job.id} job={job} onEdit={onEdit} />)}</div>;
 }

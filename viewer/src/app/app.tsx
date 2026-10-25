@@ -9,7 +9,7 @@ import shadowUrl from "leaflet/dist/images/marker-shadow.png";
 import { render } from "preact";
 import { useEffect, useRef, useState } from "preact/hooks";
 import "./app.css";
-import { api, subscribe, type Field, type JobEvent, type RunListed } from "./api";
+import { api, subscribe, type Field, type JobEvent, type RunListed, type SearchRequest } from "./api";
 import { JobList, type Bar, type JobView } from "./Jobs";
 import { OsmPanel } from "./OsmPanel";
 import { PlaceMap } from "./PlaceMap";
@@ -40,6 +40,11 @@ function App() {
   const [tab, setTab] = useState<Tab>("search");
   const [jobs, setJobs] = useState<JobView[]>([]);
   const [error, setError] = useState("");
+  const [editing, setEditing] = useState<{request: SearchRequest | null; key: number}>({request: null, key: 0});
+  const edit = (id: string) => api.job(id).then((job) => {
+    setEditing((e) => ({request: job.request, key: e.key + 1}));  // a new form with the job's values
+    setTab("search");
+  }, (e) => setError(e.message));
 
   useEffect(() => {
     setPlace(new PlaceMap(mapRef.current!));
@@ -66,10 +71,11 @@ function App() {
       {error && <p class="fa-error">{error}</p>}
       <div class="fa-panel-body">
         <div hidden={tab !== "search"}>
-          {place && schema && <SearchForm place={place} fields={schema.fields} groups={schema.groups}
+          {place && schema && <SearchForm key={editing.key} initial={editing.request} place={place}
+                                          fields={schema.fields} groups={schema.groups}
                                           onStarted={() => setTab("jobs")} />}
         </div>
-        {tab === "jobs" && <JobList jobs={jobs} />}
+        {tab === "jobs" && <JobList jobs={jobs} onEdit={edit} />}
         {tab === "runs" && <Runs />}
         {tab === "osm" && place && <OsmPanel place={place} onStarted={() => setTab("jobs")} />}
       </div>
