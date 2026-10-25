@@ -120,13 +120,14 @@ def _rows(groups: List[Dict]):
             }
 
 
-def save_results(run_path: str, groups: List[Dict], meta: Dict):
-    """Write lines.csv, lines.geojson and run.json for a run."""
+def save_results(run_path: str, groups: List[Dict], meta: Dict, on_file=lambda name: None):
+    """Write lines.csv, lines.geojson and run.json for a run; on_file(name) after each."""
     rows = list(_rows(groups))
     with open(os.path.join(run_path, "lines.csv"), "w", newline="", encoding="utf-8-sig") as f:
         writer = csv.DictWriter(f, fieldnames=FIELDS)
         writer.writeheader()
         writer.writerows(rows)
+    on_file("lines.csv")
 
     features = [{
         "type": "Feature",
@@ -138,9 +139,11 @@ def save_results(run_path: str, groups: List[Dict], meta: Dict):
     with open(os.path.join(run_path, "lines.geojson"), "w", encoding="utf-8") as f:
         json.dump({"type": "FeatureCollection", "features": features, "findaline": meta},
                   f, ensure_ascii=False)
+    on_file("lines.geojson")
 
     with open(os.path.join(run_path, "run.json"), "w", encoding="utf-8") as f:
         json.dump(meta, f, ensure_ascii=False, indent=2)
+    on_file("run.json")
 
 
 def list_runs(runs_dir: str) -> List[Dict]:

@@ -46,7 +46,7 @@ function App() {
     api.schema().then(setSchema, (e) => setError(e.message));
     let stop = () => {};
     api.jobs().then(({jobs: listed, seq}) => {
-      setJobs(listed.map((j) => ({...j, bars: {}, log: []})));
+      setJobs(listed.map((j) => ({...j, bars: {}, log: [], step: ""})));
       stop = subscribe(seq, (event) => setJobs((current) => apply(current, event)));
     }, (e) => setError(e.message));
     return () => stop();
@@ -82,7 +82,8 @@ function apply(jobs: JobView[], event: JobEvent): JobView[] {
   let found = jobs.some((j) => j.id === event.job);
   if (!found && event.kind === "status") {  // a new job (from this or another page)
     jobs = [{id: event.job, created: event.data.created || "", status: event.data.status,
-             title: event.data.title || event.job, run_id: null, error: null, finished: null, bars: {}, log: []},
+             title: event.data.title || event.job, run_id: null, error: null, finished: null, bars: {}, log: [],
+             step: ""},
             ...jobs];
     found = true;
   }
@@ -90,12 +91,13 @@ function apply(jobs: JobView[], event: JobEvent): JobView[] {
     if (job.id !== event.job) return job;
     if (event.kind === "status") {
       const next = {...job, ...event.data};
-      if (event.data.status === "downloading" || event.data.status === "computing") next.bars = {};
+      if (event.data.status === "downloading" || event.data.status === "computing") { next.bars = {}; next.step = ""; }
       return next;
     }
     if (event.kind === "progress") {
       const bar = event.data as Bar;
-      return {...job, bars: {...job.bars, [bar.bar]: bar}};
+      const step = bar.step ?? job.step;
+      return bar.bar ? {...job, step, bars: {...job.bars, [bar.bar]: bar}} : {...job, step};
     }
     return {...job, log: job.log.concat([event]).slice(-LOG_KEEP)};
   });

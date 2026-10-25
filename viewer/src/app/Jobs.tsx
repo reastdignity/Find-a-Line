@@ -11,9 +11,11 @@ export interface Bar {
   unit: string;
   extra: Record<string, unknown>;
   done: boolean;
+  step?: string;
 }
 
 export interface JobView extends Job {
+  step: string;                // e.g. "Tile 3/15 · Step 3/5: evaluating anchor pairs"
   bars: Record<string, Bar>;   // "Download", "Compute"
   log: JobEvent[];             // messages seen since the page was opened
 }
@@ -53,7 +55,8 @@ function JobItem({job}: {job: JobView}) {
         <button class="fa-small" onClick={toggle}>{open ? "hide log" : "log"}</button>
       </span>
     </div>
-    {active && Object.values(job.bars).map((bar) => <ProgressBar bar={bar} />)}
+    {active && job.step && <div class="fa-step">{job.step}</div>}
+    {active && Object.values(job.bars).filter((bar) => !bar.done).map((bar) => <ProgressBar bar={bar} />)}
     {job.error && <div class="fa-error">{job.error}</div>}
     {open && <pre class="fa-log">{log.map((e) => (e.kind === "warning" ? "WARNING: " : "") + e.data).join("\n")}</pre>}
   </div>;

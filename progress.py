@@ -13,8 +13,9 @@ Usage:
 
 Other code (e.g. a server forwarding the progress to a browser) can follow the bars
 with progress.subscribe(callback): the callback gets a dict with "bar" ("Download"
-or "Compute"), "stage", "count", "total", "unit", "extra" and "done" on every start,
-update and finish.
+or "Compute"), "stage", "count", "total", "unit", "extra", "done" and "step" (the
+step of the search, progress.set_step) on every start, update and finish, and a dict
+with "bar" "" when only the step changes.
 """
 
 import contextlib
@@ -27,6 +28,7 @@ from tqdm import tqdm
 
 TEXT_INTERVAL = 10  # seconds between progress lines when there is no terminal
 _listeners: List[Callable[[Dict], None]] = []
+_step = {"text": ""}  # the step of the search, e.g. "Step 3/5: evaluating anchor pairs"
 
 
 def _duration(seconds: float) -> str:
@@ -60,7 +62,7 @@ class _Bar:
     def _notify(self, done: bool = False):
         for listener in _listeners:
             listener({"bar": self.label, "stage": self.stage, "count": self.count, "total": self.total,
-                      "unit": self.unit, "extra": dict(self.extra), "done": done})
+                      "unit": self.unit, "extra": dict(self.extra), "done": done, "step": _step["text"]})
 
     def start(self, stage: str, total: float, unit: str = "it"):
         self.stage, self.total, self.count, self.extra, self.unit = stage, total, 0, {}, unit
@@ -165,6 +167,14 @@ class Progress:
             self.download.close()
             self.compute.close()
             self.download = self.compute = _Bar("", 0, False)  # later updates print nothing useful
+
+    @staticmethod
+    def set_step(text: str):
+        """The step of the search the bars belong to (shown by the web app)."""
+        _step["text"] = text
+        for listener in _listeners:
+            listener({"bar": "", "stage": "", "count": 0, "total": 0, "unit": "", "extra": {}, "done": True,
+                      "step": text})
 
     @staticmethod
     def subscribe(listener: Callable[[Dict], None]):

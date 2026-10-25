@@ -200,6 +200,7 @@ A steep rock face produces many near-identical lines (anchors shifted by a metre
 - A static map is shown in a separate window (close it to finish the program), with one line per group.
 
 ### Progress
+The search runs in five steps (data, slopes, anchor pairs, coordinates/groups/profiles, saving), each with its stages: anchor pairs, checking lines, coordinates, over water and filled gaps, line profiles, grouping, saving results, saving the map. The app shows the step (and the tile of a large area) above the bar of the current stage.
 While the script runs, two progress bars at the bottom of the terminal show downloads (elevation and orthophoto tiles) and computations (stitching tiles, finding anchors, evaluating anchor pairs, profiles, grouping), each with the current stage, speed and remaining time. When the output is written to a file instead of a terminal, a line of text with the progress is printed every 10 seconds. Set `FINDALINE_PROGRESS=bars` or `FINDALINE_PROGRESS=text` to force one of the two.
 
 ### Run time and data size

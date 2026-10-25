@@ -105,6 +105,16 @@ class Plan:
     # Large areas: (core bounds, tile grid) per tile, with cores of tile_core metres; None: one grid
     tiles: Optional[List[Tuple[tuple, gd.Grid]]] = None
     tile_core: Optional[float] = None
+    tile_label: str = ""  # "Tile 3/15 · " while a tile of a large area is computed
+
+
+STEPS = 5
+
+
+def _step(plan: Plan, n: int, title: str):
+    """Start a step of the search: a message, and the step the progress bars belong to."""
+    plan.emit("info", f"\nStep {n}: {title[0].upper() + title[1:]}...")
+    progress.set_step(f"{plan.tile_label}Step {n}/{STEPS}: {title}")
 
 
 @dataclass
@@ -319,7 +329,7 @@ def prepare_data(plan: Plan) -> Data:
     """Step 1: download what is missing and build the grids (terrain, surface, water, gaps)."""
     p, grid, source, emit = plan.params, plan.grid, plan.source, plan.emit
     cache_dir, work = plan.paths.cache, plan.paths.work
-    emit("info", f"\nStep 1: Downloading elevation data ({source.name})...")
+    _step(plan, 1, f"downloading elevation data ({source.name})")
     try:
         elevation_path = src.prepare_layer(source.nmt, grid, cache_dir,
                                            os.path.join(work, "nmt.npy"), "terrain", p.update)
@@ -372,17 +382,22 @@ def prepare_data(plan: Plan) -> Data:
 
 def find_lines(plan: Plan, data: Data) -> Lines:
     """Steps 2-4: anchors, line search, coordinates and profiles, groups."""
-    results = _lines(plan, data)
-    return Lines(results, mp.group_lines(results, plan.group_distance, plan.params.group_by))
+    results, groups = _lines(plan, data)
+    return Lines(results, groups)
 
 
-def _lines(plan: Plan, data: Data, core: Optional[tuple] = None) -> List[Dict]:
-    """Steps 2-4 without the grouping; with core (bounds), only lines whose first
-    anchor (smaller x, then y) lies in it."""
+def _lines(plan: Plan, data: Data, core: Optional[tuple] = None) -> Tuple[List[Dict], List[Dict]]:
+    """Steps 2-4: the lines and their groups; with core (bounds), only lines whose first
+    anchor (smaller x, then y) lies in it.
+
+    Every line gets its metres over water and over filled gaps. Circles keep the profile
+    of every line (the map shows each); areas only that of the line shown for each group,
+    as the profiles of millions of lines would take long and be thrown away.
+    """
     p, grid, emit = plan.params, plan.grid, plan.emit
 
     # Step 2: Find raster pixels with significant slope for promising anchors
-    emit("info", "\nStep 2: Finding significant slopes...")
+    _step(plan, 2, "finding significant slopes")
     anchors = sh.find_significant_slopes(data.elevation, plan.resolution, p.slope_threshold,
                                          plan.area.mask(grid), data.slope)
     if data.filled is not None:
@@ -395,11 +410,11 @@ def _lines(plan: Plan, data: Data, core: Optional[tuple] = None) -> List[Dict]:
     emit("info", f"Found {len(anchors)} potential anchors to evaluate")
     if len(anchors) < 2:
         if core is not None:  # a tile of a large area: nothing here
-            return []
+            return [], []
         raise SearchError("Not enough steep terrain. Try a lower --slope-threshold or a larger --radius.")
 
     # Step 3: Compare each promising anchor to every other anchor
-    emit("info", "\nStep 3: Evaluating anchor pairs...")
+    _step(plan, 3, "evaluating anchor pairs")
     sag_table = None
     if p.model == "sag":
         emit("info", "Precomputing the sag estimator for all line lengths...")
@@ -410,23 +425,37 @@ def _lines(plan: Plan, data: Data, core: Optional[tuple] = None) -> List[Dict]:
     if not valid_lines and core is None:
         raise SearchError("No lines found matching elevation requirements.")
 
-    # Step 4: Convert pixel coordinates to GPS coordinates
-    emit("info", "\nStep 4: Converting pixel coordinates to GPS coordinates...")
+    # Step 4: coordinates, water and gaps, groups, profiles
+    _step(plan, 4, "coordinates, groups and profiles")
     results = mp.coordify(valid_lines, grid, plan.nmpt)
     if core is not None:
         left, bottom, right, top = core
         keep = [k for k, r in enumerate(results)
                 if left <= min(r["a1_xy"], r["a2_xy"])[0] < right and bottom <= min(r["a1_xy"], r["a2_xy"])[1] < top]
         results, valid_lines = [results[k] for k in keep], [valid_lines[k] for k in keep]
-    progress.compute.start("line profiles", len(results), unit="line")
-    for r, line in zip(results, valid_lines):
-        r["profile"] = sh.line_profile(line.a1, line.a2, data.elevation, plan.resolution, data.surface,
-                                       sag_table=sag_table, water=data.water, filled=data.filled)
-        r["water_m"] = r["profile"]["water_m"]
-        r["filled_m"] = r["profile"]["filled_m"]
+    a1 = np.array([line.a1 for line in valid_lines], dtype=np.int64).reshape(-1, 2)
+    a2 = np.array([line.a2 for line in valid_lines], dtype=np.int64).reshape(-1, 2)
+    progress.compute.start("over water and filled gaps", 2, unit="mask")
+    water = ls.covered_metres(a1, a2, plan.resolution, data.water)
+    progress.compute.update(1)
+    filled = ls.covered_metres(a1, a2, plan.resolution, data.filled)
+    progress.compute.finish()
+    for r, w, g in zip(results, water, filled):
+        r["water_m"], r["filled_m"], r["profile"] = w, g, None
+    groups = mp.group_lines(results, plan.group_distance, p.group_by)
+    if isinstance(plan.area, ar.Circle):
+        wanted = range(len(results))
+    else:
+        index = {id(r): k for k, r in enumerate(results)}
+        wanted = sorted(index[id(g["rep"])] for g in groups)
+    progress.compute.start("line profiles", len(wanted), unit="line")
+    for k in wanted:
+        line = valid_lines[k]
+        results[k]["profile"] = sh.line_profile(line.a1, line.a2, data.elevation, plan.resolution, data.surface,
+                                                sag_table=sag_table, water=data.water, filled=data.filled)
         progress.compute.update(1)
     progress.compute.finish()
-    return results
+    return results, groups
 
 
 def _run_name(plan: Plan) -> str:
@@ -487,7 +516,9 @@ def search_lines(plan: Plan) -> Tuple[Lines, Optional[Dict]]:
     Returns the lines and, for a tiled search, its run (to be completed by save_run).
     """
     if not plan.tiles:
-        return find_lines(plan, prepare_data(plan)), None
+        lines = find_lines(plan, prepare_data(plan))
+        progress.set_step("")
+        return lines, None
     run = _open_run(plan)
     folder = os.path.join(run["path"], "tiles")
     os.makedirs(folder, exist_ok=True)
@@ -498,9 +529,10 @@ def search_lines(plan: Plan) -> Tuple[Lines, Optional[Dict]]:
             plan.emit("info", f"\n--- Tile {k + 1} of {len(plan.tiles)} ({tile.width} x {tile.height} px) ---")
             work = os.path.join(plan.paths.work, f"tile{k}")
             os.makedirs(work, exist_ok=True)
-            tile_plan = dataclasses.replace(plan, grid=tile, paths=Paths(plan.paths.data, work), tiles=None)
+            tile_plan = dataclasses.replace(plan, grid=tile, paths=Paths(plan.paths.data, work), tiles=None,
+                                            tile_label=f"Tile {k + 1}/{len(plan.tiles)} · ")
             data = prepare_data(tile_plan)
-            found = _lines(tile_plan, data, core)
+            found, _ = _lines(tile_plan, data, core)
             del data
             gc.collect()  # close the memory-mapped grids before deleting them (Windows)
             shutil.rmtree(work, ignore_errors=True)
@@ -511,7 +543,26 @@ def search_lines(plan: Plan) -> Tuple[Lines, Optional[Dict]]:
             results += pickle.load(f)
     if not results:
         raise SearchError("No lines found matching elevation requirements.")
-    return Lines(results, mp.group_lines(results, plan.group_distance, plan.params.group_by)), run
+    progress.set_step(f"Step 4/{STEPS}: groups of all tiles")
+    groups = mp.group_lines(results, plan.group_distance, plan.params.group_by)
+    # A line shown for a group is the best of its tile's group too, except near the edge of a
+    # tile, where a group may join lines of two tiles: those get their profile now
+    missing = [g["rep"] for g in groups if g["rep"]["profile"] is None]
+    if missing:
+        meta = {"params": _run_params(plan), "source": {"id": plan.source.id}, "center": {"crs": plan.crs},
+                "data": json.loads(json.dumps(src.used_data))}
+        used = list(src.used_data)  # plan_search starts a new record of the data used
+        progress.compute.start("profiles at tile edges", len(missing), unit="line")
+        for r in missing:
+            paths = Paths(plan.paths.data, os.path.join(plan.paths.work, "edge"))
+            os.makedirs(paths.work, exist_ok=True)
+            r["profile"] = profile_of_line(meta, paths, r["anchor1"], r["anchor2"])
+            shutil.rmtree(paths.work, ignore_errors=True)
+            progress.compute.update(1)
+        progress.compute.finish()
+        src.used_data[:] = used
+    progress.set_step("")
+    return Lines(results, groups), run
 
 
 def _merged_data() -> List[Dict]:
@@ -536,6 +587,23 @@ def _merged_data() -> List[Dict]:
     return list(merged.values())
 
 
+def _run_params(plan: Plan) -> Dict:
+    """The parameters run.json records (also what profile_of_line needs)."""
+    p, circle = plan.params, isinstance(plan.area, ar.Circle)
+    return {"radius": p.radius if circle else None,
+            "area": None if circle else {"area": p.area, "buffer": p.buffer, "within": p.within},
+            "resolution": plan.resolution,
+            "min_length": p.min_length, "max_length": p.max_length,
+            "max_anchor_diff": p.max_anchor_diff,
+            "max_anchor_diff_m": p.max_anchor_diff_m,
+            "slope_threshold": p.slope_threshold, "slope_file": p.slope_file,
+            "nmpt": plan.nmpt, "water": p.water, "coastline": p.coastline,
+            "shore_buffer": p.shore_buffer, "fill_gaps": p.fill_gaps,
+            "group_distance": plan.group_distance,
+            "group_by": p.group_by, "model": p.model,
+            "rigging": dataclasses.asdict(plan.rigging)}
+
+
 def save_run(plan: Plan, lines: Lines, confirm: Optional[Confirm] = None, run: Optional[Dict] = None) -> Result:
     """Step 5: save the run (results, parameters, data used), the orthophoto tiles and the map.
 
@@ -544,7 +612,7 @@ def save_run(plan: Plan, lines: Lines, confirm: Optional[Confirm] = None, run: O
     p, emit = plan.params, plan.emit
     results, spot_groups = lines.results, lines.spot_groups
     confirm = confirm or (lambda kind, text: True)
-    emit("info", "\nStep 5: Saving the run and displaying results on map...")
+    _step(plan, 5, "saving the run and the map")
     center_lat, center_lon = plan.area.center
     x, y = plan.center_xy
     if run is None:
@@ -562,23 +630,14 @@ def save_run(plan: Plan, lines: Lines, confirm: Optional[Confirm] = None, run: O
         "area": plan.area.describe(),
         "source": {"id": plan.source.id, "name": plan.source.name, "description": plan.source.description},
         "data": _merged_data(),  # folders, files and fetch times of the data used
-        "params": {"radius": p.radius if circle else None,
-                   "area": None if circle else {"area": p.area, "buffer": p.buffer, "within": p.within},
-                   "resolution": plan.resolution,
-                   "min_length": p.min_length, "max_length": p.max_length,
-                   "max_anchor_diff": p.max_anchor_diff,
-                   "max_anchor_diff_m": p.max_anchor_diff_m,
-                   "slope_threshold": p.slope_threshold, "slope_file": p.slope_file,
-                   "nmpt": plan.nmpt, "water": p.water, "coastline": p.coastline,
-                   "shore_buffer": p.shore_buffer, "fill_gaps": p.fill_gaps,
-                   "group_distance": plan.group_distance,
-                   "group_by": p.group_by, "model": p.model,
-                   "rigging": dataclasses.asdict(plan.rigging)},
+        "params": _run_params(plan),
         "summary": {"lines": len(results), "spots": len(spot_groups),
                     "clear_spots": sum(not g["rep"]["over_obstacles"] for g in spot_groups)},
     }
     meta["description"] = rn.params_summary(meta)
-    rn.save_results(run["path"], spot_groups, meta)
+    progress.compute.start("saving results", 3, unit="file")
+    rn.save_results(run["path"], spot_groups, meta, on_file=lambda name: progress.compute.update(1, file=name))
+    progress.compute.finish()
     if "search" in run:
         _progress(run, "done")
     emit("info", f"Run \"{name}\" saved to {os.path.abspath(run['path'])}")
@@ -607,9 +666,13 @@ def save_run(plan: Plan, lines: Lines, confirm: Optional[Confirm] = None, run: O
                 tiles = []
             ortho.download(source.ortho, tiles, ortho_folder, plan.paths.cache)
             ortho_cache = ortho_folder
+        progress.compute.start("saving the map", 2, unit="file")
         map_path = mp.save_map(results, plan.area, run["path"], plan.paths.runs, meta, plan.crs, plan.group_distance,
-                               p.group_by, ortho_cache, source.ortho, p.model, plan.rigging)
+                               p.group_by, ortho_cache, source.ortho, p.model, plan.rigging,
+                               on_file=lambda name: progress.compute.update(1, file=name))
+        progress.compute.finish()
     rn.write_index(plan.paths.runs)
+    progress.set_step("")
     return Result(results, spot_groups, meta, run, map_path)
 
 

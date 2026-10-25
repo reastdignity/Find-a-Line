@@ -46,7 +46,10 @@ def coordify(lines: List[Line], grid: Grid, nmpt_mode: Optional[str]) -> List[Di
     lon, lat = Transformer.from_crs(grid.crs, "EPSG:4326", always_xy=True).transform(easting, northing)
 
     results = []
+    progress.compute.start("coordinates", len(lines), unit="line")
     for k, line in enumerate(lines):
+        if k % 50000 == 0 and k:
+            progress.compute.update(50000)
         over_obstacles = (nmpt_mode == "mark" and line.clearance_nmpt is not None
                           and line.clearance_nmpt <= 0)
         results.append({
@@ -62,6 +65,7 @@ def coordify(lines: List[Line], grid: Grid, nmpt_mode: Optional[str]) -> List[Di
             "clearance_nmpt": line.clearance_nmpt,
             "over_obstacles": over_obstacles,
         })
+    progress.compute.finish()
     return results
 
 
@@ -209,7 +213,8 @@ def _write_js(path: str, target: str, value):
 
 def save_map(results: List[Dict], area, run_path: str, runs_dir: str, run: Dict, crs: str,
              group_distance: float = 20, group_by: str = "clearance", ortho_cache: Optional[str] = None,
-             ortho_service=None, model: str = "formula", rigging: Optional[Rigging] = None) -> str:
+             ortho_service=None, model: str = "formula", rigging: Optional[Rigging] = None,
+             on_file=lambda name: None) -> str:
     """Save the interactive map of a run: map.html, data.js and lines.js in its folder.
 
     The map is the viewer (viewer/src, TypeScript), the same bundle for every run in
@@ -246,9 +251,11 @@ def save_map(results: List[Dict], area, run_path: str, runs_dir: str, run: Dict,
         "lines": [row + [r.get("profile")] for row, r in zip(rows, results)],
     }
     _write_js(os.path.join(run_path, "data.js"), "window.FINDALINE_RUN", data)
+    on_file("data.js")
     _write_js(os.path.join(run_path, "lines.js"),
               f"(window.FINDALINE_LINES = window.FINDALINE_LINES || {{}})[{json.dumps(run['id'])}]",
               {"crs": crs, "area": data["area"], "lines": rows})
+    on_file("lines.js")
     with open(path, "w", encoding="utf-8") as f:
         f.write(MAP_HTML.format(title=html.escape(run["name"]), viewer=VIEWER_FOLDER))
     return path

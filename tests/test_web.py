@@ -77,6 +77,10 @@ def test_job_through_the_queue(tmp_path, monkeypatch):
     assert {"status", "info", "progress"} <= kinds
     statuses = [e["data"]["status"] for e in jobs.events(0, job) if e["kind"] == "status"]
     assert statuses == ["queued", "downloading", "ready", "computing", "done"]
+    steps = {e["data"]["step"].split(":")[0] for e in jobs.events(0, job) if e["kind"] == "progress"} - {""}
+    assert steps == {f"Step {n}/5" for n in range(1, 6)}, steps
+    stages = {e["data"]["stage"] for e in jobs.events(0, job) if e["kind"] == "progress"}
+    assert {"checking lines", "coordinates", "saving results", "saving the map"} <= stages, stages
 
 
 class _Ended:

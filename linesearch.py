@@ -185,6 +185,36 @@ def _pairs(z, anchors, elev, rings, todo, order, starts, cell, cells_x, res,
         counts[q, 0], counts[q, 1], counts[q, 2] = candidates, checked, found
 
 
+@njit(parallel=True, cache=True)
+def _covered_pixels(a1, a2, mask, out):
+    """Pixels of each line (anchors excluded, the pixels of helpers.line_profile) that are set in mask."""
+    for k in prange(a1.shape[0]):
+        r1, c1, r2, c2 = a1[k, 0], a1[k, 1], a2[k, 0], a2[k, 1]
+        dr, dc = r2 - r1, c2 - c1
+        steps = max(abs(dr), abs(dc))
+        n = 0
+        for i in range(1, steps):
+            t = i / steps
+            if mask[r1 + int(np.rint(dr * t)), c1 + int(np.rint(dc * t))]:
+                n += 1
+        out[k] = n
+
+
+def covered_metres(a1: np.ndarray, a2: np.ndarray, res: float, mask: Optional[np.ndarray]) -> List[float]:
+    """Metres of each line over the pixels of a mask (water, filled gaps): the values of
+    helpers.line_profile ("water_m", "filled_m") without the rest of the profile."""
+    if mask is None or len(a1) == 0:
+        return [0.0] * len(a1)
+    a1, a2 = np.ascontiguousarray(a1, dtype=np.int64), np.ascontiguousarray(a2, dtype=np.int64)
+    counts = np.zeros(len(a1), dtype=np.int64)
+    _covered_pixels(a1, a2, np.ascontiguousarray(mask, dtype=np.bool_), counts)
+    d = a2 - a1
+    steps = np.maximum(np.abs(d[:, 0]), np.abs(d[:, 1]))
+    lengths = np.hypot(d[:, 0], d[:, 1]) * res
+    return [round(float(n) * length / s, 1) if n else 0.0
+            for n, length, s in zip(counts.tolist(), lengths.tolist(), steps.tolist())]
+
+
 def find_valid_lines(elevation: np.ndarray, surface: Optional[np.ndarray], anchors: np.ndarray,
                      res: float, min_length: float, max_length: float,
                      nmpt_mode: Optional[str] = None, threads: Optional[int] = None,
@@ -260,13 +290,18 @@ def find_valid_lines(elevation: np.ndarray, surface: Optional[np.ndarray], ancho
 
     # Final decision and clearances, exactly as in the pixel-by-pixel search
     valid_lines: List[sh.Line] = []
-    for i, j in np.concatenate(pairs) if pairs else []:
+    found = np.concatenate(pairs) if pairs else np.zeros((0, 2), dtype=np.int64)
+    progress.compute.start("checking lines", len(found), unit="line")
+    for k, (i, j) in enumerate(found):
+        if k % 20000 == 0 and k:
+            progress.compute.update(20000, valid=len(valid_lines))
         result = sh.evaluate_line(anchors[i], anchors[j], elevation, res, surface, sag_table)
         if sh.is_valid(result, nmpt_mode):
             elev_a1, elev_a2, length, clearance, clearance_nmpt = result
             valid_lines.append(sh.Line(tuple(map(int, anchors[i])), tuple(map(int, anchors[j])),
                                        length, elev_a1, elev_a2, clearance, clearance_nmpt))
 
+    progress.compute.finish(f"{len(valid_lines)} valid")
     print(f"\n{'=' * 60}")
     print(f"Completed in {time.time() - start_time:.2f} seconds")
     print(f"Candidate pairs between anchors with an open direction: {candidates}")

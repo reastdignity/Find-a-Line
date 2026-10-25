@@ -133,3 +133,19 @@ def test_update_checks(tmp_path):
     west, south, east, north = found[0].extent
     assert update.checks(str(tmp_path), bbox=(west - 1, south - 1, west - 0.5, south - 0.5)) == []
     assert len(update.checks(str(tmp_path), bbox=(west, south, west, south))) == 1
+
+
+def test_covered_metres_match_profiles():
+    """The metres over water of every line (numba) equal those of its profile."""
+    import helpers as sh
+    import linesearch as ls
+    rng = np.random.default_rng(5)
+    elevation = rng.random((200, 200)) * 10
+    mask = rng.random((200, 200)) < 0.3
+    a1 = rng.integers(0, 200, (300, 2))
+    a2 = rng.integers(0, 200, (300, 2))
+    keep = np.abs(a2 - a1).max(axis=1) >= 2
+    a1, a2 = a1[keep], a2[keep]
+    fast = ls.covered_metres(a1, a2, 2.0, mask)
+    slow = [sh.line_profile(tuple(p), tuple(q), elevation, 2.0, water=mask)["water_m"] for p, q in zip(a1, a2)]
+    assert fast == slow
