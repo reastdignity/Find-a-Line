@@ -226,23 +226,13 @@ MEASURE_SCRIPT = """
 """
 
 
-@pytest.mark.skipif(not os.path.exists(EDGE), reason="needs Microsoft Edge")
-def test_measure_in_the_map(tmp_path, monkeypatch):
-    """The Measure button of a map served by the app: two clicks give the profile between
-    them, and a height above the ground raises its anchor."""
-    import re
+def _edge_page(tmp_path, page: str) -> str:
+    """The DOM of a page of the app (a path on a real server over tmp_path) after headless Edge ran its scripts."""
     import socket
     import subprocess
     import threading
 
     import uvicorn
-    run_id = _clip_run(tmp_path, monkeypatch)
-    row = _lines_of(tmp_path, run_id)[0]
-    folder = tmp_path / "runs" / run_id
-    (folder / "measure_test.js").write_text(MEASURE_SCRIPT, encoding="utf-8")
-    page = (folder / "map.html").read_text(encoding="utf-8")
-    (folder / "measure_test.html").write_text(
-        page.replace("</body>", '<script src="measure_test.js"></script></body>'), encoding="utf-8")
     with socket.socket() as s:
         s.bind(("127.0.0.1", 0))
         port = s.getsockname()[1]
@@ -254,15 +244,108 @@ def test_measure_in_the_map(tmp_path, monkeypatch):
     try:
         while not server.started:
             time.sleep(0.1)
-        result = subprocess.run(
+        return subprocess.run(
             [EDGE, "--headless", "--disable-gpu", f"--user-data-dir={tmp_path / 'edge'}", "--no-first-run",
-             "--virtual-time-budget=60000", "--dump-dom",
-             f"http://127.0.0.1:{port}/runs/{run_id}/measure_test.html"],
-            capture_output=True, text=True, encoding="utf-8", timeout=180)
+             "--virtual-time-budget=60000", "--dump-dom", f"http://127.0.0.1:{port}/{page}"],
+            capture_output=True, text=True, encoding="utf-8", timeout=180).stdout
     finally:
         server.should_exit = True
         thread.join(10)
-    text = re.search(r'<pre id="result">(.*?)</pre>', result.stdout, re.S).group(1)
+
+
+@pytest.mark.skipif(not os.path.exists(EDGE), reason="needs Microsoft Edge")
+def test_measure_in_the_map(tmp_path, monkeypatch):
+    """The Measure button of a map served by the app: two clicks give the profile between
+    them, and a height above the ground raises its anchor."""
+    import re
+    run_id = _clip_run(tmp_path, monkeypatch)
+    row = _lines_of(tmp_path, run_id)[0]
+    folder = tmp_path / "runs" / run_id
+    (folder / "measure_test.js").write_text(MEASURE_SCRIPT, encoding="utf-8")
+    page = (folder / "map.html").read_text(encoding="utf-8")
+    (folder / "measure_test.html").write_text(
+        page.replace("</body>", '<script src="measure_test.js"></script></body>'), encoding="utf-8")
+    dom = _edge_page(tmp_path, f"runs/{run_id}/measure_test.html")
+    text = re.search(r'<pre id="result">(.*?)</pre>', dom, re.S).group(1)
     first, _, raised = text.partition(" | ")
     assert first.startswith(f"Measured: {row[8]:.0f} m, A1 {row[11]:.1f} m"), text
     assert raised.startswith(f"Measured: {row[8]:.0f} m, A1 {row[11] + 5:.1f} m"), text
+
+
+# Before the app: no event stream (headless Edge would wait for it), a fixed estimate
+APP_STUBS = """
+window.EventSource = class { constructor() {} close() {} };
+const realFetch = window.fetch;
+window.fetch = (url, init) => String(url).startsWith("/api/estimate")
+  ? Promise.resolve(new Response(JSON.stringify({source: "test", resolution: 1, km2: 1, tiles: 1, download_mb: 0,
+      work_gb: 0, reasons: [], messages: [], area: null}), {headers: {"content-type": "application/json"}}))
+  : realFetch(url, init);
+"""
+
+APP_SCRIPT = """
+(function () {
+  const out = document.createElement("pre");
+  out.id = "result";
+  document.body.appendChild(out);
+  const box = (w, s, e, n) => ({type: "Feature", properties: {},
+    geometry: {type: "Polygon", coordinates: [[[w, s], [e, s], [e, n], [w, n], [w, s]]]}});
+  const shapes = {type: "FeatureCollection", features: [box(19.70, 50.10, 19.71, 50.11),
+    box(19.705, 50.105, 19.715, 50.115), box(19.80, 50.10, 19.81, 50.11)]};  // two overlap
+  const say = (what) => { out.textContent += what + " | "; };
+  const areas = () => (document.querySelector(".fa-areas") || {}).textContent || "none";
+  const button = (text) => [...document.querySelectorAll("button")].find((b) => b.textContent === text);
+  const wait = (ok, then, tries = 100) => ok() ? then() : tries ? setTimeout(() => wait(ok, then, tries - 1), 100)
+                                                    : say("timeout");
+  wait(() => window.FINDALINE_PLACE && button("Draw"), () => {
+    button("Draw").click();
+    setTimeout(() => {
+      const place = window.FINDALINE_PLACE;
+      place.loadDrawn(shapes);
+      setTimeout(() => {
+        say(areas());
+        button("Clear all").click();
+        setTimeout(() => {
+          say(areas() + ", drawn " + (place.drawnAreas() ? "yes" : "no"));
+          place.loadDrawn(shapes);
+          setTimeout(() => {
+            button("Estimate").click();
+            wait(() => button("Start") && !button("Start").disabled, () => {
+              button("Start").click();
+              wait(() => !place.drawnAreas(), () => say("after start: " + areas()));
+            });
+          }, 200);
+        }, 200);
+      }, 200);
+    }, 200);
+  });
+})();
+"""
+
+
+@pytest.mark.skipif(not os.path.exists(EDGE), reason="needs Microsoft Edge")
+def test_app_counts_and_clears_areas(tmp_path):
+    """The form counts separate drawn areas (overlapping shapes are one), "Clear all"
+    removes them, and starting a search clears the map for the next one."""
+    import re
+    import urllib.request
+    folder = tmp_path / "runs" / "apptest"
+    folder.mkdir(parents=True)
+    (folder / "stubs.js").write_text(APP_STUBS, encoding="utf-8")
+    (folder / "test.js").write_text(APP_SCRIPT, encoding="utf-8")
+    app = web.create_app(str(tmp_path), token=TOKEN, start_scheduler=False)
+    with TestClient(app) as client:
+        page = client.get("/").text
+    (folder / "index.html").write_text(page.replace(
+        '<script src="/app/app.js"></script>',
+        '<script src="stubs.js"></script><script src="/app/app.js"></script><script src="test.js"></script>'),
+        encoding="utf-8")
+    dom = _edge_page(tmp_path, "runs/apptest/index.html")
+    text = re.search(r'<pre id="result">(.*?)</pre>', dom, re.S).group(1)
+    drawn, cleared, started = text.split(" | ")[:3]
+    assert drawn.startswith("2 separate areas (3 shapes"), text
+    assert cleared == "none, drawn no", text
+    assert started == "after start: none", text
+    jobs = web.Jobs(str(tmp_path))
+    queued = jobs.all()
+    assert len(queued) == 1
+    assert len(json.loads(jobs.get(queued[0]["id"])["request"])["geometry"]["features"]) == 3

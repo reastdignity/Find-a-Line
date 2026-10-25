@@ -71,6 +71,17 @@ export class PlaceMap {
     this.circle!.setLatLng([lat, lon]).setRadius(radius);
   }
 
+  /** Removes the point, the drawn areas, the uploaded file and the preview. */
+  clear() {
+    this.marker?.remove();
+    this.circle?.remove();
+    this.marker = this.circle = null;
+    this.drawn.clearLayers();
+    this.shown.clearLayers();
+    this.preview.clearLayers();
+    this.onDrawn();
+  }
+
   /** Areas to edit (a job's drawn or uploaded area): they replace the drawn ones. */
   loadDrawn(areas: GeoJSON) {
     this.drawn.clearLayers();

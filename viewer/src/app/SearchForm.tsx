@@ -2,8 +2,9 @@
 // the parameters (generated from the schema of params.py), the estimate, the start.
 
 import type { FeatureCollection } from "geojson";
-import { useEffect, useState } from "preact/hooks";
+import { useEffect, useMemo, useState } from "preact/hooks";
 import { api, type Estimate, type Field, type SearchRequest } from "./api";
+import { countAreas } from "./areas";
 import type { Mode, PlaceMap } from "./PlaceMap";
 
 // Fields set by the "Where" part of the form, not in the parameter groups
@@ -82,6 +83,7 @@ export function SearchForm({place, fields, groups, initial, onStarted}: SearchFo
   const [within, setWithin] = useState(start.within);
   const [name, setName] = useState(start.name);
   const [file, setFile] = useState<{name: string; areas: FeatureCollection} | null>(null);
+  const [fileKey, setFileKey] = useState(0);  // a new file input (empty) after clearing
   const [drawn, setDrawn] = useState(0);  // changes when the drawn areas change
   const [values, setValues] = useState<Record<string, unknown>>(start.values);
   const [estimate, setEstimate] = useState<Estimate | null>(null);
@@ -101,6 +103,22 @@ export function SearchForm({place, fields, groups, initial, onStarted}: SearchFo
   // Any change makes the estimate stale
   useEffect(() => { setEstimate(null); setError(""); place.showPreview(null); },
             [mode, point, radius, buffer, preset, osmName, within, file, drawn, values]);
+
+  // Separate areas (shapes that overlap or touch are one), drawn or from the file
+  const areas = useMemo(() => mode === "draw" ? countAreas(place.drawnAreas(), buffer)
+    : mode === "file" && file ? countAreas(file.areas, buffer) : 0, [place, mode, drawn, file, buffer]);
+  const shapes = mode === "draw" ? place.drawnAreas()?.features.length || 0 : file?.areas.features.length || 0;
+
+  /** Where the search goes, cleared (after a start, or "Clear all"); the parameters stay. */
+  const clearPlace = () => {
+    place.clear();
+    setPoint(null);
+    setFile(null);
+    setFileKey((k) => k + 1);
+    setOsmName("");
+    setWithin("");
+    setName("");
+  };
 
   const request = (): SearchRequest | string => {
     const params: Record<string, unknown> = {...values};
@@ -140,6 +158,7 @@ export function SearchForm({place, fields, groups, initial, onStarted}: SearchFo
     try {
       if (start) {
         const {id} = await api.start(r);
+        clearPlace();
         onStarted(id);
       } else {
         const result = await api.estimate(r);
@@ -181,7 +200,12 @@ export function SearchForm({place, fields, groups, initial, onStarted}: SearchFo
     <div class="fa-modes">
       {([["point", "Point"], ["draw", "Draw"], ["file", "File"], ["preset", "Coast, cliffs, OSM"]] as [Mode, string][])
         .map(([m, text]) => <button class={mode === m ? "fa-on" : ""} onClick={() => setMode(m)}>{text}</button>)}
+      <button class="fa-small fa-clear" title="Remove the point, the drawn areas and the file"
+              onClick={clearPlace}>Clear all</button>
     </div>
+    {(mode === "draw" || mode === "file") && shapes > 0 && <p class="fa-areas">
+      {areas === 1 ? "1 area" : `${areas} separate areas`}
+      {shapes !== areas && ` (${shapes} shapes; those that overlap or touch are one area)`}</p>}
     {mode === "point" && <div>
       <p class="fa-hint">{point ? `Centre ${point[0].toFixed(5)}, ${point[1].toFixed(5)}` : "Click the map."}</p>
       <label class="fa-row">radius, m <input type="number" min={10} defaultValue={String(radius)}
@@ -192,7 +216,7 @@ export function SearchForm({place, fields, groups, initial, onStarted}: SearchFo
         change them. Both anchors of a line lie inside, the webbing may leave the area.</p>
     </div>}
     {mode === "file" && <div>
-      <input type="file" accept=".geojson,.json,.kml,.gpx" onChange={(e) => uploadFile(e.currentTarget)} />
+      <input key={fileKey} type="file" accept=".geojson,.json,.kml,.gpx" onChange={(e) => uploadFile(e.currentTarget)} />
       <p class="fa-hint">{file ? `${file.name}: ${file.areas.features.length} shapes` :
         "Polygons are used as they are, points and lines grown by the buffer."}</p>
       {bufferInput}

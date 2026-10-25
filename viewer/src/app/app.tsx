@@ -47,7 +47,9 @@ function App() {
   }, (e) => setError(e.message));
 
   useEffect(() => {
-    setPlace(new PlaceMap(mapRef.current!));
+    const placeMap = new PlaceMap(mapRef.current!);
+    (window as any).FINDALINE_PLACE = placeMap;  // for tests and the browser console
+    setPlace(placeMap);
     api.schema().then(setSchema, (e) => setError(e.message));
     let stop = () => {};
     api.jobs().then(({jobs: listed, seq}) => {
