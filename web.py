@@ -44,6 +44,7 @@ MAX_UPLOAD = 5_000_000    # bytes of an uploaded area file
 APP_DIST = os.path.join(os.path.dirname(os.path.abspath(__file__)), "viewer", "dist")
 # What a job is doing; "ready" means its data is downloaded and it waits to compute
 ACTIVE = ("downloading", "computing")
+PHASE_STATUS = {"download": "downloading", "compute": "computing"}  # the status each phase works in
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS jobs (
     id TEXT PRIMARY KEY, created TEXT, status TEXT, request TEXT, title TEXT,
@@ -249,7 +250,9 @@ class Scheduler:
             process.join()
             del self.running[phase]
             job = self.jobs.get(job_id)
-            if job and job["status"] in ACTIVE:  # the process ended without a word
+            # Ended without a word. Only the job's status of this phase tells that: a download
+            # process sets "ready" and may take a moment to exit, while the job already computes
+            if job and job["status"] == PHASE_STATUS[phase]:
                 self.jobs.set(job_id, "failed", error=f"the worker stopped (exit code {process.exitcode})")
         for phase, waiting, status in (("download", "queued", "downloading"), ("compute", "ready", "computing")):
             if phase not in self.running:

@@ -77,3 +77,30 @@ def test_job_through_the_queue(tmp_path, monkeypatch):
     assert {"status", "info", "progress"} <= kinds
     statuses = [e["data"]["status"] for e in jobs.events(0, job) if e["kind"] == "status"]
     assert statuses == ["queued", "downloading", "ready", "computing", "done"]
+
+
+class _Ended:
+    """A worker process that has ended."""
+    exitcode = 0
+
+    def is_alive(self):
+        return False
+
+    def join(self):
+        pass
+
+
+def test_download_process_ending_late(tmp_path):
+    """A download process that exits after its job has started computing does not fail the job;
+    a compute process that ends without a word does."""
+    jobs = web.Jobs(str(tmp_path))
+    job = jobs.add({"params": {}, "geometry": None}, "job")
+    jobs.set(job, "computing")
+    scheduler = web.Scheduler(jobs)
+    scheduler.running["download"] = (job, _Ended())
+    scheduler.running["compute"] = (job, type("Running", (), {"is_alive": lambda self: True})())
+    scheduler._check()
+    assert jobs.get(job)["status"] == "computing"
+    scheduler.running["compute"] = (job, _Ended())
+    scheduler._check()
+    assert jobs.get(job)["status"] == "failed"
