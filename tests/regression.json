@@ -8,12 +8,12 @@
       "sources"
     ],
     "expected": {
-      "source": "geoportal.gov.pl",
       "anchors": 8900,
       "open": 1261,
       "checked": 13929,
-      "lines": 1262,
-      "spots": 104
+      "lines": 1248,
+      "spots": 104,
+      "source": "geoportal.gov.pl"
     },
     "notes": "Spot 1: 102 m, clearance 8.0 m, 50.156507, 19.755129 → 50.155960, 19.756268; no coastline lookup (inland)"
   },
@@ -28,7 +28,7 @@
       "anchors": 4503,
       "open": 437,
       "checked": 2340,
-      "lines": 334,
+      "lines": 333,
       "spots": 19
     },
     "notes": "`Coastline: no sea in the area`"
@@ -45,8 +45,8 @@
       "anchors": 4503,
       "open": 2060,
       "checked": 90196,
-      "lines": 12009,
-      "spots": 102
+      "lines": 11989,
+      "spots": 101
     },
     "notes": ""
   },
@@ -60,7 +60,7 @@
       "anchors": 20460,
       "open": 2926,
       "checked": 37361,
-      "lines": 1972,
+      "lines": 1965,
       "spots": 68
     },
     "notes": "no gaps (the WCS data had 0.05 km² filled from FABDEM)"
@@ -76,8 +76,8 @@
       "anchors": 20460,
       "open": 10485,
       "checked": 1322582,
-      "lines": 52693,
-      "spots": 454
+      "lines": 52660,
+      "spots": 456
     },
     "notes": "map ~150 MB"
   },
@@ -91,10 +91,11 @@
       "anchors": 12865,
       "open": 4958,
       "checked": 218849,
-      "lines": 10928,
-      "spots": 366,
+      "lines": 10923,
+      "spots": 364,
       "sea_km2": 0.42,
-      "water_spots": 344
+      "water_lines": 10829,
+      "water_spots": 342
     },
     "notes": ""
   },
@@ -110,12 +111,13 @@
       "anchors": 10550,
       "open": 3389,
       "checked": 65564,
-      "lines": 6783,
-      "spots": 381,
+      "lines": 6774,
+      "spots": 382,
       "filled_km2": 0.19,
       "filled_from": "Malta 2018 (MSDI)",
       "sea_km2": 0.43,
-      "water_spots": 376
+      "water_lines": 6761,
+      "water_spots": 377
     },
     "notes": ""
   },
@@ -129,10 +131,11 @@
       "anchors": 10697,
       "open": 6646,
       "checked": 262091,
-      "lines": 11328,
-      "spots": 423,
+      "lines": 11308,
+      "spots": 416,
       "sea_km2": 1.94,
-      "water_spots": 367
+      "water_lines": 10853,
+      "water_spots": 364
     },
     "notes": ""
   },
@@ -143,12 +146,12 @@
       "sources"
     ],
     "expected": {
-      "source": "IGN Spain (MDT05/MDS05)",
       "anchors": 27401,
       "open": 20979,
       "checked": 549299,
-      "lines": 86029,
-      "spots": 3993
+      "lines": 85671,
+      "spots": 3972,
+      "source": "IGN Spain (MDT05/MDS05)"
     },
     "notes": ""
   },
@@ -160,13 +163,14 @@
       "water"
     ],
     "expected": {
-      "source": "IGN Canary Islands (MDT05/MDS05)",
       "anchors": 14711,
       "open": 11654,
       "checked": 196868,
-      "lines": 34697,
-      "spots": 2050,
-      "water_lines": 15002
+      "lines": 34652,
+      "spots": 2053,
+      "source": "IGN Canary Islands (MDT05/MDS05)",
+      "water_lines": 15008,
+      "water_spots": 676
     },
     "notes": ""
   },
@@ -181,7 +185,7 @@
       "open": 257,
       "checked": 887,
       "lines": 451,
-      "spots": 82
+      "spots": 81
     },
     "notes": "grouping distance 60 m"
   },
@@ -195,8 +199,8 @@
       "anchors": 433,
       "open": 433,
       "checked": 2137,
-      "lines": 930,
-      "spots": 159
+      "lines": 920,
+      "spots": 152
     },
     "notes": ""
   },
@@ -213,8 +217,8 @@
       "anchors": 2796,
       "open": 2396,
       "checked": 8628,
-      "lines": 562,
-      "spots": 138,
+      "lines": 566,
+      "spots": 143,
       "filled_km2": 0.03,
       "filled_from": "FABDEM + Copernicus DEM"
     },
@@ -231,7 +235,7 @@
       "anchors": 7558,
       "open": 1100,
       "checked": 13358,
-      "lines": 1262,
+      "lines": 1248,
       "spots": 104
     },
     "notes": "anchors, open anchors and checked pairs are those of the first tile; must equal R1 in lines and spots"
@@ -247,11 +251,11 @@
       "anchors": 15056,
       "open": 708,
       "checked": 5134,
-      "lines": 602,
-      "spots": 25,
+      "lines": 606,
+      "spots": 26,
       "sea_km2": 0.1,
-      "water_lines": 602,
-      "water_spots": 25
+      "water_lines": 606,
+      "water_spots": 26
     },
     "notes": "the edge tile must come from Malta 2018: when it was lost (404 beyond the coverage) FABDEM filled the land, leaving 19 anchors and no lines"
   }

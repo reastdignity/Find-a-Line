@@ -72,7 +72,7 @@ def test_synthetic_canyon(tmp_path):
 
 
 # Known results of the Żabi Koń clip (update together with a deliberate change)
-ZABI_KON = {"anchors": 11609, "open": 620, "checked": 11313, "lines": 1303, "spots": 43}
+ZABI_KON = {"anchors": 11609, "open": 620, "checked": 11313, "lines": 1301, "spots": 43}
 
 
 def test_zabi_kon_clip(tmp_path):

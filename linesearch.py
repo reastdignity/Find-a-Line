@@ -69,8 +69,8 @@ def _line_ok(z, r1, c1, r2, c2, res, use_sag, log_spans, ratios, table, fall_zon
     while lo <= hi:
         for k in (lo, hi):
             t = k / steps
-            r = int(np.rint(r1 + dr * t))
-            c = int(np.rint(c1 + dc * t))
+            r = r1 + int(np.rint(dr * t))  # the pixels of helpers.evaluate_line
+            c = c1 + int(np.rint(dc * t))
             if use_sag:
                 x = t * (points - 1)
                 f = min(int(x), points - 2)

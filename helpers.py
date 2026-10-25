@@ -112,10 +112,12 @@ def evaluate_line(a1: np.ndarray, a2: np.ndarray, elevation: np.ndarray, res: fl
     if steps < 2:
         return None
 
-    # DDA: every pixel between the anchors (anchors themselves excluded)
+    # DDA: every pixel between the anchors (anchors themselves excluded). The offset from
+    # anchor 1 is rounded, not the position: np.rint rounds halves to even, so rounding the
+    # position would pick other pixels on a grid shifted by an odd number of pixels
     t = np.arange(1, steps) / steps
-    rows = np.rint(r1 + dr * t).astype(np.intp)
-    cols = np.rint(c1 + dc * t).astype(np.intp)
+    rows = r1 + np.rint(dr * t).astype(np.intp)
+    cols = c1 + np.rint(dc * t).astype(np.intp)
 
     length = float(np.hypot(dr, dc)) * res
     elev_a1 = float(elevation[r1, c1])
@@ -155,8 +157,8 @@ def line_profile(a1: Tuple[int, int], a2: Tuple[int, int], elevation: np.ndarray
     dr, dc = r2 - r1, c2 - c1
     steps = max(abs(dr), abs(dc))
     t = np.arange(steps + 1) / steps  # anchors included
-    rows = np.rint(r1 + dr * t).astype(np.intp)
-    cols = np.rint(c1 + dc * t).astype(np.intp)
+    rows = r1 + np.rint(dr * t).astype(np.intp)  # the same pixels as evaluate_line
+    cols = c1 + np.rint(dc * t).astype(np.intp)
 
     length = float(np.hypot(dr, dc)) * res
     distance = t * length
