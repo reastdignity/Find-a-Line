@@ -450,5 +450,35 @@
     },
     "notes": "",
     "seconds": 441.9
+  },
+  "R18": {
+    "place": "Fungus Rock, Dwejra (Gozo): coast within a named islet takes the Gozo coast within --max-length too, so lines between the island and the islet are found",
+    "args": "--area coast --buffer 100 --within osm:\"Fungus Rock\" --max-length 300 --resolution 1",
+    "sets": [
+      "water",
+      "search"
+    ],
+    "count_anchors_in": "osm:Fungus Rock",
+    "expected": {
+      "anchors": 33956,
+      "open": 2797,
+      "checked": 23402,
+      "lines": 2226,
+      "spots": 38,
+      "csv_sha256": "1191291e7e4c30d00dd4ada7440f187a26b3481819c3ee9c4a70bbcd2c3b0209",
+      "length_km": 328.881,
+      "clearance_min": 0.0,
+      "clearance_mean": 4.19,
+      "clearance_max": 22.11,
+      "over_trees": 1994,
+      "coverage": 40.45,
+      "empty_tiles": 0,
+      "sea_km2": 0.31,
+      "water_lines": 2201,
+      "water_spots": 36,
+      "lines_in_region": 1583
+    },
+    "notes": "before 2026-10-25 within clipped the band to the land of the named area: no line reached the islet",
+    "seconds": 4.5
   }
 }

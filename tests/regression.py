@@ -18,7 +18,9 @@ What is compared (expected values in regression.json):
   clearances, lines over trees) that show what changed when the checksum does;
 - the data: the share of the search area with elevation data before any filling, and
   the tiles without data (a lost tile shows here, e.g. the north coast of Gozo);
-- "same_as": lines.csv identical to that of another test (tiles against one grid).
+- "same_as": lines.csv identical to that of another test (tiles against one grid);
+- "count_anchors_in": osm:<name> or S,W,N,E: the lines with an anchor in it (lines_in_region),
+  e.g. the lines reaching an islet.
 Always checked, without expected values: the map data (data.js has every line, profiles
 for every line of a circle and for the line shown for each group of an area, lines.js
 the same lines), and with "check_profiles" that profiles computed again from the cache
@@ -114,6 +116,16 @@ def measure(output: str, run_dir: str) -> dict:
         found["clearance_max"] = max(clearances, default=0.0)
         found["over_trees"] = sum(r["over_trees_buildings"] == "True" for r in rows)
     return found
+
+
+def count_in_region(run_dir: str, where: str, cache_dir: str) -> int:
+    """Lines with at least one anchor in a region (area.region: osm:<name> or S,W,N,E)."""
+    import area
+    from shapely.geometry import Point
+    region = area.region(where, cache_dir)
+    with open(glob.glob(os.path.join(run_dir, "*", "lines.csv"))[0], encoding="utf-8-sig") as f:
+        return sum(any(region.contains(Point(float(r[f"anchor{k}_lon"]), float(r[f"anchor{k}_lat"]))) for k in (1, 2))
+                   for r in csv.DictReader(f))
 
 
 def check_map(run_dir: str, found: dict) -> list:
@@ -212,6 +224,8 @@ def run(tests: dict, test_id: str, work: str, cache_dir: str, browser: bool) -> 
     found["exit"] = result.returncode
     if not result.returncode:
         problems = check_map(runs, found)
+        if tests[test_id].get("count_anchors_in"):
+            found["lines_in_region"] = count_in_region(runs, tests[test_id]["count_anchors_in"], cache_dir)
         if tests[test_id].get("check_profiles"):
             problems += check_profiles(runs, out, tests[test_id]["check_profiles"])
         if browser:
@@ -278,6 +292,8 @@ def stored(found: dict, old: dict) -> dict:
     for key in ("sea_km2", "water_lines", "water_spots"):
         if key in old or found.get(key):
             keep[key] = found.get(key, 0)
+    if "lines_in_region" in found:
+        keep["lines_in_region"] = found["lines_in_region"]
     return keep
 
 
@@ -314,6 +330,8 @@ def write_doc(tests: dict):
             also.append(f"lines.csv identical to {test['same_as']}")
         if test.get("check_profiles"):
             also.append(f"{test['check_profiles']} profiles computed again")
+        if "lines_in_region" in e:
+            also.append(f"{number(e['lines_in_region'])} lines with an anchor in {test['count_anchors_in']}")
         if test.get("notes"):
             also.append(test["notes"])
         rows.append(f"| {test_id} | {test['place']} | {args} | {number(e['anchors'])} | "
