@@ -235,5 +235,24 @@
       "spots": 104
     },
     "notes": "anchors, open anchors and checked pairs are those of the first tile; must equal R1 in lines and spots"
+  },
+  "R15": {
+    "place": "Ta' Għammar, north coast of Gozo: a tile at the northern edge of the Malta coverage",
+    "args": "--lat 36.07967 --lon 14.22867 --radius 300 --resolution 1 --min-length 20",
+    "sets": [
+      "sources",
+      "water"
+    ],
+    "expected": {
+      "anchors": 15056,
+      "open": 708,
+      "checked": 5134,
+      "lines": 602,
+      "spots": 25,
+      "sea_km2": 0.1,
+      "water_lines": 602,
+      "water_spots": 25
+    },
+    "notes": "the edge tile must come from Malta 2018: when it was lost (404 beyond the coverage) FABDEM filled the land, leaving 19 anchors and no lines"
   }
 }

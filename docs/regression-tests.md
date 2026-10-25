@@ -44,6 +44,7 @@ Baseline: 2026-10-23, commit `26c02a3`; open anchors and checked pairs from the 
 | R12 | Meteora with NASADEM (needs `OPENTOPOGRAPHY_API_KEY`) | R11 + `--source nasadem` | 433 | 433 / 2 137 | 930 / 159 |  |
 | R13 | Quick smoke test, Kasprowy Wierch (~15 s with cache) | `--northing 152074 --easting 571448 --radius 500 --resolution 5 --slope-threshold 50 --min-length 50 --max-length 400` | 2 796 | 2 396 / 8 628 | 562 / 138 | `Filled 0.03 km² ... from FABDEM + Copernicus DEM`; PL-1992 input; the filled gaps are on the Slovak side; with `--cache` on an empty folder it also tests the geoportal sheet download (index WFS, ASCII grid sheets, NMPT at 0.5 m) |
 | R14 | R1's circle as a polygon file, computed in tiles of 600 m: same lines as R1 | `--area tests/data/r1_circle.geojson --tile-size 600` | 7 558 | 1 100 / 13 358 | 1 262 / 104 | anchors, open anchors and checked pairs are those of the first tile; must equal R1 in lines and spots |
+| R15 | Ta' Għammar, north coast of Gozo: a tile at the northern edge of the Malta coverage | `--lat 36.07967 --lon 14.22867 --radius 300 --resolution 1 --min-length 20` | 15 056 | 708 / 5 134 | 602 / 25 | sea 0.10 km²; 25 spots over water; 602 lines with `water_m > 0`; the edge tile must come from Malta 2018: when it was lost (404 beyond the coverage) FABDEM filled the land, leaving 19 anchors and no lines |
 <!-- regression-table:end -->
 
 Suggested sets:
@@ -60,6 +61,8 @@ Suggested sets:
 - *Which survey a service serves*: compare the difference between two services with the difference between candidate source files over the same 200×200 m window (difference of differences); a residual median of 0.00 m and p5–p95 within about ±0.2 m identifies them (KRON86 WCS = 2012–2018 scans, EVRF2007 WCS = 2023–2025).
 - *Half-pixel alignment*: geoportal sheets have pixel centres on whole metres (`xllcenter`); windows and grids must be shifted by 0.5 m, otherwise every comparison shows spurious ±0.5 m differences on slopes.
 - *Exactness at native resolution*: with the grid aligned (`grid_origin`), R2 and R4 at 1 m gave the same anchors, open anchors and checked pairs from the sheet files as from the native WCS.
+
+**Tiles at the edge of a coverage.** Malta's WCS answers 404 to a request reaching beyond the coverage (2026-10-25: the north coast of Gozo was "missing" and filled from FABDEM). `tests/test_sources.py` checks the clipping offline with a fake WCS (an edge tile gets the data inside the coverage on its own pixel grid, a tile outside stays missing); R15 checks it on the real service.
 
 **Malta 2012 georeference.** With `MALTA_2012_SHIFT` applied, the 2012 DTM matches Copernicus GLO-30 with a median absolute difference of about 0.5 m and the 2018 DTM with 0.19 m (radius 1500 m, 10 m grid, Dingli). Without the shift it is 9 m. Do the same shift search (move one model ±200 m, minimise the median absolute difference) for any new national source.
 
