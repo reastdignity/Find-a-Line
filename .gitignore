@@ -213,6 +213,7 @@ cache/
 findaline_map.html
 runs/
 work/
+jobs.sqlite*
 
 # Viewer build tools (viewer/dist is committed)
 viewer/node_modules/
