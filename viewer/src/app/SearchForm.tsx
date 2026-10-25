@@ -33,10 +33,12 @@ function Input({field, value, onChange}: {field: Field; value: unknown; onChange
     const value = (e.currentTarget as HTMLInputElement).value.trim();
     onChange(value === "" ? (field.optional ? null : field.default) : numeric ? Number(value) : value);
   };
+  // The page is drawn again on every event of the queue: a number field keeps what is
+  // being typed (defaultValue) and is read when it is left; a text field follows every key
   return numeric
-    ? <input type="number" step={field.type === "integer" ? 1 : "any"} value={text} placeholder={placeholder}
-             onChange={changed} />
-    : <input type="text" value={text} placeholder={placeholder} onChange={changed} />;
+    ? <input type="number" step={field.type === "integer" ? 1 : "any"} defaultValue={text}
+             placeholder={placeholder} onChange={changed} />
+    : <input type="text" value={text} placeholder={placeholder} onInput={changed} />;
 }
 
 export interface SearchFormProps {
@@ -139,7 +141,7 @@ export function SearchForm({place, fields, groups, onStarted}: SearchFormProps) 
     if (value === byName[key].default) delete next[key]; else next[key] = value;
     setValues(next);
   };
-  const bufferInput = <label class="fa-row">buffer, m <input type="number" min={0} value={buffer}
+  const bufferInput = <label class="fa-row">buffer, m <input type="number" min={0} defaultValue={String(buffer)}
                                                               onChange={(e) => setBuffer(Number(e.currentTarget.value))} />
   </label>;
 
@@ -151,7 +153,7 @@ export function SearchForm({place, fields, groups, onStarted}: SearchFormProps) 
     </div>
     {mode === "point" && <div>
       <p class="fa-hint">{point ? `Centre ${point[0].toFixed(5)}, ${point[1].toFixed(5)}` : "Click the map."}</p>
-      <label class="fa-row">radius, m <input type="number" min={10} value={radius}
+      <label class="fa-row">radius, m <input type="number" min={10} defaultValue={String(radius)}
                                              onChange={(e) => setRadius(Number(e.currentTarget.value))} /></label>
     </div>}
     {mode === "draw" && <div>
@@ -171,14 +173,14 @@ export function SearchForm({place, fields, groups, onStarted}: SearchFormProps) 
         <option value="osm">a named OSM area</option>
       </select>
       {preset === "osm" && <label class="fa-row">name <input type="text" value={osmName} placeholder="e.g. Gozo"
-                                                             onChange={(e) => setOsmName(e.currentTarget.value)} /></label>}
+                                                             onInput={(e) => setOsmName(e.currentTarget.value)} /></label>}
       {preset !== "osm" && bufferInput}
       <label class="fa-row">within <input type="text" value={within} placeholder="OSM name or S,W,N,E"
-                                          onChange={(e) => setWithin(e.currentTarget.value)} /></label>
+                                          onInput={(e) => setWithin(e.currentTarget.value)} /></label>
       <button class="fa-small" onClick={() => setWithin(place.viewBox())}>use the map view</button>
     </div>}
     <label class="fa-row">name of the run <input type="text" value={name} placeholder="from OpenStreetMap"
-                                                 onChange={(e) => setName(e.currentTarget.value)} /></label>
+                                                 onInput={(e) => setName(e.currentTarget.value)} /></label>
 
     {GROUP_ORDER.filter((g) => groups[g]).map((group) => <details open={group === "search"}>
       <summary>{groups[group]}</summary>
