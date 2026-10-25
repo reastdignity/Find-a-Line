@@ -203,7 +203,7 @@ def run_phase(data_dir: str, job_id: str, phase: str):
                 plan.params = params.model_copy(update={"name": name})
             lines, run = search.search_lines(plan)
             result = search.save_run(plan, lines, lambda kind, text: True, run)
-            jobs.set(job_id, "done", run_id=result.run["id"])
+            jobs.set(job_id, "done", run_id=result.run["id"], error=None)
         failed = False
     except (search.SearchError, ValueError) as e:  # ValueError: parameters (pydantic)
         jobs.set(job_id, "failed", error=str(e))
