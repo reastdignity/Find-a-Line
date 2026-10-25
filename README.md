@@ -109,7 +109,8 @@ Source(
 
 - `crs` is the service's coordinate system (metric), `axes` the axis labels the service expects in `SUBSET` (see its DescribeCoverage), and `fetch_res` the resolution of the cached tiles (usually the native resolution; leaving it out lets the server downsample to the working resolution, which some services do badly: check the coverage at coarse resolutions).
 - `countries` holds the ISO codes for which `--source auto` picks it.
-- Services that publish files instead of WCS can use `DegreeTiles` with a function returning the URL of a tile, as for FABDEM and Copernicus.
+- Services that publish files instead of WCS can use `DegreeTiles` with a function returning the URL of a tile, as for FABDEM and Copernicus, or `SheetTiles` when a sheet index lists the files (geoportal.gov.pl).
+- How to research a country's data and choose between files, WCS and a hosted copy: [docs/data-sources.md](docs/data-sources.md).
 
 ## Getting Started
 New to the terminal? Follow the [step-by-step setup guide](setup-for-regular-folk.md) for macOS and Windows.
