@@ -8,6 +8,12 @@ A search as a library: from SearchParams to a saved run, without terminal input.
     result = save_run(plan, lines, confirm)        # step 5: the run, orthophoto, map
     # or all of it: run_search(params, paths, on_event, confirm)
 
+Large areas (--area) are computed in square tiles (search_lines): each tile is a grid
+with an overlap of --max-length around its core, and a line belongs to the tile whose
+core holds its first anchor (the one with the smaller x, then y), so no line is found
+twice. Each finished tile is saved in the run folder (tiles/<k>.pkl.gz); the same
+command after an interruption finds the unfinished run and skips those tiles.
+
 Messages go to on_event(kind, text) with kind "info" or "warning"; progress goes
 through progress.py (progress.subscribe). Questions (an expensive run, orthophoto
 downloads) go to confirm(kind, text) -> bool; without it the answer is yes.
@@ -15,12 +21,22 @@ A search that cannot go on raises SearchError with the message for the user.
 """
 
 import dataclasses
+import gc
+import glob
+import gzip
+import hashlib
+import json
+import math
 import os
+import pickle
+import shutil
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Callable, Dict, List, Optional
+from typing import Callable, Dict, List, Optional, Tuple
 
 import numpy as np
+import psutil
+import requests
 
 import area as ar
 import cache
@@ -41,6 +57,11 @@ CONFIRM_DOWNLOAD_MB = 500
 CONFIRM_DISK_GB = 4
 CONFIRM_MINUTES = 30
 ORTHO_SECONDS_PER_TILE = 0.3  # measured download rate with orthophoto.DOWNLOAD_THREADS
+# Tiles of large areas: the grids of one tile may use this share of the free memory,
+# counting this many bytes per pixel (terrain, surface, water, gaps, masks, temporaries)
+TILE_MEMORY_SHARE = 0.25
+TILE_BYTES_PER_PIXEL = 64
+DOWNLOAD_MB_PER_S = 5  # for the time estimate of area searches
 
 OnEvent = Callable[[str, str], None]
 Confirm = Callable[[str, str], bool]
@@ -80,6 +101,9 @@ class Plan:
     emit: OnEvent
     crs: str
     center_xy: tuple
+    # Large areas: (core bounds, tile grid) per tile, with cores of tile_core metres; None: one grid
+    tiles: Optional[List[Tuple[tuple, gd.Grid]]] = None
+    tile_core: Optional[float] = None
 
 
 @dataclass
@@ -123,13 +147,20 @@ def plan_search(params: SearchParams, paths: Paths, on_event: Optional[OnEvent] 
     """Choose the source and the grid, and describe the search."""
     emit = on_event or _print
     src.used_data.clear()  # several searches may run in one process
-    if params.lat is not None:
-        center_lat, center_lon = params.lat, params.lon
-    else:
-        center_lat, center_lon = mp.pl1992_to_wgs84(params.easting, params.northing)
-    area = ar.Circle(center_lat, center_lon, params.radius)
-
     cache.check_layout(paths.cache)
+    if params.area is not None:
+        try:
+            area = ar.from_spec(params.area, params.buffer, params.within, paths.cache)
+        except (ValueError, requests.RequestException) as e:
+            raise SearchError(f"Area: {e}")
+        center_lat, center_lon = area.center
+    else:
+        if params.lat is not None:
+            center_lat, center_lon = params.lat, params.lon
+        else:
+            center_lat, center_lon = mp.pl1992_to_wgs84(params.easting, params.northing)
+        area = ar.Circle(center_lat, center_lon, params.radius)
+
     try:
         source, reason = src.choose_source(params.source, center_lat, center_lon, paths.cache,
                                            params.elevation_file, params.surface_file)
@@ -147,8 +178,13 @@ def plan_search(params: SearchParams, paths: Paths, on_event: Optional[OnEvent] 
         raise SearchError(f"--resolution cannot be finer than the {source.name} data ({native:g} m)")
 
     crs = source.working_crs(center_lat, center_lon)
-    x, y = area._xy(crs)
+    x, y = ar._to(crs)(center_lon, center_lat)
     grid = gd.make_grid(area.bounds(crs), resolution, crs, source.grid_origin)
+    tiles = core = None
+    if isinstance(area, ar.Polygon):
+        grid.area_shape = ar.project(area.geometry, "EPSG:4326", crs)
+        core = tile_core_size(params, resolution)
+        tiles = _tiles(grid, params, resolution, source.grid_origin, core)
     rigging = sg.Rigging(params.pretension, params.stretch, params.webbing_weight,
                          params.athlete_mass, params.fall_zone)
     layers = [source.nmt] + ([source.nmpt] if nmpt else [])
@@ -158,7 +194,12 @@ def plan_search(params: SearchParams, paths: Paths, on_event: Optional[OnEvent] 
              f"Data: {source.name} ({reason}) - {source.description}"]
     if source.note:
         lines.append(f"Note: {source.note}")
-    lines.append(f"Radius: {params.radius:.0f}m, resolution: {resolution:g}m ({grid.width} x {grid.height} px)")
+    if isinstance(area, ar.Circle):
+        lines.append(f"Radius: {params.radius:.0f}m, resolution: {resolution:g}m ({grid.width} x {grid.height} px)")
+    else:
+        lines.append(f"Area: {_area_text(params)}, {ar.size_km2(area.geometry):.2f} km², resolution: "
+                     f"{resolution:g}m ({grid.width} x {grid.height} px, "
+                     + (f"{len(tiles)} tiles)" if tiles else "one grid)"))
     if resolution < native * 0.99:
         lines.append(f"Note: the resolution is finer than the data ({native:g} m), which is interpolated")
     lines += [f"Length constraints: {params.min_length:g}m - {params.max_length:g}m",
@@ -176,7 +217,54 @@ def plan_search(params: SearchParams, paths: Paths, on_event: Optional[OnEvent] 
     for line in lines:
         emit("info", line)
     return Plan(params, paths, area, source, grid, resolution, group_distance, nmpt, rigging, layers,
-                emit, crs, (x, y))
+                emit, crs, (x, y), tiles, core)
+
+
+def _area_text(params: SearchParams) -> str:
+    """E.g. "coast ±100 m within osm:Gozo", "osm:Gozo", "area.geojson"."""
+    a = params.area
+    if a in ("coast", "cliffs"):
+        text = f"{a} ±{params.buffer:g} m"
+    else:
+        text = a if a.startswith("osm:") else os.path.basename(a)
+    return text + (f" within {params.within}" if params.within else "")
+
+
+def _overlap(params: SearchParams, res: float) -> float:
+    """Margin around a tile core: the longest line, plus pixels for the slope at the edge."""
+    return math.ceil(params.max_length / res) * res + 2 * res
+
+
+def tile_core_size(params: SearchParams, res: float) -> float:
+    """Side of a tile core in metres: --tile-size, or what the free memory allows
+    (in steps of 500 m, so the tiles stay the same when the free memory changes a little)."""
+    if params.tile_size:
+        core = params.tile_size
+    else:
+        side_px = math.sqrt(psutil.virtual_memory().available * TILE_MEMORY_SHARE / TILE_BYTES_PER_PIXEL)
+        core = max(500.0, math.floor((side_px * res - 2 * _overlap(params, res)) / 500) * 500)
+    return max(res, math.floor(max(core, 10 * res) / res) * res)
+
+
+def _tiles(grid: gd.Grid, params: SearchParams, res: float, origin, core: float) -> Optional[list]:
+    """(core bounds, grid with overlap) of each tile under the area; None if one grid will do."""
+    from shapely.geometry import box
+    left, bottom, right, top = grid.bounds
+    if max(right - left, top - bottom) <= core:
+        return None
+    overlap = _overlap(params, res)
+    tiles = []
+    for j in range(math.ceil((top - bottom) / core)):
+        for i in range(math.ceil((right - left) / core)):
+            c = (left + i * core, max(bottom, top - (j + 1) * core), min(right, left + (i + 1) * core), top - j * core)
+            if not grid.area_shape.intersects(box(*c)):
+                continue
+            ext = (max(left, c[0] - overlap), max(bottom, c[1] - overlap),
+                   min(right, c[2] + overlap), min(top, c[3] + overlap))
+            tile = gd.make_grid(ext, res, grid.crs, origin)
+            tile.area_shape = grid.area_shape
+            tiles.append((c, tile))
+    return tiles
 
 
 def estimate_search(plan: Plan) -> Estimate:
@@ -190,9 +278,14 @@ def estimate_search(plan: Plan) -> Estimate:
     if p.water == "fill" and p.coastline == "world" and coast.world_file(plan.paths.cache) is None:
         download_mb += coast.WORLD_MB
         emit("info", f"OpenStreetMap water polygons (world): one download of ~{coast.WORLD_MB} MB")
-    work_gb = plan.grid.width * plan.grid.height * 4 * (len(plan.layers) + bool(p.slope_file)) / 1e9
+    largest = max((t for _, t in plan.tiles), key=lambda t: t.width * t.height) if plan.tiles else plan.grid
+    work_gb = largest.width * largest.height * 4 * (len(plan.layers) + bool(p.slope_file)) / 1e9
     estimate = Estimate(download_mb, work_gb)
-    if download_mb > CONFIRM_DOWNLOAD_MB:
+    if isinstance(plan.area, ar.Polygon):  # areas are always confirmed: they can be large
+        estimate.reasons.append(
+            f"area of {ar.size_km2(plan.area.geometry):.2f} km² in {len(plan.tiles) if plan.tiles else 1} "
+            f"tile(s); about {download_mb:.0f} MB to download (~{download_mb / DOWNLOAD_MB_PER_S / 60:.0f} min)")
+    elif download_mb > CONFIRM_DOWNLOAD_MB:
         estimate.reasons.append(f"about {download_mb:.0f} MB to download ({plan.source.name})")
     if work_gb > CONFIRM_DISK_GB:
         estimate.reasons.append(f"working grids take about {work_gb:.1f} GB of disk in {plan.paths.work}")
@@ -256,6 +349,13 @@ def prepare_data(plan: Plan) -> Data:
 
 def find_lines(plan: Plan, data: Data) -> Lines:
     """Steps 2-4: anchors, line search, coordinates and profiles, groups."""
+    results = _lines(plan, data)
+    return Lines(results, mp.group_lines(results, plan.group_distance, plan.params.group_by))
+
+
+def _lines(plan: Plan, data: Data, core: Optional[tuple] = None) -> List[Dict]:
+    """Steps 2-4 without the grouping; with core (bounds), only lines whose first
+    anchor (smaller x, then y) lies in it."""
     p, grid, emit = plan.params, plan.grid, plan.emit
 
     # Step 2: Find raster pixels with significant slope for promising anchors
@@ -271,6 +371,8 @@ def find_lines(plan: Plan, data: Data) -> Lines:
         anchors = anchors[~unreliable[anchors[:, 0], anchors[:, 1]]]
     emit("info", f"Found {len(anchors)} potential anchors to evaluate")
     if len(anchors) < 2:
+        if core is not None:  # a tile of a large area: nothing here
+            return []
         raise SearchError("Not enough steep terrain. Try a lower --slope-threshold or a larger --radius.")
 
     # Step 3: Compare each promising anchor to every other anchor
@@ -282,12 +384,17 @@ def find_lines(plan: Plan, data: Data) -> Lines:
     valid_lines = ls.find_valid_lines(data.elevation, data.surface, anchors, plan.resolution,
                                       p.min_length, p.max_length, plan.nmpt, p.threads,
                                       sag_table, p.max_anchor_diff / 100, p.max_anchor_diff_m)
-    if not valid_lines:
+    if not valid_lines and core is None:
         raise SearchError("No lines found matching elevation requirements.")
 
     # Step 4: Convert pixel coordinates to GPS coordinates
     emit("info", "\nStep 4: Converting pixel coordinates to GPS coordinates...")
     results = mp.coordify(valid_lines, grid, plan.nmpt)
+    if core is not None:
+        left, bottom, right, top = core
+        keep = [k for k, r in enumerate(results)
+                if left <= min(r["a1_xy"], r["a2_xy"])[0] < right and bottom <= min(r["a1_xy"], r["a2_xy"])[1] < top]
+        results, valid_lines = [results[k] for k in keep], [valid_lines[k] for k in keep]
     progress.compute.start("line profiles", len(results), unit="line")
     for r, line in zip(results, valid_lines):
         r["profile"] = sh.line_profile(line.a1, line.a2, data.elevation, plan.resolution, data.surface,
@@ -296,21 +403,133 @@ def find_lines(plan: Plan, data: Data) -> Lines:
         r["filled_m"] = r["profile"]["filled_m"]
         progress.compute.update(1)
     progress.compute.finish()
-    spot_groups = mp.group_lines(results, plan.group_distance, p.group_by)
-    return Lines(results, spot_groups)
+    return results
 
 
-def save_run(plan: Plan, lines: Lines, confirm: Optional[Confirm] = None) -> Result:
-    """Step 5: save the run (results, parameters, data used), the orthophoto tiles and the map."""
+def _run_name(plan: Plan) -> str:
+    p = plan.params
+    if p.name:
+        return p.name
+    if p.area and p.area.startswith("osm:"):
+        return p.area[4:]
+    if p.area:
+        return _area_text(p)
+    lat, lon = plan.area.center
+    return rn.place_name(lat, lon, plan.paths.cache) or f"{lat:.5f}, {lon:.5f}"
+
+
+def _search_hash(plan: Plan) -> str:
+    """What identifies the same tiled search, to resume it."""
+    p = plan.params.model_dump(exclude={"name", "refresh", "no_html", "ortho", "ortho_detail", "threads",
+                                        "opentopo_key", "tile_size", "group_distance", "group_by"})
+    key = {"params": p, "source": plan.source.id, "resolution": plan.resolution}
+    return hashlib.sha1(json.dumps(key, sort_keys=True).encode()).hexdigest()[:16]
+
+
+def _open_run(plan: Plan) -> Dict:
+    """The run folder of a tiled search: an unfinished one of the same search (whose tile
+    size is then used again, so its finished tiles fit), or a new one."""
+    key = _search_hash(plan)
+    for path in sorted(glob.glob(os.path.join(plan.paths.runs, "*", "progress.json")), reverse=True):
+        with open(path, encoding="utf-8") as f:
+            state = json.load(f)
+        if state.get("status") == "running" and state.get("search") == key:
+            folder = os.path.dirname(path)
+            if state["tile_core"] != plan.tile_core:
+                plan.tile_core = state["tile_core"]
+                plan.tiles = _tiles(plan.grid, plan.params, plan.resolution, plan.source.grid_origin, plan.tile_core)
+            done = len(glob.glob(os.path.join(folder, "tiles", "*.pkl.gz")))
+            plan.emit("info", f"Resuming run {os.path.basename(folder)}: {done} of {len(plan.tiles)} tiles done")
+            return {"id": os.path.basename(folder), "path": folder, "name": state["name"],
+                    "created": datetime.fromisoformat(state["created"]), "search": key,
+                    "tile_core": state["tile_core"]}
+    created = datetime.now()
+    name = _run_name(plan)
+    run = rn.new_run(plan.paths.runs, name, created)
+    run.update(name=name, created=created, search=key, tile_core=plan.tile_core)
+    _progress(run, "running")
+    return run
+
+
+def _progress(run: Dict, status: str):
+    """progress.json of a tiled run: its state while running (run.json is written at the end)."""
+    with open(os.path.join(run["path"], "progress.json"), "w", encoding="utf-8") as f:
+        json.dump({"status": status, "search": run["search"], "tile_core": run["tile_core"],
+                   "name": run["name"], "created": run["created"].isoformat()}, f)
+
+
+def search_lines(plan: Plan) -> Tuple[Lines, Optional[Dict]]:
+    """Steps 1-4 for one grid or, for a large area, tile by tile (resumable).
+
+    Returns the lines and, for a tiled search, its run (to be completed by save_run).
+    """
+    if not plan.tiles:
+        return find_lines(plan, prepare_data(plan)), None
+    run = _open_run(plan)
+    folder = os.path.join(run["path"], "tiles")
+    os.makedirs(folder, exist_ok=True)
+    results = []
+    for k, (core, tile) in enumerate(plan.tiles):
+        path = os.path.join(folder, f"{k}.pkl.gz")
+        if not os.path.exists(path):
+            plan.emit("info", f"\n--- Tile {k + 1} of {len(plan.tiles)} ({tile.width} x {tile.height} px) ---")
+            work = os.path.join(plan.paths.work, f"tile{k}")
+            os.makedirs(work, exist_ok=True)
+            tile_plan = dataclasses.replace(plan, grid=tile, paths=Paths(plan.paths.data, work), tiles=None)
+            data = prepare_data(tile_plan)
+            found = _lines(tile_plan, data, core)
+            del data
+            gc.collect()  # close the memory-mapped grids before deleting them (Windows)
+            shutil.rmtree(work, ignore_errors=True)
+            with gzip.open(path + ".part", "wb") as f:
+                pickle.dump(found, f)
+            os.replace(path + ".part", path)
+        with gzip.open(path, "rb") as f:
+            results += pickle.load(f)
+    if not results:
+        raise SearchError("No lines found matching elevation requirements.")
+    return Lines(results, mp.group_lines(results, plan.group_distance, plan.params.group_by)), run
+
+
+def _merged_data() -> List[Dict]:
+    """src.used_data with the entries of several tiles merged per layer."""
+    merged: Dict[tuple, Dict] = {}
+    for entry in src.used_data:
+        key = (entry.get("layer"), entry.get("folder"), entry.get("file"))
+        if key not in merged:
+            merged[key] = json.loads(json.dumps(entry))
+            continue
+        m = merged[key]
+        if "files" in entry:
+            m["files"] += entry["files"]  # files shared by tiles are counted once per tile
+        for k, pick in (("oldest", min), ("newest", max)):
+            values = [v for v in (m.get("fetched", {}).get(k), entry.get("fetched", {}).get(k)) if v]
+            if values:
+                m.setdefault("fetched", {})[k] = pick(values)
+        if entry.get("survey_years") and m.get("survey_years"):
+            m["survey_years"] = [min(m["survey_years"][0], entry["survey_years"][0]),
+                                 max(m["survey_years"][1], entry["survey_years"][1])]
+    return list(merged.values())
+
+
+def save_run(plan: Plan, lines: Lines, confirm: Optional[Confirm] = None, run: Optional[Dict] = None) -> Result:
+    """Step 5: save the run (results, parameters, data used), the orthophoto tiles and the map.
+
+    run: the run folder of a tiled search (search_lines); otherwise a new one is made.
+    """
     p, emit = plan.params, plan.emit
     results, spot_groups = lines.results, lines.spot_groups
     confirm = confirm or (lambda kind, text: True)
     emit("info", "\nStep 5: Saving the run and displaying results on map...")
     center_lat, center_lon = plan.area.center
     x, y = plan.center_xy
-    created = datetime.now()
-    name = p.name or rn.place_name(center_lat, center_lon, plan.paths.cache) or f"{center_lat:.5f}, {center_lon:.5f}"
-    run = rn.new_run(plan.paths.runs, name, created)
+    if run is None:
+        created = datetime.now()
+        name = _run_name(plan)
+        run = rn.new_run(plan.paths.runs, name, created)
+    else:
+        created, name = run["created"], run["name"]
+    circle = isinstance(plan.area, ar.Circle)
     meta = {
         "id": run["id"],
         "name": name,
@@ -318,8 +537,10 @@ def save_run(plan: Plan, lines: Lines, confirm: Optional[Confirm] = None) -> Res
         "center": {"lat": center_lat, "lon": center_lon, "x": x, "y": y, "crs": plan.crs},
         "area": plan.area.describe(),
         "source": {"id": plan.source.id, "name": plan.source.name, "description": plan.source.description},
-        "data": src.used_data,  # folders, files and fetch times of the data used
-        "params": {"radius": p.radius, "resolution": plan.resolution,
+        "data": _merged_data(),  # folders, files and fetch times of the data used
+        "params": {"radius": p.radius if circle else None,
+                   "area": None if circle else {"area": p.area, "buffer": p.buffer, "within": p.within},
+                   "resolution": plan.resolution,
                    "min_length": p.min_length, "max_length": p.max_length,
                    "max_anchor_diff": p.max_anchor_diff,
                    "max_anchor_diff_m": p.max_anchor_diff_m,
@@ -334,7 +555,15 @@ def save_run(plan: Plan, lines: Lines, confirm: Optional[Confirm] = None) -> Res
     }
     meta["description"] = rn.params_summary(meta)
     rn.save_results(run["path"], spot_groups, meta)
+    if "search" in run:
+        _progress(run, "done")
     emit("info", f"Run \"{name}\" saved to {os.path.abspath(run['path'])}")
+    if not circle:
+        # Large areas: only the group representatives carry a profile in the map
+        representatives = {id(g["rep"]) for g in spot_groups}
+        for r in results:
+            if id(r) not in representatives:
+                r["profile"] = None
 
     map_path = None
     if not p.no_html:
@@ -342,7 +571,7 @@ def save_run(plan: Plan, lines: Lines, confirm: Optional[Confirm] = None) -> Res
         ortho_cache = None
         if source.ortho and p.ortho != "never":
             # Detailed orthophoto only around one line per group (variants lie within the strip)
-            spots = [g["rep"] for g in spot_groups]
+            spots = [g["rep"] for g in spot_groups][:None if circle else p.ortho_detail]
             ortho_folder = ortho.cache_folder(plan.paths.cache, source.ortho)
             tiles = ortho.missing_tiles(ortho.tiles_to_cache(spots, plan.area), ortho_folder)
             minutes = len(tiles) * ORTHO_SECONDS_PER_TILE / 60
@@ -367,4 +596,5 @@ def run_search(params: SearchParams, paths: Paths, on_event: Optional[OnEvent] =
     estimate = estimate_search(plan)
     if estimate.reasons and confirm and not confirm("expensive", "\n".join(estimate.reasons)):
         raise SearchError("Stopped.")
-    return save_run(plan, find_lines(plan, prepare_data(plan)), confirm)
+    lines, run = search_lines(plan)
+    return save_run(plan, lines, confirm, run)

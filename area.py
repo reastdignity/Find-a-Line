@@ -110,4 +110,101 @@ class Polygon(Area):
         return self.geometry
 
     def describe(self) -> Dict:
-        return {"type": "polygon", "geometry": mapping(self.geometry)}
+        return {"type": "polygon", "spec": getattr(self, "spec", None), "geometry": mapping(self.geometry)}
+
+
+def _metric(geometry) -> str:
+    """A local metric CRS (UTM) for a WGS84 geometry."""
+    from grid import utm_crs
+    c = geometry.centroid
+    return utm_crs(c.y, c.x)
+
+
+def region(text: str, cache_dir: str):
+    """A WGS84 polygon from "osm:<name>" (Nominatim) or "S,W,N,E" (a box in degrees)."""
+    from shapely.geometry import box, shape
+    import osm
+    if text.startswith("osm:"):
+        found = osm.search(text[4:].strip(), cache_dir)
+        geometry = found and shape(found["geojson"])
+        if not geometry or geometry.geom_type not in ("Polygon", "MultiPolygon"):
+            raise ValueError(f"{text}: no area of that name in OpenStreetMap")
+        return geometry
+    try:
+        south, west, north, east = (float(v) for v in text.split(","))
+    except ValueError:
+        raise ValueError(f"{text!r}: expected osm:<name> or S,W,N,E")
+    return box(west, south, east, north)
+
+
+def _buffered(geometries, metres: float, within=None):
+    """Union of the geometries grown by `metres`, clipped to `within` (all WGS84)."""
+    from shapely.ops import unary_union
+    if not geometries:
+        raise ValueError("nothing found to build the area from")
+    union = unary_union(geometries)
+    crs = _metric(within if within is not None else union)
+    grown = project(union, "EPSG:4326", crs).buffer(metres)
+    if within is not None:
+        grown = grown.intersection(project(within, "EPSG:4326", crs))
+    if grown.is_empty:
+        raise ValueError("the area is empty")
+    return project(grown, crs, "EPSG:4326")
+
+
+def _read_file(path: str) -> list:
+    """Geometries (WGS84) of every layer of a GeoJSON, KML, GPX... file."""
+    import geopandas as gpd
+    import pyogrio
+    geometries = []
+    for name, _ in pyogrio.list_layers(path):
+        frame = gpd.read_file(path, layer=name)
+        if len(frame) and frame.crs is not None:
+            frame = frame.to_crs("EPSG:4326")
+        geometries += [g for g in frame.geometry if g is not None and not g.is_empty]
+    return geometries
+
+
+def from_spec(spec: str, buffer: float, within: str, cache_dir: str) -> "Polygon":
+    """The search area of --area (with --buffer and --within):
+    coast    land and sea within `buffer` of the OSM coastline, inside `within`
+    cliffs   within `buffer` of OSM cliffs (natural=cliff) and crags (climbing=crag), inside `within`
+    <file>   polygons of a GeoJSON/KML/GPX file as they are, points and lines grown by `buffer`
+    osm:<name>  the area of a named OpenStreetMap object (Nominatim)
+    """
+    import os
+    import osm
+    limit = region(within, cache_dir) if within else None
+    if spec in ("coast", "cliffs"):
+        if limit is None:
+            raise ValueError(f"--area {spec} needs --within (osm:<name> or S,W,N,E)")
+        theme = "coastline" if spec == "coast" else "cliff"
+        features = osm.theme(theme, *limit.bounds, cache_dir)
+        geometry = _buffered([f["geometry"] for f in features], buffer, limit)
+    elif spec.startswith("osm:"):
+        geometry = region(spec, cache_dir)
+        if limit is not None:
+            geometry = geometry.intersection(limit)
+    elif os.path.exists(spec):
+        shapes = _read_file(spec)
+        areas = [g for g in shapes if g.geom_type in ("Polygon", "MultiPolygon")]
+        others = [g for g in shapes if g.geom_type not in ("Polygon", "MultiPolygon")]
+        parts = areas + ([_buffered(others, buffer)] if others else [])
+        from shapely.ops import unary_union
+        geometry = unary_union(parts) if parts else None
+        if geometry is None or geometry.is_empty:
+            raise ValueError(f"{spec}: no geometries")
+        if limit is not None:
+            geometry = geometry.intersection(limit)
+    else:
+        raise ValueError(f"--area {spec!r}: expected coast, cliffs, osm:<name> or an existing file")
+    if geometry.is_empty:
+        raise ValueError(f"--area {spec}: the area is empty")
+    area = Polygon(geometry)
+    area.spec = {"area": spec, "buffer": buffer, "within": within}
+    return area
+
+
+def size_km2(geometry) -> float:
+    """Area of a WGS84 geometry in km²."""
+    return project(geometry, "EPSG:4326", _metric(geometry)).area / 1e6

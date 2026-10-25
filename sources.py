@@ -204,9 +204,19 @@ class WcsTiles(Layer):
         left, bottom, right, top = transform_bounds(grid.crs, self.crs, *grid.bounds)
         # Tiles hold the data where the service puts it, i.e. before the shift correction
         cx, cy, radius = (left + right) / 2 - self.shift[0], (bottom + top) / 2 - self.shift[1], (right - left) / 2
+        shape = None
+        if grid.area_shape is not None:
+            from area import project
+            from shapely.affinity import translate
+            shape = translate(project(grid.area_shape, grid.crs, self.crs), -self.shift[0], -self.shift[1])
         tiles = []
         for i in range(math.floor((cx - radius) / size), math.floor((cx + radius) / size) + 1):
             for j in range(math.floor((cy - radius) / size), math.floor((cy + radius) / size) + 1):
+                if shape is not None:  # any area: the tiles under its outline
+                    from shapely.geometry import box
+                    if shape.intersects(box(i * size, j * size, (i + 1) * size, (j + 1) * size)):
+                        tiles.append((res, i, j))
+                    continue
                 dx = max(i * size - cx, 0, cx - (i + 1) * size)  # nearest point of the tile
                 dy = max(j * size - cy, 0, cy - (j + 1) * size)
                 if dx * dx + dy * dy <= radius * radius:
@@ -421,6 +431,12 @@ class SheetTiles(Layer):
         """The newest sheet per godło over the grid, newest first."""
         west, south, east, north = transform_bounds(grid.crs, "EPSG:4326", *grid.bounds)
         g_left, g_bottom, g_right, g_top = transform_bounds(grid.crs, "EPSG:2180", *grid.bounds)
+        shape = None
+        if grid.area_shape is not None:
+            from area import project
+            from shapely.geometry import box
+            shape = project(grid.area_shape, grid.crs, "EPSG:2180").intersection(
+                box(g_left, g_bottom, g_right, g_top))
         top = self.folder.split("/")[0]
         newest: Dict[str, Sheet] = {}
         for lat, lon in osm.tiles(west, south, east, north):
@@ -433,6 +449,8 @@ class SheetTiles(Layer):
             for item in listed:
                 left, bottom, right, top_ = item["extent"]
                 if not (left < g_right and right > g_left and bottom < g_top and top_ > g_bottom):
+                    continue
+                if shape is not None and not shape.intersects(box(left, bottom, right, top_)):
                     continue
                 url = item["url"]
                 sheet = Sheet(item["year"], re.sub(r"(\.[a-z]+)+$", "", url.rsplit("/", 1)[-1], flags=re.I),
@@ -661,7 +679,7 @@ def _malta(year: int, note: str = "") -> Source:
     layer = lambda kind, desc: WcsTiles(
         f"{desc} Malta {year}", f"{MALTA}/{kind}_1m_{year}/ows", f"{kind}_1m_{year}", crs,
         f"malta/{kind}/{year}", native_res=1.0 if year == 2012 else 0.15, fetch_res=1.0, axes=("E", "N"),
-        shift=MALTA_2012_SHIFT if year == 2012 else (0.0, 0.0))
+        shift=MALTA_2012_SHIFT if year == 2012 else (0.0, 0.0), bytes_per_px=0.8)  # measured: ~3 MB per tile
     return Source(
         id="malta" if year == 2018 else f"malta{year}", name=f"Malta {year} (MSDI)",
         description=f"Malta Planning Authority LiDAR {year}, DTM and DSM 1 m",

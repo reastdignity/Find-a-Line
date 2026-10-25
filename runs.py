@@ -157,7 +157,13 @@ def list_runs(runs_dir: str) -> List[Dict]:
 def params_summary(meta: Dict) -> str:
     p = meta["params"]
     nmpt = f"NMPT {p['nmpt']}" if p["nmpt"] else "no NMPT"
-    text = (f"radius {p['radius']:g} m, {p['resolution']:g} m grid, slope ≥{p['slope_threshold']:g}°, "
+    if p.get("area"):
+        a = p["area"]
+        where = f"area {a['area']}" + (f" ±{a['buffer']:g} m" if a["area"] in ("coast", "cliffs") else "") \
+            + (f" within {a['within']}" if a.get("within") else "")
+    else:
+        where = f"radius {p['radius']:g} m"
+    text = (f"{where}, {p['resolution']:g} m grid, slope ≥{p['slope_threshold']:g}°, "
             f"{p['min_length']:g}–{p['max_length']:g} m, {nmpt}")
     if "source" in meta:
         text = f"{meta['source']['name']}, {text}"

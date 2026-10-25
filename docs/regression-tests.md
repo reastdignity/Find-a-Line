@@ -43,6 +43,7 @@ Baseline: 2026-10-23, commit `26c02a3`; open anchors and checked pairs from the 
 | R11 | Meteora, Greece: Europe-wide FABDEM + Copernicus, 30 m | `--lat 39.7217 --lon 21.6306 --radius 2000 --min-length 60` | 257 | 257 / 887 | 451 / 82 | grouping distance 60 m |
 | R12 | Meteora with NASADEM (needs `OPENTOPOGRAPHY_API_KEY`) | R11 + `--source nasadem` | 433 | 433 / 2 137 | 930 / 159 |  |
 | R13 | Quick smoke test, Kasprowy Wierch (~15 s with cache) | `--northing 152074 --easting 571448 --radius 500 --resolution 5 --slope-threshold 50 --min-length 50 --max-length 400` | 2 796 | 2 396 / 8 628 | 562 / 138 | `Filled 0.03 km² ... from FABDEM + Copernicus DEM`; PL-1992 input; the filled gaps are on the Slovak side; with `--cache` on an empty folder it also tests the geoportal sheet download (index WFS, ASCII grid sheets, NMPT at 0.5 m) |
+| R14 | R1's circle as a polygon file, computed in tiles of 600 m: same lines as R1 | `--area tests/data/r1_circle.geojson --tile-size 600` | 7 558 | 1 100 / 13 358 | 1 262 / 104 | anchors, open anchors and checked pairs are those of the first tile; must equal R1 in lines and spots |
 <!-- regression-table:end -->
 
 Suggested sets:

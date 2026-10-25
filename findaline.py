@@ -54,7 +54,7 @@ def confirmer(assume_yes: bool):
             print("\nThis run looks expensive:")
             for reason in text.splitlines():
                 print(f"  - {reason}")
-            print("Consider a smaller --radius or a coarser --resolution.")
+            print("Consider a smaller --radius or area, or a coarser --resolution.")
             if assume_yes:
                 return True
             if not ask("Continue? [y/N] "):
@@ -101,10 +101,9 @@ def main(params: pm.SearchParams, options: pm.CliOptions, paths: search.Paths):
         estimate = search.estimate_search(plan)
         if estimate.reasons:
             confirm("expensive", "\n".join(estimate.reasons))
-        data = search.prepare_data(plan)
-        lines = search.find_lines(plan, data)
+        lines, run = search.search_lines(plan)
         groups = print_lines(lines, plan.group_distance, params.group_by, options.all_lines)
-        result = search.save_run(plan, lines, confirm)
+        result = search.save_run(plan, lines, confirm, run)
     except search.SearchError as e:
         sys.exit(str(e))
 

@@ -132,12 +132,23 @@ The search centre can be given in either of two coordinate systems:
 - **WGS84** (`--lat`, `--lon`), as shown in Google Maps or a GPS. Example: `--lat 49.2320 --lon 19.9817`
 - **PL-1992 / EPSG:2180** (`--northing`, `--easting`), in metres. Note that geoportal.gov.pl labels the northing as **X** and the easting as **Y**. Example: `--northing 152074 --easting 571448`
 
+Instead of a circle, `--area` searches any area; both anchors of a line lie inside it, while the webbing may leave it (e.g. over a bay):
+- `--area coast --buffer 100 --within osm:"Gozo"`: within 100 m of the OpenStreetMap coastline, inside the named area (or a box: `--within S,W,N,E`);
+- `--area cliffs --buffer 50 --within 50.14,19.73,50.18,19.78`: within 50 m of OSM cliffs (`natural=cliff`) and crags (`climbing=crag`);
+- `--area my-area.geojson` (or KML, GPX): polygons as they are, points and lines grown by `--buffer`;
+- `--area osm:"Ojcowski Park Narodowy"`: a named OpenStreetMap area (Nominatim).
+
+The script shows the size of the area, the number of tiles and the download before it starts, and asks to go on (`--yes` skips the question). Large areas are computed tile by tile (`--tile-size`, by default as large as a quarter of the free memory allows); every finished tile is saved, so running the same command again after an interruption carries on where it stopped. In the map of an area only the line shown for each group has a terrain profile, and detailed aerial photos are kept for the best `--ortho-detail` groups (50); `lines.csv` and `lines.geojson` hold every line.
+
 Several places at once: give `--point LAT,LON` (WGS84) once per place, optionally with a name for the run, `--point LAT,LON,NAME`. They are searched one after another with the same options, and each is saved as its own run. Example: `--point 50.15595,19.75627,"Żabi Koń" --point 50.17332,19.74092`
 
 ### Options
 | Option | Default | Description |
 | --- | --- | --- |
 | `--point` | | `LAT,LON[,NAME]`: search around this point; repeat for several places (one run each) |
+| `--area` / `--buffer` / `--within` | – / 100 / – | Search an area instead of a circle: `coast`, `cliffs`, a GeoJSON/KML/GPX file or `osm:<name>`; `--buffer` around coastline, cliffs, points and lines; `--within osm:<name>` or `S,W,N,E` limits it (needed for `coast` and `cliffs`) |
+| `--tile-size` | from the free memory | Side of the square tiles a large area is computed in, metres |
+| `--ortho-detail` | 50 | For an area: detailed orthophoto only around this many best groups |
 | `--source` | `auto` | Data source: `auto`, `geoportal`, `malta`, `malta2012`, `spain`, `spain_canarias`, `europe`, `nasadem`, `files` (see *Data sources*) |
 | `--elevation-file` / `--surface-file` | | Your own terrain / surface raster (GeoTIFF, ASC...) |
 | `--water` | `fill` | Fill the sea and lakes where the data has none (`off` to skip) |

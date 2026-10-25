@@ -19,7 +19,8 @@ from pydantic_core import PydanticUndefined
 import sources as src
 
 GROUPS = {
-    "centre": "search centre (give --point, possibly several times, or --lat/--lon, or --northing/--easting)",
+    "centre": "where to search: a circle around --point (possibly several times), --lat/--lon or "
+              "--northing/--easting, or an area (--area)",
     "data": "elevation data",
     "search": "search",
     "rigging": "clearance model (the sag estimator is also shown in the profile of the map)",
@@ -48,6 +49,14 @@ class SearchParams(BaseModel):
                                       "centre")
     easting: Optional[float] = field(None, "PL-1992 (EPSG:2180) easting in metres; geoportal shows it as Y",
                                      "centre")
+    area: Optional[str] = field(None, "search an area instead of a circle: 'coast' (within --buffer of the OSM "
+                                      "coastline), 'cliffs' (within --buffer of OSM cliffs and crags), a GeoJSON/"
+                                      "KML/GPX file (polygons as they are, points and lines grown by --buffer) or "
+                                      "osm:<name> (a named OpenStreetMap area); both anchors of a line lie inside, "
+                                      "the webbing may leave it", "centre")
+    buffer: float = field(100, "metres around the coastline, cliffs, points or lines of --area", "centre")
+    within: Optional[str] = field(None, "limit --area to osm:<name> or a box S,W,N,E in degrees (needed for "
+                                        "coast and cliffs)", "centre")
 
     # Elevation data
     source: str = field("auto", "data source; 'auto' picks the national source for the country of "
@@ -90,6 +99,9 @@ class SearchParams(BaseModel):
                 "'reject' drops them, 'off' skips the check (and the NMPT download)", "search")
     threads: Optional[int] = field(None, "number of threads for the line search (default: CPU count - 1)",
                                    "search")
+    tile_size: Optional[float] = field(None, "large areas are computed in square tiles of this size in metres "
+                                             "(plus an overlap of --max-length); default: from the free memory",
+                                       "search")
 
     # Clearance model
     model: Literal["formula", "sag"] = field("formula", "'formula': maximum elevation formula (see README); "
@@ -113,6 +125,8 @@ class SearchParams(BaseModel):
     ortho: Literal["auto", "always", "never"] = field(
         "auto", "orthophoto tiles for offline use of the map: 'auto' asks when they would take longer than "
                 "30 min (--yes downloads), 'always', or 'never' (the map loads them online)", "output")
+    ortho_detail: int = field(50, "for --area: detailed orthophoto (up to zoom 21) only around this many best "
+                                  "groups; the others load it online", "output")
 
     @property
     def nmpt_mode(self) -> Optional[str]:
@@ -123,7 +137,10 @@ class SearchParams(BaseModel):
     def check(self):
         wgs84 = self.lat is not None or self.lon is not None
         pl1992 = self.northing is not None or self.easting is not None
-        if wgs84 == pl1992:
+        if self.area is not None:
+            if wgs84 or pl1992:
+                raise ValueError("give either --area or a search centre, not both")
+        elif wgs84 == pl1992:
             raise ValueError("give the search centre as either --lat/--lon or --northing/--easting")
         if wgs84 and (self.lat is None or self.lon is None):
             raise ValueError("both --lat and --lon are required")
@@ -142,6 +159,12 @@ class SearchParams(BaseModel):
             raise ValueError("--min-length must be positive and smaller than --max-length")
         if self.radius <= 0:
             raise ValueError("--radius must be positive")
+        if self.buffer <= 0:
+            raise ValueError("--buffer must be positive")
+        if self.tile_size is not None and self.tile_size < 100:
+            raise ValueError("--tile-size must be at least 100 m")
+        if self.within and self.area is None:
+            raise ValueError("--within limits --area; give --area too")
         if self.shore_buffer < 0:
             raise ValueError("--shore-buffer cannot be negative")
         if self.group_distance is not None and self.group_distance <= 0:
@@ -232,8 +255,9 @@ def parse_cli(argv=None, description: str = "") -> tuple:
         common = given(SearchParams)
         if not options.point:
             return [SearchParams(**common)], options
-        if any(k in common for k in ("lat", "lon", "northing", "easting")):
-            raise ValueError("give the search centre as either --point or --lat/--lon or --northing/--easting")
+        if any(k in common for k in ("lat", "lon", "northing", "easting", "area")):
+            raise ValueError("give the search centre as either --point or --lat/--lon or --northing/--easting, "
+                             "or an --area")
         if "name" in common and len(options.point) > 1:
             raise ValueError("--name is for a single point; give each point its name: --point LAT,LON,NAME")
         return [SearchParams(**{**common, **_point(text)}) for text in options.point], options

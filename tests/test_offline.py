@@ -7,6 +7,7 @@
 
 import csv
 import glob
+import json
 import os
 import re
 import subprocess
@@ -89,6 +90,26 @@ def test_zabi_kon_clip(tmp_path):
     assert "[Download]" not in output  # nothing fetched (and requests would fail anyway)
 
 
+def _lines(rows):
+    return {tuple(sorted([(r["anchor1_easting"], r["anchor1_northing"]), (r["anchor2_easting"], r["anchor2_northing"])]))
+            for r in rows}
+
+
+def test_area_in_tiles(tmp_path):
+    """An area computed in tiles gives exactly the lines of one grid."""
+    square = {"type": "Polygon", "coordinates": [[[19.7522, 50.1546], [19.7590, 50.1546], [19.7590, 50.1580],
+                                                  [19.7522, 50.1580], [19.7522, 50.1546]]]}
+    path = tmp_path / "square.geojson"
+    path.write_text(json.dumps({"type": "Feature", "properties": {}, "geometry": square}))
+    common = ["--elevation-file", os.path.join(DATA, "zabi_kon_nmt.tif"), "--area", str(path),
+              "--max-length", "150"]
+    one_out, one = run_search(tmp_path / "one", *common)
+    tiled_out, tiled = run_search(tmp_path / "tiled", *common, "--tile-size", "150")
+    assert "one grid" in one_out and "tiles)" in tiled_out
+    assert one and _lines(one) == _lines(tiled)
+    assert len(glob.glob(str(tmp_path / "tiled" / "runs" / "*" / "tiles" / "*.pkl.gz"))) > 1
+
+
 def test_two_points(tmp_path):
     """Two --point searches in one call: one run each, with its own name and data record."""
     env = {**os.environ, **OFFLINE_ENV}
@@ -100,7 +121,6 @@ def test_two_points(tmp_path):
     assert result.returncode == 0, result.stdout + result.stderr
     runs = sorted(glob.glob(str(tmp_path / "runs" / "*" / "run.json")))
     assert len(runs) == 2, result.stdout
-    import json
     metas = [json.load(open(path, encoding="utf-8")) for path in runs]
     assert {m["name"] for m in metas} == {"West", "East"}
     assert all(len(m["data"]) == 1 for m in metas)  # each run records only its own data

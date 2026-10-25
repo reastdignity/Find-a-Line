@@ -94,6 +94,33 @@ def theme(name: str, west: float, south: float, east: float, north: float, cache
     return list(found.values())
 
 
+SEARCH_URL = "https://nominatim.openstreetmap.org/search"
+
+
+def search(name: str, cache_dir: str) -> Dict:
+    """The best Nominatim match for a name, with its outline ("geojson"); {} if none. Cached."""
+    path = os.path.join(cache_dir, "osm", "nominatim.sqlite")
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with sqlite3.connect(path, timeout=60) as db:
+        db.execute("CREATE TABLE IF NOT EXISTS search (query TEXT PRIMARY KEY, answer TEXT, fetched_at TEXT)")
+        row = db.execute("SELECT answer FROM search WHERE query = ?", (name,)).fetchone()
+    db.close()
+    if row:
+        return json.loads(row[0])
+    response = requests.get(SEARCH_URL, headers=HEADERS, timeout=30,
+                            params={"q": name, "format": "jsonv2", "polygon_geojson": 1, "limit": 5})
+    response.raise_for_status()
+    time.sleep(1)  # Nominatim usage policy: at most one request per second
+    # The first match with an area (a peak or a bus stop is a point)
+    answer = next((r for r in response.json()
+                   if r.get("geojson", {}).get("type") in ("Polygon", "MultiPolygon")), {})
+    with sqlite3.connect(path, timeout=60) as db:
+        db.execute("INSERT OR REPLACE INTO search VALUES (?, ?, ?)",
+                   (name, json.dumps(answer), datetime.now(timezone.utc).isoformat(timespec="seconds")))
+    db.close()
+    return answer
+
+
 def reverse(lat: float, lon: float, cache_dir: str, **params) -> Dict:
     """Nominatim reverse geocoding, cached per point (to 1e-5°) and parameters."""
     query = {"lat": round(lat, 5), "lon": round(lon, 5), "format": "jsonv2", **params}

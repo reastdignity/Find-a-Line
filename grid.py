@@ -7,7 +7,7 @@ line search works in pixels of a known size in metres.
 
 import math
 from dataclasses import dataclass
-from typing import Tuple
+from typing import Optional, Tuple
 
 import numpy as np
 from rasterio.transform import from_origin
@@ -28,6 +28,9 @@ class Grid:
     height: int
     width: int
     crs: str
+    # Outline of a search area other than a circle (shapely, grid CRS): data tiles are
+    # picked under it instead of under the circle inscribed in the grid
+    area_shape: Optional[object] = None
 
     @property
     def transform(self):
