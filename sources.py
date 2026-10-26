@@ -1027,6 +1027,12 @@ SWISSTOPO_STAC = "https://data.geo.admin.ch/api/stac/v1"
 SWISSIMAGE = OrthoService("SWISSIMAGE (swisstopo)", None, "", "switzerland/ortho/live", "© swisstopo",
                           base_url="https://wmts.geo.admin.ch/1.0.0/ch.swisstopo.swissimage/default/current"
                                    "/3857/{z}/{x}/{y}.jpeg", base_max_zoom=20, detail=20)
+# Our own copy of ÚGKK SR's national ALS models (tools/sk_tiles.py): only the local mirror
+# (FINDALINE_MIRROR) for now; the Hugging Face base goes here once the tiles are uploaded
+SLOVAK_TILES: List[str] = []
+ZBGIS_ORTHO = OrthoService("Orthophoto ZBGIS (ÚGKK SR)",
+                           "https://zbgisws.skgeodesy.sk/zbgis_ortofoto_wms/service.svc/get", "1",
+                           "slovakia/ortho/live", "© ÚGKK SR")
 FABDEM = "https://huggingface.co/buckets/links-ads/fabdem/resolve/tiles"
 COPERNICUS = "https://copernicus-dem-30m.s3.amazonaws.com"
 
@@ -1127,6 +1133,18 @@ SOURCES: Dict[str, Source] = {s.id: s for s in [
                        sizes={0.5: 17e6}),
         countries=("ch", "li"), crs="EPSG:2056", ortho=SWISSIMAGE,
         note="Data © swisstopo."),
+    Source(
+        id="slovakia", name="ÚGKK SR (DMR 5.0 / DMP 1.0)",
+        description="ÚGKK SR (Slovakia): ALS 2017-2023, DMR 5.0 terrain and DMP 1.0 surface, 1 m, "
+                    "S-JTSK [JTSK03] / Bpv",
+        # Published only as one ZIP of 155-200 GB per model: our own 2 km tiles of them
+        # (tools/sk_tiles.py), on the national grid, pixel edges on whole metres
+        nmt=GridTiles("DMR 5.0 (terrain)", [f"{base}/dmr5/1m" for base in SLOVAK_TILES], "EPSG:8353",
+                      "slovakia/dmr5/5.0/epsg8353-1m-2km", 2000, 1.0, 5e6, mirror="slovakia/dmr5/1m"),
+        nmpt=GridTiles("DMP 1.0 (trees, buildings)", [f"{base}/dmp1/1m" for base in SLOVAK_TILES], "EPSG:8353",
+                       "slovakia/dmp1/1.0/epsg8353-1m-2km", 2000, 1.0, 5e6, mirror="slovakia/dmp1/1m"),
+        countries=("sk",), crs="EPSG:8353", ortho=ZBGIS_ORTHO,
+        note="Data © ÚGKK SR, CC BY 4.0 (laser scanning 2017-2023)."),
     _malta(2018, note="Malta 2018 heights are published in whole metres, which makes slopes and "
                       "clearances coarser; --source malta2012 has centimetre precision but gaps "
                       "along the coast (filled from 2018)."),
@@ -1188,12 +1206,27 @@ def choose_source(name: str, lat: float, lon: float, cache_dir: str, elevation_f
         source.default_resolution = float(round(native)) if native >= 5 else max(MIN_RESOLUTION, round(native, 1))
         return source, "--elevation-file given"
     if name != "auto":
+        why = source_unavailable(SOURCES[name])
+        if why:
+            raise ValueError(why)
         return SOURCES[name], f"--source {name}"
     code = country_code(lat, lon, cache_dir)
     for source in SOURCES.values():
         if code and code in source.countries and source.covers(lat, lon):
+            why = source_unavailable(source)
+            if why:  # e.g. our own Slovak tiles without a copy set up
+                return SOURCES["europe"], f"the centre is in {code.upper()}, but {why}"
             return source, f"the centre is in {code.upper()}"
     return SOURCES["europe"], f"no national source for {code.upper() if code else 'this place'}"
+
+
+def source_unavailable(source: Source) -> Optional[str]:
+    """Why a source cannot be used here, or None."""
+    for layer in (source.nmt, source.nmpt):
+        why = layer.unavailable() if layer else None
+        if why:
+            return why
+    return None
 
 
 # What the layers prepared in this process came from (Layer.used), saved with the run

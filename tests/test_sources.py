@@ -202,6 +202,21 @@ def test_slovak_tiles_from_the_local_mirror(tmp_path, monkeypatch):
         layer.download_tile(tile, str(tmp_path / "damaged.tif"))
 
 
+
+def test_slovakia_chosen_only_with_its_tiles(tmp_path, monkeypatch):
+    """--source auto picks Slovakia only when a copy of the tiles is set up, else the Europe-wide model."""
+    monkeypatch.setattr(src, "country_code", lambda lat, lon, cache_dir: "sk")
+    monkeypatch.delenv(src.MIRROR_ENV, raising=False)
+    source, reason = src.choose_source("auto", 49.17, 18.58, str(tmp_path))
+    assert source.id == "europe" and "FINDALINE_MIRROR" in reason
+    with pytest.raises(ValueError, match="FINDALINE_MIRROR"):
+        src.choose_source("slovakia", 49.17, 18.58, str(tmp_path))
+    for product in ("dmr5", "dmp1"):
+        (tmp_path / "mirror" / "slovakia" / product / "1m").mkdir(parents=True)
+    monkeypatch.setenv(src.MIRROR_ENV, str(tmp_path / "mirror"))
+    source, reason = src.choose_source("auto", 49.17, 18.58, str(tmp_path))
+    assert source.id == "slovakia" and source.default_resolution == 1.0 and source.crs == "EPSG:8353"
+
 def _stac_tile(east, north, res, year, tile_m=100):
     """A COG of one STAC tile like swisstopo's: float32, -9999 as nodata, heights telling the year apart."""
     size = round(tile_m / res)

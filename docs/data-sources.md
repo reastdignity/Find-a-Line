@@ -32,6 +32,7 @@ Rules of thumb:
 - Ask for the native resolution and downsample locally (`fetch_res`); never trust server-side downsampling without checking the share of valid pixels at 5 m.
 - Clip requests to the coverage extent; a `missing` tile at the edge of the data is suspicious (Malta's north coast of Gozo was lost this way).
 - Compressed archives (ZIP Deflate/Deflate64) cannot be read in parts; a TIFF inside may still be tiled, so after one extraction it reads fast. Python's `zipfile` cannot read Deflate64: use 7-Zip.
+- Huge ZIPs: read the central directory with range requests first (the end of the file, then the ZIP64 record): the compression method of each member (8 = Deflate: GDAL `/vsizip/` reads it; 9 = Deflate64: it does not, extract with 7-Zip) and the sizes inside. Read a member in order (full-width bands from the top): a backward seek in a Deflate stream decompresses it again from an earlier point.
 - For own hosting: COG tiles of 1 km in the source grid, LERC_ZSTD with `MAX_Z_ERROR=0.005` (5 mm) was the smallest and fastest (Slovak DSM 0.5 m: 5.5 MB per km², 0.2 s per tile); a JSON index with checksums; attribution and licence file next to the data.
 
 ## 3. Quick tests before writing code

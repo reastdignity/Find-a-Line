@@ -62,8 +62,8 @@ class SearchParams(BaseModel):
 
     # Elevation data
     source: str = field("auto", "data source; 'auto' picks the national source for the country of "
-                                "the centre (Poland, Malta, Spain, Switzerland) or the Europe-wide model "
-                                "elsewhere", "data",
+                                "the centre (Poland, Malta, Spain, Switzerland, Slovakia when its tiles are "
+                                "set up) or the Europe-wide model elsewhere", "data",
                         choices=SOURCE_CHOICES)
     elevation_file: Optional[str] = field(None, "your own terrain model (GeoTIFF/ASC, e.g. NASADEM from "
                                                 "OpenTopography); implies --source files", "data", cli_only=True)
