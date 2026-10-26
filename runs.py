@@ -120,30 +120,47 @@ def _rows(groups: List[Dict]):
             }
 
 
-def save_results(run_path: str, groups: List[Dict], meta: Dict, on_file=lambda name: None):
-    """Write lines.csv, lines.geojson and run.json for a run; on_file(name) after each."""
-    rows = list(_rows(groups))
+LINES_CHUNK = 10_000  # lines written between two progress updates
+
+
+def save_results(run_path: str, groups: List[Dict], meta: Dict, on_lines=lambda n, file: None):
+    """Write lines.csv, lines.geojson and run.json for a run.
+
+    on_lines(n, file) reports progress: three passes over the lines (the rows, lines.csv,
+    lines.geojson), then run.json with n=0.
+    """
+    rows = []
+    for row in _rows(groups):
+        rows.append(row)
+        if len(rows) % LINES_CHUNK == 0:
+            on_lines(LINES_CHUNK, "lines.csv")
+    on_lines(len(rows) % LINES_CHUNK, "lines.csv")
     with open(os.path.join(run_path, "lines.csv"), "w", newline="", encoding="utf-8-sig") as f:
         writer = csv.DictWriter(f, fieldnames=FIELDS)
         writer.writeheader()
-        writer.writerows(rows)
-    on_file("lines.csv")
+        for start in range(0, len(rows), LINES_CHUNK):
+            writer.writerows(rows[start:start + LINES_CHUNK])
+            on_lines(len(rows[start:start + LINES_CHUNK]), "lines.csv")
 
-    features = [{
-        "type": "Feature",
-        "geometry": {"type": "LineString",
-                     "coordinates": [[row["anchor1_lon"], row["anchor1_lat"]],
-                                     [row["anchor2_lon"], row["anchor2_lat"]]]},
-        "properties": row,
-    } for row in rows]
+    # The same text as json.dump of the whole collection, written in chunks of features
+    encoder = json.JSONEncoder(ensure_ascii=False)
     with open(os.path.join(run_path, "lines.geojson"), "w", encoding="utf-8") as f:
-        json.dump({"type": "FeatureCollection", "features": features, "findaline": meta},
-                  f, ensure_ascii=False)
-    on_file("lines.geojson")
+        f.write('{"type": "FeatureCollection", "features": [')
+        for start in range(0, len(rows), LINES_CHUNK):
+            features = [{
+                "type": "Feature",
+                "geometry": {"type": "LineString",
+                             "coordinates": [[row["anchor1_lon"], row["anchor1_lat"]],
+                                             [row["anchor2_lon"], row["anchor2_lat"]]]},
+                "properties": row,
+            } for row in rows[start:start + LINES_CHUNK]]
+            f.write((", " if start else "") + encoder.encode(features)[1:-1])
+            on_lines(len(features), "lines.geojson")
+        f.write('], "findaline": ' + encoder.encode(meta) + "}")
 
     with open(os.path.join(run_path, "run.json"), "w", encoding="utf-8") as f:
         json.dump(meta, f, ensure_ascii=False, indent=2)
-    on_file("run.json")
+    on_lines(0, "run.json")
 
 
 def list_runs(runs_dir: str) -> List[Dict]:

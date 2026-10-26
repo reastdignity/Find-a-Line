@@ -522,6 +522,44 @@ def _progress(run: Dict, status: str):
                    "name": run["name"], "created": run["created"].isoformat()}, f)
 
 
+TILE_CHUNK = 100_000  # lines per pickle in a tile file (one progress update each)
+
+
+def _save_tile(path: str, lines: List[Dict]):
+    """A finished tile's lines: their number, then pickles of TILE_CHUNK lines, gzipped.
+
+    Level 1: level 9 took 23 times as long for 21% less (the floats hardly compress),
+    11 minutes for a tile of 12.5 million lines.
+    """
+    progress.compute.start("saving tile lines", len(lines), unit="line")
+    with gzip.open(path + ".part", "wb", compresslevel=1) as f:
+        pickle.dump(len(lines), f, pickle.HIGHEST_PROTOCOL)
+        for start in range(0, len(lines), TILE_CHUNK):
+            chunk = lines[start:start + TILE_CHUNK]
+            pickle.dump(chunk, f, pickle.HIGHEST_PROTOCOL)
+            progress.compute.update(len(chunk))
+    os.replace(path + ".part", path)
+    progress.compute.finish()
+
+
+def _load_tile(path: str) -> List[Dict]:
+    """The lines of a tile saved by _save_tile."""
+    lines = []
+    with gzip.open(path, "rb") as f:
+        total = pickle.load(f)
+        shown = total > TILE_CHUNK  # small tiles load at once: no bar for each
+        if shown:
+            progress.compute.start("loading tile lines", total, unit="line")
+        while len(lines) < total:
+            chunk = pickle.load(f)
+            lines += chunk
+            if shown:
+                progress.compute.update(len(chunk))
+    if shown:
+        progress.compute.finish()
+    return lines
+
+
 def search_lines(plan: Plan) -> Tuple[Lines, Optional[Dict]]:
     """Steps 1-4 for one grid or, for a large area, tile by tile (resumable).
 
@@ -548,11 +586,11 @@ def search_lines(plan: Plan) -> Tuple[Lines, Optional[Dict]]:
             del data
             gc.collect()  # close the memory-mapped grids before deleting them (Windows)
             shutil.rmtree(work, ignore_errors=True)
-            with gzip.open(path + ".part", "wb") as f:
-                pickle.dump(found, f)
-            os.replace(path + ".part", path)
-        with gzip.open(path, "rb") as f:
-            results += pickle.load(f)
+            progress.set_step(f"{tile_plan.tile_label}Step 4/{STEPS}: saving the tile's lines")
+            _save_tile(path, found)
+            del found
+        progress.set_step(f"Step 4/{STEPS}: loading tile {k + 1}/{len(plan.tiles)}")
+        results += _load_tile(path)
     if not results:
         raise SearchError("No lines found matching elevation requirements.")
     progress.set_step(f"Step 4/{STEPS}: groups of all tiles")
@@ -647,8 +685,11 @@ def save_run(plan: Plan, lines: Lines, confirm: Optional[Confirm] = None, run: O
                     "clear_spots": sum(not g["rep"]["over_obstacles"] for g in spot_groups)},
     }
     meta["description"] = rn.params_summary(meta)
-    progress.compute.start("saving results", 3, unit="file")
-    rn.save_results(run["path"], spot_groups, meta, on_file=lambda name: progress.compute.update(1, file=name))
+    def on_lines(n: int, file: str):
+        progress.compute.update(n, file=file)
+
+    progress.compute.start("saving results", 3 * len(results), unit="line")  # three passes, see save_results
+    rn.save_results(run["path"], spot_groups, meta, on_lines)
     progress.compute.finish()
     if "search" in run:
         _progress(run, "done")
@@ -683,10 +724,9 @@ def save_run(plan: Plan, lines: Lines, confirm: Optional[Confirm] = None, run: O
                 tiles = []
             ortho.download(source.ortho, tiles, ortho_folder, plan.paths.cache)
             ortho_cache = ortho_folder
-        progress.compute.start("saving the map", 2, unit="file")
+        progress.compute.start("saving the map", 3 * len(results), unit="line")  # three passes, see save_map
         map_path = mp.save_map(results, plan.area, run["path"], plan.paths.runs, meta, plan.crs, plan.group_distance,
-                               p.group_by, ortho_cache, source.ortho, p.model, plan.rigging,
-                               on_file=lambda name: progress.compute.update(1, file=name))
+                               p.group_by, ortho_cache, source.ortho, p.model, plan.rigging, on_lines)
         progress.compute.finish()
     rn.write_index(plan.paths.runs)
     progress.set_step("")

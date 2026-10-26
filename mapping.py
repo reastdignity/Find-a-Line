@@ -203,18 +203,32 @@ MAP_HTML = """<!doctype html>
 """
 
 
-def _write_js(path: str, target: str, value):
-    """A script that assigns a value (pages opened from disk cannot fetch JSON)."""
+LINES_CHUNK = 10_000  # lines written between two progress updates
+
+
+def _write_js(path: str, target: str, value: Dict, on_lines=lambda n, file: None):
+    """A script that assigns a value (pages opened from disk cannot fetch JSON).
+
+    value["lines"], its last key, is written in chunks with on_lines(n, file) after each;
+    the text is the same as json.dump of the whole value.
+    """
+    assert list(value)[-1] == "lines"
+    lines, name = value["lines"], os.path.basename(path)
+    encoder = json.JSONEncoder(separators=(",", ":"))
+    head = encoder.encode({k: v for k, v in value.items() if k != "lines"})
     with open(path, "w", encoding="utf-8") as f:
-        f.write(f"{target} = ")
-        json.dump(value, f, separators=(",", ":"))
-        f.write(";\n")
+        f.write(f"{target} = {head[:-1]},\"lines\":[")
+        for start in range(0, len(lines), LINES_CHUNK):
+            chunk = lines[start:start + LINES_CHUNK]
+            f.write(("," if start else "") + encoder.encode(chunk)[1:-1])
+            on_lines(len(chunk), name)
+        f.write("]};\n")
 
 
 def save_map(results: List[Dict], area, run_path: str, runs_dir: str, run: Dict, crs: str,
              group_distance: float = 20, group_by: str = "clearance", ortho_cache: Optional[str] = None,
              ortho_service=None, model: str = "formula", rigging: Optional[Rigging] = None,
-             on_file=lambda name: None) -> str:
+             on_lines=lambda n, file: None) -> str:
     """Save the interactive map of a run: map.html, data.js and lines.js in its folder.
 
     The map is the viewer (viewer/src, TypeScript), the same bundle for every run in
@@ -224,17 +238,22 @@ def save_map(results: List[Dict], area, run_path: str, runs_dir: str, run: Dict,
     (window.FINDALINE_LINES[id]). Lines are grouped in the
     browser like group_lines. Orthophoto tiles are read from ortho_cache (a
     {z}/{x}/{y}.jpg folder) when present there, and from the WMS of ortho_service
-    (a sources.OrthoService) otherwise. Returns the path of map.html.
+    (a sources.OrthoService) otherwise. on_lines(n, file) reports progress: three passes
+    over the lines (the rows, data.js, lines.js). Returns the path of map.html.
     """
     install_viewer(runs_dir)
     path = os.path.join(run_path, "map.html")
     # Values used for grouping are not rounded, so the browser groups exactly like group_lines()
-    rows = [[round(r["anchor1"][0], 7), round(r["anchor1"][1], 7),
-             round(r["anchor2"][0], 7), round(r["anchor2"][1], 7),
-             *r["a1_xy"], *r["a2_xy"], r["length"], r["clearance"],
-             None if r["clearance_nmpt"] is None else round(r["clearance_nmpt"], 2),
-             round(r["elev_a1"], 2), round(r["elev_a2"], 2), r["over_obstacles"],
-             round(r.get("water_m", 0.0), 1), round(r.get("filled_m", 0.0), 1)] for r in results]
+    rows = []
+    for start in range(0, len(results), LINES_CHUNK):
+        chunk = results[start:start + LINES_CHUNK]
+        rows += [[round(r["anchor1"][0], 7), round(r["anchor1"][1], 7),
+                  round(r["anchor2"][0], 7), round(r["anchor2"][1], 7),
+                  *r["a1_xy"], *r["a2_xy"], r["length"], r["clearance"],
+                  None if r["clearance_nmpt"] is None else round(r["clearance_nmpt"], 2),
+                  round(r["elev_a1"], 2), round(r["elev_a2"], 2), r["over_obstacles"],
+                  round(r.get("water_m", 0.0), 1), round(r.get("filled_m", 0.0), 1)] for r in chunk]
+        on_lines(len(chunk), "data.js")
     data = {
         "run": {"id": run["id"], "name": run["name"], "created": run["created"],
                 "description": run.get("description", "")},
@@ -252,12 +271,10 @@ def save_map(results: List[Dict], area, run_path: str, runs_dir: str, run: Dict,
         "slope": SLOPE, "leash_fall": LEASH_FALL, "max_zoom": MAX_ZOOM,
         "lines": [row + [r.get("profile")] for row, r in zip(rows, results)],
     }
-    _write_js(os.path.join(run_path, "data.js"), "window.FINDALINE_RUN", data)
-    on_file("data.js")
+    _write_js(os.path.join(run_path, "data.js"), "window.FINDALINE_RUN", data, on_lines)
     _write_js(os.path.join(run_path, "lines.js"),
               f"(window.FINDALINE_LINES = window.FINDALINE_LINES || {{}})[{json.dumps(run['id'])}]",
-              {"crs": crs, "area": data["area"], "lines": rows})
-    on_file("lines.js")
+              {"crs": crs, "area": data["area"], "lines": rows}, on_lines)
     with open(path, "w", encoding="utf-8") as f:
         f.write(MAP_HTML.format(title=html.escape(run["name"]), viewer=VIEWER_FOLDER))
     return path

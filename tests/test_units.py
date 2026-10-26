@@ -199,3 +199,43 @@ def test_coast_within_osm_keeps_islets_and_the_sea_side(monkeypatch):
     assert len(area.notes) == 1 and "1 piece(s)" in area.notes[0]  # ...with a note; 4 km away: nothing
     clipped = ar.from_spec("coast", 100, f"0,0,{1000 * m},{1000 * m}", "unused", reach=1000)
     assert not clipped.geometry.contains(Point(1050 * m, 500 * m))  # a box clips the band
+
+
+def _fake_lines(n):
+    return [{"anchor1": (50 + k / 1e4, 19.1234567), "anchor2": (50.0001, 19 + k / 1e4), "a1_xy": (k * 0.5, 1.0),
+             "a2_xy": (2.0, k / 3), "length": 100 + k / 7, "clearance": k / 3, "clearance_nmpt": None if k % 2 else k / 9,
+             "over_obstacles": bool(k % 3), "elev_a1": 400 + k / 11, "elev_a2": 410.0, "water_m": 0.0, "filled_m": k / 13,
+             "profile": None} for k in range(n)]
+
+
+def test_chunked_writes_match_one_dump(tmp_path, monkeypatch):
+    """Results, the map data and tile files written in chunks: the same text, the same lines."""
+    import json
+    import mapping as mp
+    import runs as rn
+    import search
+    lines = _fake_lines(10)
+    groups = [{"rep": lines[0], "members": lines[:4]}, {"rep": lines[4], "members": lines[4:]}]
+    meta = {"name": "Żabi Koń", "summary": {"lines": 10}}
+    for chunk, folder in ((3, tmp_path / "small"), (10_000, tmp_path / "one")):
+        monkeypatch.setattr(rn, "LINES_CHUNK", chunk)
+        monkeypatch.setattr(mp, "LINES_CHUNK", chunk)
+        folder.mkdir()
+        counts = []
+        rn.save_results(str(folder), groups, meta, lambda n, file: counts.append(n))
+        assert sum(counts) == 3 * len(lines)
+        value = {"crs": "EPSG:2180", "area": None, "lines": [[k, None, k / 3, "ł"] for k in range(10)]}
+        mp._write_js(str(folder / "lines.js"), "window.X", value)
+        assert (folder / "lines.js").read_text(encoding="utf-8") == \
+            "window.X = " + json.dumps(value, separators=(",", ":")) + ";\n"
+    for name in ("lines.csv", "lines.geojson", "run.json"):
+        assert (tmp_path / "small" / name).read_bytes() == (tmp_path / "one" / name).read_bytes()
+    text = (tmp_path / "small" / "lines.geojson").read_text(encoding="utf-8")
+    assert text == json.dumps(json.loads(text), ensure_ascii=False)
+
+    monkeypatch.setattr(search, "TILE_CHUNK", 3)
+    path = str(tmp_path / "0.pkl.gz")
+    search._save_tile(path, lines)
+    assert search._load_tile(path) == lines
+    search._save_tile(path, [])
+    assert search._load_tile(path) == []
