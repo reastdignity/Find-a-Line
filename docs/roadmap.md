@@ -83,7 +83,7 @@ Rules for every step:
 - Accounts (to be decided: invitations, OAuth, or anonymous with a quota), per-user quotas, admin view of jobs.
 
 ## New data sources
-Researched 2026-10-25 (how: docs/data-sources.md). Order: Slovakia (DSM needs a hosted copy, see below), then Switzerland (done first, 2026-10-26: it needed no hosting); Greece has no usable national source.
+Researched 2026-10-25 (how: docs/data-sources.md). Order: Slovakia (DSM needs a hosted copy, see below), then Switzerland (done first, 2026-10-26: it needed no hosting); Greece has no usable national source. The USA was researched on 2026-10-26 (below); nothing is planned for it yet.
 
 ### Switzerland (swisstopo): sheet-like files from STAC
 - **Data**: swissALTI3D (DTM, 0.5 m and 2 m) and swissSURFACE3D Raster (DSM, 0.5 m), whole country and Liechtenstein; 1 km tiles as COG GeoTIFF float32 (mm), LV95 EPSG:2056 with LN02 heights; pixel edges on whole metres (`grid_origin` 0); about 26 MB (0.5 m) or 1 MB (2 m) per tile. Licence: open government data, commercial use allowed, "© swisstopo" required.
@@ -110,6 +110,73 @@ Researched 2026-10-25 (how: docs/data-sources.md). Order: Slovakia (DSM needs a 
 - The Hellenic Cadastre has a 5 m DEM (2007–09), a 2 m DEM (2014–16) and a 0.8 m DSM of 58 towns, given only to public bodies on request (national security rules). No WCS, download portal or index. A new LiDAR survey (1 m DTM/DSM, about 47% of the country, planned 2024–2025) had no distribution announced.
 - **Decided**: keep FABDEM/Copernicus 30 m; add the Cadastre orthophoto WMS as the map background despite its watermark (`http://gis.ktimanet.gr/wms/wmsopen/wmsserver.aspx`, layer `BASEMAP`, EPSG:4326; EPSG:900913 returns blank images). The ArcGIS tiles behind maps.ktimatologio.gr (no watermark) are not a published service: not used.
 - **To do outside the code**: watch whether the new LiDAR is published (expect sheet files on the EGSA87 grid: the Polish pattern); write to the Cadastre's Geospatial Information Department for the 2 m DEM of chosen places (non-commercial use).
+
+### United States (USGS 3DEP): researched 2026-10-26, not planned yet
+**Summary**
+- **Terrain (DTM): yes, at 1 m.** USGS (3D Elevation Program, 3DEP) publishes free 1 m ground elevation for nearly all of the USA, in the public domain. Each 10 km tile is a file, and a newer survey of the same place is another file. It could be added like the Polish or Swiss data.
+- **Surface (DSM: trees, buildings): no national 1 m model.** The choice is a ready 2 m model from Microsoft's Planetary Computer, or a model computed from the USGS point clouds. The Planetary Computer model covers older surveys only and is missing in places such as Yosemite. Computing our own is exact, but means large downloads and new code.
+- **States** mostly deliver their laser scans to USGS, so the national terrain already holds them. A few states (Utah, Kentucky) also publish a DSM, each in its own format.
+- **Orthophoto**: USGS imagery tiles (NAIP, public domain) are cached up to zoom 16.
+
+Checked at Yosemite (El Capitan), Moab and Boulder (Flatirons) with the TNM API, HTTP range reads and a few image requests. No data was compared with Copernicus yet.
+
+**Terrain (DTM), national: USGS 3DEP.** All 3DEP products are public domain; credit "USGS 3DEP" anyway.
+- *1 m DEM per project* (TNM dataset `Digital Elevation Model (DEM) 1 meter`):
+  - Tiles are 10×10 km in UTM / NAD83 with NAVD88 heights, float32.
+  - Files are `https://prd-tnm.s3.amazonaws.com/StagedProducts/Elevation/1m/Projects/<project>/TIFF/USGS_1M_<zone>_x<E>y<N>_<project>.tif`, 10–285 MB each.
+  - One tile can exist in several projects, that is, surveys: Moab 3, Boulder 2 (2020 and 2023). These are versions, as with the Polish sheets.
+  - Newer files are COGs: GDAL ghost header, 512 px blocks, LZW with the floating-point predictor, overviews. Older ones have their IFD at the end of the file (Yosemite 2019), so range reads need one more request.
+  - The index is the TNM Access API: `https://tnmaccess.nationalmap.gov/api/v1/products?datasets=<name>&bbox=W,S,E,N`. It answers JSON with title, publication date, size, download URL and box.
+- *OPR DEM* (`Original Product Resolution (OPR) Digital Elevation Model (DEM)`, `.../Elevation/OPR/Projects/...`):
+  - Each project's own resolution and tiling: at Yosemite, 1.5 km tiles of about 12 MB.
+  - Smaller files, but the CRS and units differ between projects.
+- *Seamless 1 m DEM (S1M)*, TNM dataset `Seamless 1-m DEM (S1M)`, new in 2025:
+  - 10 km COG tiles in EPSG:6350 with NAVD88 (GEOID18) heights, built from the best 1 m DEMs of each place.
+  - Voids wider than 10 m are filled from the 1/3″ or 1/9″ DEMs. There are no versions to choose between.
+  - "Limited availability": the API returned nothing at any of the three places. To watch.
+- *ImageServer* `https://elevation.nationalmap.gov/arcgis/rest/services/3DEPElevation/ImageServer`:
+  - Best available data, 1 m where it exists, in any CRS, float32 TIFF or LERC, up to 8000×8000 px per request.
+  - `exportImage` of 2×2 km at 1 m in EPSG:26911 took 11.5 s (17 MB).
+  - No version information. Its mosaicking and resampling are not checked. USGS also announced WCS and WMS interfaces for it.
+- *1/3″ (about 10 m) seamless DEM*: all of CONUS, Hawaii and the territories; the natural gap filler instead of FABDEM.
+- *Possible way in*: an `IndexedTiles` layer over the TNM API, with the newest project per tile, so that `cache update` finds newer projects. Window reads of the COGs (range requests) would spare downloading a 250 MB tile for a small circle. The alternative is `WcsTiles`-like requests to the ImageServer. Decide after the data checks.
+
+**Surface (DSM): nothing ready nationally at 1 m.**
+- *Planetary Computer* `3dep-lidar-dsm` (STAC `https://planetarycomputer.microsoft.com/api/stac/v1`):
+  - 2 m COGs made with PDAL from the 3DEP point clouds, noise removed.
+  - The STAC search needs no account. The files (Azure blobs) need a free SAS token from the Planetary Computer API.
+  - Projects of 2012–2022 only. Found at Moab (UT Southern QL1 2018) and Boulder (2013, older than the 2020/2023 terrain). Not found at Yosemite (2019), Smith Rock or New River Gorge.
+  - The items give no CRS or vertical datum.
+  - Related collections: `3dep-lidar-dtm` (SMRF ground) and `3dep-lidar-hag` (height above ground).
+- *Point clouds* (TNM dataset `Lidar Point Cloud (LPC)`):
+  - 1 km LAZ tiles of 200–500 MB at Yosemite and Boulder, wherever the 1 m DTM is.
+  - A DSM would be computed by us: the highest first return per 1 m pixel, noise classes excluded, cached as small tiles with the LAZ deleted.
+  - Costs: a new dependency (laspy + lazrs) and 1–2 GB of downloads for a 1 km circle.
+  - The EPT copy on AWS (`s3://usgs-lidar-public`, Web Mercator, readable by octree node) lags behind: Yosemite 2019 and the Colorado 2023 project are missing.
+- *OpenTopography*: 3DEP point clouds and the 1 m DEM by API. The 1 m DEM is for academic users only. Free keys allow 50 calls per day (200 for academics), and a 1 m request is limited to about 250 km².
+- *Copernicus GLO-30 as the surface over a 1 m DTM*: its 30 m pixels on cliff rims would make obstacles everywhere. Not usable.
+
+**State sources**
+- Most state lidar is flown with 3DEP (state partners) and ends up in the national DTM. States add mainly DSMs and sometimes a finer resolution, each through its own portal and format.
+- Examples:
+  - Utah UGRC: statewide acquisitions 2016–2020 with DTM and first-return DSM at 0.5–1 m; Wasatch Front 2013–14 at 0.5 m in 2 km `.img` tiles.
+  - Washington DNR lidar portal (`lidarportal.dnr.wa.gov`): projects with DTM and DSM, interactive download.
+  - Kentucky KyFromAbove: AWS open data with a STAC API, 2 ft DEM, COPC point clouds, public domain with attribution.
+  - Tennessee (`lidar.tn.gov`): `.img` DEMs and `.zlas` point clouds.
+  - NOAA Digital Coast: coastal lidar and DEMs.
+- A state source would make sense only for a statewide DSM in a ready format (Utah, Kentucky).
+
+**Orthophoto**
+- USGS `https://basemap.nationalmap.gov/arcgis/rest/services/USGSImageryOnly/MapServer/tile/{z}/{y}/{x}`: EPSG:3857, USDA NAIP, public domain. The cached tiles answer up to zoom 16; zoom 18 answered 404.
+- For more detail: NAIP 0.6 m from the USDA ImageServer (exportImage), not checked.
+
+**To check before deciding**
+- Georeferencing and heights against Copernicus (NAVD88 against EGM2008), see docs/regression-tests.md, "Data checks for a new source".
+- ImageServer pixels against a 1 m file.
+- Choosing between the projects of one tile.
+- Range reads of the files that are not COGs.
+- When S1M reaches the climbing areas.
+- How often lines in US places pass over trees or buildings, that is, how much a missing DSM would change the results.
 
 ## Cache layout and updates
 The top level of `cache/` stays one folder per country or per global dataset, so a user can free space by deleting a folder. Everything about that country or dataset, its metadata included, is inside it.
