@@ -107,17 +107,32 @@ def _synthetic_zip(tmp_path):
     return work, band, left, top
 
 
-def test_slovak_tiles_cut_and_downloaded(tmp_path, monkeypatch):
-    """tools/sk_tiles.py cuts a zipped raster into 2 km tiles; GridTiles brings them back onto a grid."""
+def _cut(tmp_path, monkeypatch):
+    """The synthetic raster cut by tools/sk_tiles.py into a mirror folder (<mirror>/slovakia/test/1m)."""
     sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "tools"))
     import sk_tiles
-    import grid as gd
     work, band, left, top = _synthetic_zip(tmp_path)
     monkeypatch.setitem(sk_tiles.PRODUCTS, "test", {"zip": "https://example.org/test.zip", "member": "t.tif",
                                                    "title": "test"})
-    sk_tiles.cut("test", str(work))
-    root = work / "tiles" / "test" / "1m"
-    index = json.load(open(root / "index.json", encoding="utf-8"))
+    mirror = tmp_path / "mirror"
+    sk_tiles.cut("test", str(work), str(mirror / "slovakia"))
+    assert (mirror / "slovakia" / "README.md").exists()   # the dataset card goes with the tiles
+    return mirror, mirror / "slovakia" / "test" / "1m", band, left, top
+
+
+def _expected(band, grid, left, top):
+    c0, r0 = round(grid.left - left), round(top - grid.top)
+    expected = band[r0:r0 + grid.height, c0:c0 + grid.width].astype(np.float64)
+    expected[expected == -9999.0] = np.nan
+    return expected
+
+
+def test_slovak_tiles_cut_and_downloaded(tmp_path, monkeypatch):
+    """tools/sk_tiles.py cuts a zipped raster into 2 km tiles; GridTiles brings them back onto a grid."""
+    import grid as gd
+    _, root, band, left, top = _cut(tmp_path, monkeypatch)
+    with open(root / "index.json", encoding="utf-8") as f:
+        index = json.load(f)
     written = {k: v for k, v in index["tiles"].items() if v}
     assert written and None in index["tiles"].values()    # tiles in the hole on the west have no data
     for key, sha in written.items():
@@ -135,15 +150,56 @@ def test_slovak_tiles_cut_and_downloaded(tmp_path, monkeypatch):
     cache_dir = str(tmp_path / "cache")
     layer.download(grid, cache_dir, None, "test")
     mosaic = src.build_mosaic(layer.files(grid, cache_dir), grid, str(tmp_path / "m.npy"), "test")
-    c0, r0 = round(grid.left - left), round(top - grid.top)
-    expected = band[r0:r0 + grid.height, c0:c0 + grid.width].astype(np.float64)
-    expected[expected == -9999.0] = np.nan
+    expected = _expected(band, grid, left, top)
     both = np.isfinite(expected)
     assert np.array_equal(np.isfinite(mosaic), both)                   # no data stays no data
     assert np.nanmax(np.abs(mosaic[both] - expected[both])) <= 0.005    # LERC: within 5 mm
     # A tile outside the data is recorded as missing, not fetched again
     outside = (math.floor(left / 2000) - 5, math.floor(top / 2000))
     assert layer.download_tile(outside, str(tmp_path / "x.tif")).received == 0
+
+
+def test_slovak_tiles_from_the_local_mirror(tmp_path, monkeypatch):
+    """Before the upload GridTiles copies the tiles from the folder made by tools/sk_tiles.py."""
+    import grid as gd
+    import cache
+    mirror, root, band, left, top = _cut(tmp_path, monkeypatch)
+    monkeypatch.setattr(src, "_get", lambda *a, **k: pytest.fail("no network with a mirror"))
+    layer = src.GridTiles("Test DSM", [], "EPSG:8353", "slovakia/test/1m", 2000, 1.0, 6e6, mirror="slovakia/test/1m")
+    monkeypatch.delenv(src.MIRROR_ENV, raising=False)
+    assert "set FINDALINE_MIRROR" in layer.unavailable()
+    monkeypatch.setenv(src.MIRROR_ENV, str(tmp_path / "elsewhere"))
+    assert "does not exist" in layer.unavailable()
+    monkeypatch.setenv(src.MIRROR_ENV, str(mirror))
+    assert layer.unavailable() is None
+
+    grid = gd.make_grid((left + 500, top - 2800, left + 4600, top - 100), 1.0, "EPSG:8353")
+    cache_dir = str(tmp_path / "cache")
+    layer.download(grid, cache_dir, None, "test")
+    mosaic = src.build_mosaic(layer.files(grid, cache_dir), grid, str(tmp_path / "m.npy"), "test")
+    expected = _expected(band, grid, left, top)
+    both = np.isfinite(expected)
+    assert np.array_equal(np.isfinite(mosaic), both)
+    assert np.nanmax(np.abs(mosaic[both] - expected[both])) <= 0.005
+    assert {cache.state(cache_dir, layer.tile_path(cache_dir, t)) for t in layer.tiles(grid)} == {"ok"}
+    with open(root / "index.json", encoding="utf-8") as f:
+        index = json.load(f)["tiles"]
+    # A tile without data (null in the index) is outside the data, recorded as missing
+    empty = tuple(map(int, next(k for k, v in index.items() if v is None).split("_")))
+    assert layer.download_tile(empty, str(tmp_path / "empty.tif")).received == 0
+    assert not (tmp_path / "empty.tif").exists()
+
+    # A tile not cut yet is an error, never "missing"; a damaged file is refused
+    later = (math.floor(left / 2000), math.floor(top / 2000) + 3)
+    assert f"{later[0]}_{later[1]}" not in index
+    with pytest.raises(RuntimeError, match="not in .* yet"):
+        layer.download_tile(later, str(tmp_path / "later.tif"))
+    key = next(k for k, v in index.items() if v)
+    tile = tuple(map(int, key.split("_")))
+    with open(root / src.grid_tile_name(*tile), "ab") as f:
+        f.write(b"x")
+    with pytest.raises(RuntimeError, match="sha256"):
+        layer.download_tile(tile, str(tmp_path / "damaged.tif"))
 
 
 def _stac_tile(east, north, res, year, tile_m=100):

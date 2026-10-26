@@ -5,18 +5,24 @@ Slovak ALS elevation models as small tiles on Hugging Face (run by hand, not by 
 whole country only as one ZIP each with one huge TIFF inside (about 155–200 GB), which
 cannot be read in parts over the network. This script turns such a TIFF into 2 km COG
 tiles in its own grid (S-JTSK [JTSK03] EPSG:8353, Baltic 1957 heights EPSG:8357) and
-uploads them to a public Hugging Face dataset, from which sources.GridTiles downloads
-the tiles a search needs. Licence CC BY 4.0, author ÚGKK SR (the licence PDF in the ZIPs).
+writes them into a folder laid out as a Hugging Face dataset. Until it is uploaded, that
+folder is a local mirror: sources.GridTiles reads it through FINDALINE_MIRROR (the folder
+above it, see sources.mirror_urls), later it downloads the same tiles from Hugging Face.
+Licence CC BY 4.0, author ÚGKK SR (the licence PDF in the ZIPs).
 
-    python tools/sk_tiles.py download dmp1 --work \\\\nas\\share\\sk     # the ZIP (resumable)
-    python tools/sk_tiles.py cut dmp1 --work \\\\nas\\share\\sk          # tiles + index (resumable)
-    python tools/sk_tiles.py upload dmp1 --work \\\\nas\\share\\sk --repo user/name   # needs HF_TOKEN
+    python tools/sk_tiles.py download dmp1 --zips C:\\sk-zips                    # the ZIP (resumable)
+    python tools/sk_tiles.py cut dmp1 --zips C:\\sk-zips --out C:\\mirror\\slovakia  # tiles + index (resumable)
+    python tools/sk_tiles.py upload dmp1 --out C:\\mirror\\slovakia --repo user/name  # needs HF_TOKEN
+
+--work DIR stands for both --zips DIR and --out DIR/tiles.
 
 Layout in the dataset: <product>/1m/<block>/<E>_<N>.tif, where E, N are the tile's lower
 left corner in km divided by 2 (E = floor(x / 2000)) and <block> groups 10 x 10 tiles
 (E // 10, N // 10) so no folder holds more than 100 files; <product>/1m/index.json lists
-the tiles with their sha256. The TIFF is read straight from the ZIP (GDAL /vsizip/),
-2 km rows at a time from the top, so the ZIP is read mostly forwards and never unpacked.
+the tiles with their sha256 (None: no data there). The TIFF is read straight from the ZIP
+(GDAL /vsizip/; the national ZIPs are plain Deflate), in 2 km bands of the full width from
+the top, so the ZIP is read forwards only and never unpacked: a backward seek in a Deflate
+stream decompresses it again from an earlier point.
 Encoding: LERC_ZSTD with a maximum error of 5 mm (5.5 MB per km² at 0.5 m in the trial
 on lot 04, against 9.4 MB lossless; the surveys are accurate to centimetres).
 """
@@ -29,6 +35,7 @@ import math
 import os
 import sys
 import time
+from typing import Optional
 
 import numpy as np
 import rasterio as rio
@@ -48,8 +55,10 @@ PRODUCTS = {
 }
 TILE_M = 2000
 BLOCK = 10          # tiles per folder side
-CHUNK = 25          # tiles read at once along a row (50 km: 400 MB of float32)
 MAX_Z_ERROR = 0.005  # metres
+# GDAL's block cache keeps the TIFF blocks a band shares with the previous one (a block
+# row of the whole country is a few hundred MB), so they are not read from the ZIP again
+CACHE_MB = 4096
 HEADERS = {"User-Agent": "Find-a-Line/1.0 (highline finder; tiles for a public mirror)"}
 
 
@@ -62,10 +71,10 @@ def tile_name(i: int, j: int) -> str:
     return grid_tile_name(i, j, BLOCK)
 
 
-def download(product: str, work: str):
-    """Download the ZIP into the work folder, resuming a partial file."""
+def download(product: str, zips: str):
+    """Download the ZIP into the folder zips, resuming a partial file."""
     url = PRODUCTS[product]["zip"]
-    path = os.path.join(work, os.path.basename(url))
+    path = os.path.join(zips, os.path.basename(url))
     total = int(requests.head(url, headers=HEADERS, timeout=60).headers["Content-Length"])
     done = os.path.getsize(path) if os.path.exists(path) else 0
     if done == total:
@@ -103,15 +112,19 @@ def _sha256(path: str) -> str:
     return digest.hexdigest()
 
 
-def cut(product: str, work: str):
-    """Cut the TIFF inside the ZIP into 2 km tiles (skips tiles already written)."""
+def cut(product: str, zips: str, root: str, rows_limit: Optional[int] = None):
+    """Cut the TIFF inside the ZIP into 2 km tiles under root (skips rows already written;
+    rows_limit stops after that many rows, for a timing trial)."""
     spec = PRODUCTS[product]
-    source = f"/vsizip/{os.path.join(work, os.path.basename(spec['zip']))}/{spec['member']}"
-    out = os.path.join(work, "tiles", tile_folder(product))
+    source = f"/vsizip/{os.path.join(zips, os.path.basename(spec['zip']))}/{spec['member']}"
+    out = os.path.join(root, tile_folder(product))
     index_path = os.path.join(out, "index.json")
-    index = json.load(open(index_path, encoding="utf-8")) if os.path.exists(index_path) else {"tiles": {}}
+    index = {"tiles": {}}
+    if os.path.exists(index_path):
+        with open(index_path, encoding="utf-8") as f:
+            index = json.load(f)
     start = time.time()
-    with rio.open(source) as src:
+    with rio.Env(GDAL_CACHEMAX=CACHE_MB), rio.open(source) as src:
         res = src.res[0]
         assert abs(res - 1.0) < 1e-9, f"expected 1 m, got {res}"
         left, bottom, right, top = src.bounds
@@ -120,27 +133,34 @@ def cut(product: str, work: str):
         nodata = src.nodata
         rows = range(math.ceil(top / TILE_M) - 1, math.floor(bottom / TILE_M) - 1, -1)  # from the top
         cols = range(math.floor(left / TILE_M), math.ceil(right / TILE_M))
-        print(f"{source}: {src.width} x {src.height} px, nodata {nodata}, {len(rows)} x {len(cols)} tiles", flush=True)
+        print(f"{source}: {src.width} x {src.height} px, blocks {src.block_shapes[0]}, nodata {nodata}, "
+              f"{len(rows)} x {len(cols)} tiles", flush=True)
         for n, j in enumerate(rows):
-            # A 2 km row of the raster, 50 km at a time from the left (mostly forwards in the ZIP)
+            if rows_limit is not None and n >= rows_limit:
+                break
+            todo = [i for i in cols if f"{i}_{j}" not in index["tiles"]]
+            if not todo:
+                continue
+            # A 2 km band of the full width: the ZIP is read forwards only
+            # (rasterio's boundless reads go through a warped VRT: the window is clipped here instead)
             row0 = round(top - (j + 1) * TILE_M)
-            for group in [cols[k:k + CHUNK] for k in range(0, len(cols), CHUNK)]:
-                todo = [i for i in group if f"{i}_{j}" not in index["tiles"]]
-                if not todo:
+            c0 = round((cols[0] * TILE_M - left) / res)
+            band = np.full((TILE_M, len(cols) * TILE_M), np.nan, dtype=np.float32)
+            r_in, c_in = max(row0, 0), max(c0, 0)
+            r_end, c_end = min(row0 + TILE_M, src.height), min(c0 + len(cols) * TILE_M, src.width)
+            part = src.read(1, window=Window(c_in, r_in, c_end - c_in, r_end - r_in), masked=True)
+            band[r_in - row0:r_end - row0, c_in - c0:c_end - c0] = part.astype(np.float32).filled(np.nan)
+            del part
+            for i in todo:
+                tile = np.ascontiguousarray(band[:, (i - cols[0]) * TILE_M:(i - cols[0] + 1) * TILE_M])
+                if not np.isfinite(tile).any():
+                    index["tiles"][f"{i}_{j}"] = None  # no data: not uploaded
                     continue
-                c0 = round((group[0] * TILE_M - left) / res)
-                width = len(group) * TILE_M
-                part = src.read(1, window=Window(c0, row0, width, TILE_M), boundless=True, fill_value=nodata,
-                                masked=True).astype(np.float32).filled(np.nan)
-                for i in todo:
-                    tile = np.ascontiguousarray(part[:, (i - group[0]) * TILE_M:(i - group[0] + 1) * TILE_M])
-                    if not np.isfinite(tile).any():
-                        index["tiles"][f"{i}_{j}"] = None  # no data: not uploaded
-                        continue
-                    path = os.path.join(out, tile_name(i, j))
-                    os.makedirs(os.path.dirname(path), exist_ok=True)
-                    _write(path, tile, src.crs, from_origin(i * TILE_M, (j + 1) * TILE_M, res, res))
-                    index["tiles"][f"{i}_{j}"] = _sha256(path)
+                path = os.path.join(out, tile_name(i, j))
+                os.makedirs(os.path.dirname(path), exist_ok=True)
+                _write(path, tile, src.crs, from_origin(i * TILE_M, (j + 1) * TILE_M, res, res))
+                index["tiles"][f"{i}_{j}"] = _sha256(path)
+            del band
             index.update(product=product, title=spec["title"], source=spec["zip"], crs="EPSG:8353",
                          heights="EPSG:8357 (Baltic 1957)", tile_m=TILE_M, resolution=res, block=BLOCK,
                          encoding=f"COG LERC_ZSTD, max_z_error {MAX_Z_ERROR} m", licence="CC-BY-4.0",
@@ -152,6 +172,7 @@ def cut(product: str, work: str):
             done = sum(v is not None for v in index["tiles"].values())
             print(f"  row {n + 1}/{len(rows)}: {done} tiles with data, {(time.time() - start) / 60:.0f} min",
                   flush=True)
+    write_card(root)
     print(f"done: {sum(v is not None for v in index['tiles'].values())} tiles in {(time.time() - start) / 60:.0f} min")
 
 
@@ -178,17 +199,25 @@ with its sha256. Made for Find-a-Line (a highline finder); not endorsed by ÚGKK
 """
 
 
-def upload(product: str, work: str, repo: str):
-    """Upload the tiles and the index (resumable; needs a write token in HF_TOKEN)."""
+def write_card(root: str):
+    """The dataset card (README.md) next to the product folders: the licence and attribution
+    travel with the tiles, in the local mirror as on Hugging Face."""
+    with open(os.path.join(root, "README.md"), "w", encoding="utf-8") as f:
+        f.write(CARD)
+
+
+def upload(product: str, root: str, repo: str):
+    """Upload the tiles and the index (resumable; needs a write token in HF_TOKEN).
+
+    To a dataset repository, as decided in the roadmap; a Storage Bucket (like FABDEM's)
+    is still open: then only the destination of this call changes, not the layout."""
     from huggingface_hub import HfApi
     token = os.environ.get("HF_TOKEN")
     if not token:
         sys.exit("Set HF_TOKEN to a Hugging Face token with write access")
     api = HfApi(token=token)
     api.create_repo(repo, repo_type="dataset", exist_ok=True)
-    root = os.path.join(work, "tiles")
-    with open(os.path.join(root, "README.md"), "w", encoding="utf-8") as f:
-        f.write(CARD)
+    write_card(root)
     # With hf_xet (installed with huggingface_hub 2.x) a large folder goes in several commits,
     # and running the same call again resumes it
     api.upload_folder(repo_id=repo, repo_type="dataset", folder_path=root,
@@ -201,18 +230,27 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("step", choices=["download", "cut", "upload"])
     parser.add_argument("product", choices=list(PRODUCTS))
-    parser.add_argument("--work", required=True, help="working folder (ZIP and tiles; e.g. a NAS share)")
+    parser.add_argument("--zips", help="folder of the ZIPs (download, cut)")
+    parser.add_argument("--out", help="folder of the tiles, laid out as the dataset (cut, upload)")
+    parser.add_argument("--work", help="the same as --zips WORK --out WORK/tiles")
+    parser.add_argument("--rows", type=int, help="cut: stop after this many rows (a timing trial)")
     parser.add_argument("--repo", help="Hugging Face dataset, user/name (upload)")
     args = parser.parse_args()
-    os.makedirs(args.work, exist_ok=True)
+    zips = args.zips or args.work
+    out = args.out or (os.path.join(args.work, "tiles") if args.work else None)
+    if args.step in ("download", "cut") and not zips:
+        sys.exit("--zips (or --work) is needed")
+    if args.step in ("cut", "upload") and not out:
+        sys.exit("--out (or --work) is needed")
     if args.step == "download":
-        download(args.product, args.work)
+        os.makedirs(zips, exist_ok=True)
+        download(args.product, zips)
     elif args.step == "cut":
-        cut(args.product, args.work)
+        cut(args.product, zips, out, args.rows)
     else:
         if not args.repo:
             sys.exit("--repo user/name is needed for the upload")
-        upload(args.product, args.work, args.repo)
+        upload(args.product, out, args.repo)
 
 
 if __name__ == "__main__":
