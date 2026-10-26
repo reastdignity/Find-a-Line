@@ -10,7 +10,8 @@ Kinds of layers:
 - WcsTiles: square tiles from an OGC WCS 2.0 service on a fixed grid in the
   service's coordinate system (Malta, IGN Spain).
 - IndexedTiles: files found through an index, newest survey per sheet or tile:
-  SheetTiles (map sheets from a WFS sheet index, geoportal.gov.pl).
+  SheetTiles (map sheets from a WFS sheet index, geoportal.gov.pl) and StacTiles
+  (tiles of a STAC collection, swisstopo).
 - DegreeTiles: 1°×1° GeoTIFF tiles in WGS84 (Copernicus DEM, FABDEM) and
   OpenTopography's global DEM API (NASADEM).
 - FileLayer: a local raster file (GeoTIFF, ASC...), e.g. NASADEM from OpenTopography.
@@ -20,10 +21,12 @@ Malta entries) and its country code to `countries`; see README, "Data sources".
 """
 
 import glob
+import hashlib
 import io
 import json
 import math
 import os
+import random
 import re
 import threading
 import time
@@ -66,8 +69,13 @@ def _get(url: str, params=None, timeout: int = 300, binary_types=("image", "octe
             return response
         except (requests.RequestException, RuntimeError) as e:
             last_error = e
-            time.sleep(2 ** attempt)
+            _sleep(attempt)
     raise RuntimeError(str(last_error))
+
+
+def _sleep(attempt: int):
+    """Exponential backoff with jitter (swisstopo's fair use asks for it), 0.5-1.5 times 2^attempt s."""
+    time.sleep(2 ** attempt * (0.5 + random.random()))
 
 
 def _part(path: str) -> str:
@@ -479,6 +487,7 @@ class Sheet:
     url: str
     crs: str
     res: float
+    sha256: Optional[str] = None  # of the file, when the index gives it
 
 
 class IndexedTiles(Layer):
@@ -746,6 +755,104 @@ class SheetTiles(IndexedTiles):
         return Fetched.of(response, tile.url)
 
 
+class StacTiles(IndexedTiles):
+    """Square tiles of a STAC collection, one item per tile and survey year (swisstopo).
+
+    An item (`<product>_<year>_<E>-<N>`, E and N in km) holds the tile as a
+    cloud-optimized GeoTIFF at one or more resolutions (swissALTI3D: 0.5 and 2 m): the
+    coarsest one not coarser than the working grid is used, cached in
+    <folder>/<res>m/<year>_<E>-<N>.tif as published. Every file is checked against the
+    sha256 of its item (file:checksum). The index answers (items per 0.25° tile) are
+    cached and updated like a sheet index, so a newer survey of a tile replaces the
+    older one.
+    """
+
+    def __init__(self, description: str, api: str, collection: str, folder: str, crs: str,
+                 sizes: Dict[float, float], tile_m: float = 1000):
+        """sizes: bytes per tile of every resolution used."""
+        super().__init__(description, f"{api}/collections/{collection}/items", collection, folder,
+                         native_res=min(sizes), bytes_per_tile=max(sizes.values()))
+        self.index_crs, self.crs, self.sizes, self.tile_m = crs, crs, sizes, tile_m
+
+    def _fetch_tile(self, lat: float, lon: float, path: str):
+        sheets = []
+        url = self.index_url
+        params = {"bbox": f"{lon},{lat},{lon + osm.TILE_DEG},{lat + osm.TILE_DEG}", "limit": 100}
+        while url:  # pages of 100 items
+            response = requests.get(url, params=params, timeout=120, headers=HEADERS)
+            response.raise_for_status()
+            page = response.json()
+            for item in page["features"]:
+                name = re.search(r"_(\d{4})_(\d+)-(\d+)$", item["id"])
+                if not name:
+                    continue
+                year, east, north = int(name.group(1)), int(name.group(2)), int(name.group(3))
+                for asset in item["assets"].values():
+                    res = float(asset.get("gsd") or 0)
+                    if "tiff" not in asset.get("type", "") or res not in self.sizes:
+                        continue
+                    checksum = asset.get("file:checksum", "").lower()
+                    sheets.append({"year": year, "godlo": f"{east}-{north}", "url": asset["href"],
+                                   "crs": self.crs, "res": res,
+                                   "sha256": checksum[4:] if checksum.startswith("1220") else None,
+                                   "extent": [east * self.tile_m, north * self.tile_m,
+                                              (east + 1) * self.tile_m, (north + 1) * self.tile_m]})
+            url = next((link["href"] for link in page.get("links", []) if link.get("rel") == "next"), None)
+            params = None  # the next link carries them
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        tmp = _part(path)
+        with open(tmp, "w", encoding="utf-8") as out:
+            json.dump({"sheets": sheets}, out)
+        os.replace(tmp, path)
+
+    def _sheet(self, item: Dict) -> Sheet:
+        # One godło per tile and resolution: the newest survey and pruning work per resolution
+        return Sheet(item["year"], item["godlo"], f"{item['godlo']}/{item['res']:g}m", item["url"],
+                     item["crs"], item["res"], item.get("sha256"))
+
+    def res_for(self, grid: Grid) -> float:
+        """The resolution used for a grid: the coarsest one not coarser than the grid."""
+        fitting = [r for r in self.sizes if r <= grid.res + 1e-6]
+        return max(fitting) if fitting else min(self.sizes)
+
+    def _wanted(self, sheet: Sheet, grid: Grid) -> bool:
+        return sheet.res == self.res_for(grid)
+
+    def _cached_files(self, grid: Grid, cache_dir: str) -> Tuple[List[str], float]:
+        res = self.res_for(grid)
+        return glob.glob(os.path.join(cache_dir, self.folder, f"{res:g}m", "*.tif")), res
+
+    def tile_path(self, cache_dir: str, tile) -> str:
+        return os.path.join(cache_dir, self.folder, f"{tile.res:g}m", f"{tile.year}_{tile.name}.tif")
+
+    def estimate(self, grid: Grid, cache_dir: str, update: Optional[str]) -> Tuple[int, int, float]:
+        self._use(cache_dir, update)
+        if self.tiles(grid) is None:
+            return super().estimate(grid, cache_dir, update)
+        missing = self.missing(grid, cache_dir, update)
+        return len(self.tiles(grid)), len(missing), sum(self.sizes[t.res] for t in missing) / 1e6
+
+    def download_tile(self, tile, path: str) -> Fetched:
+        for attempt in range(RETRIES):
+            try:
+                response = _get(tile.url, binary_types=("tiff", "octet"))
+            except RuntimeError as e:
+                raise RuntimeError(f"Could not download {self.description} tile {tile.godlo} ({tile.year}): {e}")
+            if response is None:
+                return Fetched(0, tile.url)
+            if not tile.sha256 or hashlib.sha256(response.content).hexdigest() == tile.sha256:
+                break
+            _sleep(attempt)
+        else:
+            raise RuntimeError(f"{self.description} tile {tile.godlo} ({tile.year}): wrong checksum")
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        tmp = _part(path)
+        with open(tmp, "wb") as f:
+            f.write(response.content)
+        os.replace(tmp, path)
+        return Fetched.of(response, tile.url)
+
+
 def _sheet_order(sheet: Sheet) -> tuple:
     """Newer year first; within a year, the later publication (higher numbers in the file name)."""
     return (sheet.year,) + tuple(int(n) for n in re.findall(r"\d+", sheet.name)[:2])
@@ -788,17 +895,20 @@ class FileLayer(Layer):
 
 @dataclass
 class OrthoService:
-    """A WMS with orthophotos, requested in WGS84 (see orthophoto.py)."""
+    """A WMS with orthophotos, requested in WGS84, and/or tiles in Web Mercator (see orthophoto.py)."""
     name: str
-    url: str
+    url: Optional[str]  # the WMS; None: the base tiles only
     layer: str
     folder: str      # in the cache; tiles go to <folder>/wm256/{z}/{x}/{y}.jpg
     attribution: str
-    # Tiles ({z}/{x}/{y} in Web Mercator, up to base_max_zoom) with full coverage under this
-    # service, where it has no imagery and answers with white (geoportal's HighResolution
-    # covers only sheets of 10 cm or finer)
+    # Tiles ({z}/{x}/{y} in Web Mercator, up to base_max_zoom, enlarged above it) with full
+    # coverage under this service, where it has no imagery and answers with white
+    # (geoportal's HighResolution covers only sheets of 10 cm or finer)
     base_url: Optional[str] = None
     base_max_zoom: int = 19
+    # Fair use: detailed tiles (zoom 17 and more) for at most this many groups, circles too
+    # (--ortho-detail overrides it)
+    detail: Optional[int] = None
 
     @property
     def ttl_days(self) -> Optional[int]:
@@ -838,6 +948,12 @@ SPAIN_MDT = "https://servicios.idee.es/wcs-inspire/mdt"
 SPAIN_MDS = "https://wcs-mds.idee.es/mds"
 SPAIN_ORTHO = OrthoService("Orthophoto PNOA (IGN Spain)", "https://www.ign.es/wms-inspire/pnoa-ma",
                            "OI.OrthoimageCoverage", "spain/ortho/live", "PNOA © IGN")
+SWISSTOPO_STAC = "https://data.geo.admin.ch/api/stac/v1"
+# SWISSIMAGE in the map's own tiling (CDN), imagery up to zoom 20; there is no WMS step.
+# Fewer detailed tiles than elsewhere: swisstopo's terms ask for no bulk downloads.
+SWISSIMAGE = OrthoService("SWISSIMAGE (swisstopo)", None, "", "switzerland/ortho/live", "© swisstopo",
+                          base_url="https://wmts.geo.admin.ch/1.0.0/ch.swisstopo.swissimage/default/current"
+                                   "/3857/{z}/{x}/{y}.jpeg", base_max_zoom=20, detail=20)
 FABDEM = "https://huggingface.co/buckets/links-ads/fabdem/resolve/tiles"
 COPERNICUS = "https://copernicus-dem-30m.s3.amazonaws.com"
 
@@ -924,6 +1040,20 @@ SOURCES: Dict[str, Source] = {s.id: s for s in [
                            base_url=f"{GEOPORTAL}/ORTO/WMTS/StandardResolution?SERVICE=WMTS&REQUEST=GetTile"
                                     "&VERSION=1.0.0&LAYER=ORTOFOTOMAPA&STYLE=default&FORMAT=image/jpeg"
                                     "&TILEMATRIXSET=EPSG:3857&TILEMATRIX=EPSG:3857:{z}&TILEROW={y}&TILECOL={x}")),
+    Source(
+        id="swisstopo", name="swisstopo (swissALTI3D / swissSURFACE3D)",
+        description="swisstopo (Switzerland, Liechtenstein): swissALTI3D terrain 0.5/2 m and swissSURFACE3D "
+                    "Raster surface 0.5 m, newest survey per 1 km tile, LV95 / LN02",
+        # 1 km COG tiles from the STAC API (swisstopo's download service): no elevation WCS
+        # exists. The 2 m terrain files serve grids of 2 m and coarser; the surface model
+        # is published at 0.5 m only (about 17 MB per km²).
+        nmt=StacTiles("swissALTI3D (terrain)", SWISSTOPO_STAC, "ch.swisstopo.swissalti3d",
+                      "switzerland/swissalti3d", "EPSG:2056", sizes={0.5: 20e6, 2.0: 1.3e6}),
+        nmpt=StacTiles("swissSURFACE3D Raster (trees, buildings)", SWISSTOPO_STAC,
+                       "ch.swisstopo.swisssurface3d-raster", "switzerland/swisssurface3d", "EPSG:2056",
+                       sizes={0.5: 17e6}),
+        countries=("ch", "li"), crs="EPSG:2056", default_resolution=2, ortho=SWISSIMAGE,
+        note="Data © swisstopo."),
     _malta(2018, note="Malta 2018 heights are published in whole metres, which makes slopes and "
                       "clearances coarser; --source malta2012 has centimetre precision but gaps "
                       "along the coast (filled from 2018)."),
@@ -949,7 +1079,8 @@ SOURCES: Dict[str, Source] = {s.id: s for s in [
 
 # Rough boxes used when the country cannot be looked up (offline)
 OFFLINE_BOXES = {"mt": (35.78, 36.10, 14.15, 14.60), "pl": (49.0, 54.9, 14.1, 24.2),
-                 "es": (27.0, 43.9, -18.6, 4.4), "sk": (47.7, 49.65, 16.8, 22.6)}
+                 "es": (27.0, 43.9, -18.6, 4.4), "sk": (47.7, 49.65, 16.8, 22.6),
+                 "ch": (45.8, 47.85, 5.9, 10.5)}
 
 
 def country_code(lat: float, lon: float, cache_dir: str) -> Optional[str]:

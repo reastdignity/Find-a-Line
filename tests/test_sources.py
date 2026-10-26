@@ -146,6 +146,129 @@ def test_slovak_tiles_cut_and_downloaded(tmp_path, monkeypatch):
     assert layer.download_tile(outside, str(tmp_path / "x.tif")).received == 0
 
 
+def _stac_tile(east, north, res, year, tile_m=100):
+    """A COG of one STAC tile like swisstopo's: float32, -9999 as nodata, heights telling the year apart."""
+    size = round(tile_m / res)
+    band = np.full((size, size), 1000 + year % 100, np.float32)
+    band[0, 0] = -9999.0
+    with MemoryFile() as memfile:
+        with memfile.open(driver="GTiff", width=size, height=size, count=1, dtype="float32", crs="EPSG:2056",
+                          nodata=-9999.0, transform=from_origin(east * tile_m, (north + 1) * tile_m, res, res)) as dst:
+            dst.write(band, 1)
+        return memfile.read()
+
+
+class FakeStac:
+    """A STAC API with items <product>_<year>_<E>-<N> holding GeoTIFFs at 0.5 and 2 m (and an XYZ zip)."""
+
+    def __init__(self, items):
+        self.items, self.files, self.asked = items, {}, []
+        for year, east, north in items:
+            self._add(year, east, north)
+
+    def _add(self, year, east, north):
+        for res in (0.5, 2.0):
+            self.files[f"https://files.example/t_{year}_{east}-{north}_{res:g}.tif"] = _stac_tile(east, north, res, year)
+
+    def item(self, year, east, north):
+        assets = {}
+        for res in (0.5, 2.0):
+            url = f"https://files.example/t_{year}_{east}-{north}_{res:g}.tif"
+            sha = hashlib.sha256(self.files[url]).hexdigest()
+            assets[url] = {"href": url, "gsd": res, "file:checksum": "1220" + sha,
+                           "type": "image/tiff; application=geotiff; profile=cloud-optimized"}
+            assets[url[:-4] + ".xyz.zip"] = {"href": url[:-4] + ".xyz.zip", "gsd": res,
+                                             "type": "application/x.ascii-xyz+zip"}
+        return {"id": f"test_{year}_{east}-{north}", "assets": assets}
+
+    def get(self, url, params=None, **kwargs):
+        """The items endpoint in pages of two (bbox ignored: every item is near)."""
+        if url.startswith("offline"):
+            raise src.requests.ConnectionError("offline")
+        start = int(url.split("page=")[1]) if "page=" in url else 0
+        self.asked.append(start)
+        page = [self.item(*i) for i in self.items[start:start + 2]]
+        links = [{"rel": "next", "href": f"https://stac.example/items?page={start + 2}"}]             if start + 2 < len(self.items) else []
+        response = FakeResponse()
+        response.json = lambda: {"features": page, "links": links}
+        return response
+
+    def download(self, url, params=None, **kwargs):
+        return FakeResponse(self.files[url]) if url in self.files else None
+
+
+def test_stac_tiles(tmp_path, monkeypatch):
+    """StacTiles: newest survey per tile, the resolution for the grid, checksums, updates
+    replacing older surveys, the cached tiles when the index cannot be reached."""
+    import grid as gd
+    import osm
+    stac = FakeStac([(2019, 26000, 12000), (2025, 26000, 12000), (2019, 26001, 12000)])
+    monkeypatch.setattr(src.requests, "get", stac.get)
+    monkeypatch.setattr(src, "_get", stac.download)
+    monkeypatch.setattr(src, "_sleep", lambda attempt: None)
+    make = lambda: src.StacTiles("Test", "https://stac.example", "test", "ch/test", "EPSG:2056",
+                                 sizes={0.5: 1e5, 2.0: 1e4}, tile_m=100)
+    layer, cache_dir = make(), str(tmp_path / "cache")
+    coarse = gd.make_grid((2600010, 1200010, 2600190, 1200090), 2.0, "EPSG:2056")
+    fine = gd.make_grid((2600010, 1200010, 2600190, 1200090), 1.0, "EPSG:2056")
+
+    assert layer.estimate(coarse, cache_dir, None) == (2, 2, 0.02)
+    assert stac.asked == [0, 2]                                    # both pages of the index
+    layer.download(coarse, cache_dir, None, "test")
+    folder = tmp_path / "cache" / "ch" / "test"
+    assert sorted(os.listdir(folder / "2m")) == ["2019_26001-12000.tif", "2025_26000-12000.tif"]
+    mosaic = src.build_mosaic(layer.files(coarse, cache_dir), coarse, str(tmp_path / "m.npy"), "test")
+    assert np.nanmax(mosaic[:, :45]) == 1025 and np.nanmin(mosaic[:, 45:]) == 1019  # newest year per tile
+    assert np.isnan(mosaic).sum() == 0                             # the corner nodata lies outside the grid
+    layer.download(fine, cache_dir, None, "test")                  # a 1 m grid takes the 0.5 m files
+    assert sorted(os.listdir(folder / "0.5m")) == ["2019_26001-12000.tif", "2025_26000-12000.tif"]
+    assert layer.used(coarse, cache_dir)["survey_years"] == [2019, 2025]
+
+    # A newer survey: the update downloads it for both resolutions and deletes the older files
+    stac.items.append((2026, 26001, 12000))
+    stac._add(2026, 26001, 12000)
+    west, south, east, north = src.transform_bounds("EPSG:2056", "EPSG:4326", *coarse.bounds)
+    (lat, lon), = osm.tiles(west, south, east, north)
+    assert layer.update_index_tile(cache_dir, lat, lon)[0::2] == (2, 2)
+    assert sorted(os.listdir(folder / "2m")) == ["2025_26000-12000.tif", "2026_26001-12000.tif"]
+
+    # A file that does not match its checksum is not kept
+    stac.files["https://files.example/t_2025_26000-12000_2.tif"] = b"broken"
+    with pytest.raises(RuntimeError, match="checksum"):
+        layer.download_tile(layer._sheet({"year": 2025, "godlo": "26000-12000", "res": 2.0, "crs": "EPSG:2056",
+                                          "url": "https://files.example/t_2025_26000-12000_2.tif",
+                                          "sha256": "0" * 64}), str(tmp_path / "x.tif"))
+    assert not os.path.exists(tmp_path / "x.tif")
+
+    # Offline, with the index due for a check: the cached files of the grid's resolution
+    offline = make()
+    offline.index_url = "offline"
+    assert offline.missing(coarse, cache_dir, "all") == []
+    assert sorted(os.path.basename(p) for p in offline.files(coarse, cache_dir)) ==         ["2025_26000-12000.tif", "2026_26001-12000.tif"]
+    assert os.path.dirname(offline.files(fine, cache_dir)[0]).endswith("0.5m")
+
+
+def test_orthophoto_of_tiles_only(monkeypatch):
+    """A service without a WMS (SWISSIMAGE): its own tiles, enlarged above its last zoom."""
+    import orthophoto
+    from PIL import Image
+    service = src.OrthoService("Fake", None, "", "fake/ortho/live", "test",
+                               base_url="https://base/{z}/{x}/{y}.jpg", base_max_zoom=20)
+    asked = []
+
+    def get(url, params, timeout):
+        asked.append(url)
+        out = io.BytesIO()
+        Image.fromarray(np.full((256, 256, 3), 120, np.uint8)).save(out, "JPEG")
+        response = FakeResponse(out.getvalue())
+        response.status_code, response.headers = 200, {"content-type": "image/jpeg"}
+        return response
+    monkeypatch.setattr(orthophoto.requests, "get", get)
+    orthophoto.tile_content(service, 20, 10, 11)
+    orthophoto.tile_content(service, 21, 21, 22)
+    assert asked == ["https://base/20/10/11.jpg", "https://base/20/10/11.jpg"]
+
+
 def _image(fmt, color, covered):
     """A 256 px tile: color where covered (columns), white (JPEG) or transparent (PNG) elsewhere."""
     from PIL import Image

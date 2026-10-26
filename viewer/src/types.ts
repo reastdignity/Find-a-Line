@@ -54,11 +54,12 @@ export interface RunLines {
 
 export interface Ortho {
   name: string;
-  url: string;          // WMS
+  url: string | null;   // WMS; null: the base tiles only
   layer: string;
   attribution: string;
   // tiles ({z}/{x}/{y}) with full coverage under the WMS, where it has no imagery (the WMS
-  // is then requested as a transparent PNG; cached tiles have both already)
+  // is then requested as a transparent PNG; cached tiles have both already), or the
+  // orthophoto itself without a WMS
   base: {url: string; max_zoom: number} | null;
   cache: string | null; // {z}/{x}/{y}.jpg folder relative to the map, or null
 }

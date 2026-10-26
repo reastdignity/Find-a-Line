@@ -20,7 +20,7 @@ Finds possible highlines in elevation data: anchors on steep pixels, every pair 
 | `params.py` | `SearchParams` (pydantic: fields, help, groups, validation) and `CliOptions`; argparse is generated from them |
 | `search.py` | The search as a library: `plan_search`, `estimate_search`, `download_data` (cache only, for the web worker), `prepare_data` (step 1), `find_lines` (2-4), `save_run` (5), `run_search`; messages via `on_event`, questions via `confirm` |
 | `area.py` | Search areas (`Circle`, `Polygon`): grid bounds, mask, shapes for maps and orthophoto; `from_spec` builds `--area` (coast, cliffs, file, osm:name) |
-| `sources.py` | Data sources (`SOURCES`), tiled download (WCS tiles, 1° tiles, geoportal sheets), mosaics, water and gap filling |
+| `sources.py` | Data sources (`SOURCES`), tiled download (WCS tiles, 1° tiles, indexed files: geoportal sheets from a WFS, swisstopo tiles from STAC), mosaics, water and gap filling |
 | `cache.py` | Data folder (`cache/`, `runs/`, `work/`), cache layout, `index.sqlite` per top-level folder |
 | `osm.py` | OSM themes in 0.25° tiles (`coastline`, `cliff`) from Overpass or the extracts, cached Nominatim answers |
 | `coast.py` | Sea mask: OSM coastline (theme tiles from Overpass or extracts, or the world file) or the Copernicus water mask |

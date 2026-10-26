@@ -58,6 +58,7 @@ CONFIRM_DOWNLOAD_MB = 500
 CONFIRM_DISK_GB = 4
 CONFIRM_MINUTES = 30
 ORTHO_SECONDS_PER_TILE = 0.3  # measured download rate with orthophoto.DOWNLOAD_THREADS
+ORTHO_DETAIL = 50  # groups of an area with detailed orthophoto, unless the service or --ortho-detail says
 # Tiles of large areas: the grids of one tile may use this share of the free memory,
 # counting this many bytes per pixel (terrain, surface, water, gaps, masks, temporaries)
 TILE_MEMORY_SHARE = 0.25
@@ -664,11 +665,16 @@ def save_run(plan: Plan, lines: Lines, confirm: Optional[Confirm] = None, run: O
         source = plan.source
         ortho_cache = None
         if source.ortho and p.ortho != "never":
-            # Detailed orthophoto only around one line per group (variants lie within the strip)
-            spots = [g["rep"] for g in spot_groups][:None if circle else p.ortho_detail]
+            # Detailed orthophoto only around one line per group (variants lie within the strip),
+            # for the best groups of an area or as the service's fair use allows
+            detail = p.ortho_detail if p.ortho_detail is not None else source.ortho.detail
+            if detail is None and not circle:
+                detail = ORTHO_DETAIL
+            spots = [g["rep"] for g in spot_groups][:detail]
             ortho_folder = ortho.cache_folder(plan.paths.cache, source.ortho)
-            tiles = ortho.missing_tiles(ortho.tiles_to_cache(spots, plan.area), ortho_folder, plan.paths.cache,
-                                        p.update, source.ortho.ttl_days)
+            max_zoom = ortho.DETAIL_ZOOMS[-1] if source.ortho.url else source.ortho.base_max_zoom
+            tiles = ortho.missing_tiles(ortho.tiles_to_cache(spots, plan.area, max_zoom), ortho_folder,
+                                        plan.paths.cache, p.update, source.ortho.ttl_days)
             minutes = len(tiles) * ORTHO_SECONDS_PER_TILE / 60
             emit("info", f"Orthophoto for offline use: {len(tiles)} tiles to download "
                          f"(~{len(tiles) * ortho.APPROX_TILE_KB / 1000:.0f} MB, ~{minutes:.0f} min)")

@@ -68,8 +68,9 @@ def _tiles_in(area, zooms: Iterable[int]) -> Set[Tile]:
     return tiles
 
 
-def tiles_to_cache(lines: List[Dict], area) -> Set[Tile]:
-    """Tiles for the overview of the search area (area.Area) and the strips around lines."""
+def tiles_to_cache(lines: List[Dict], area, max_zoom: int = DETAIL_ZOOMS[-1]) -> Set[Tile]:
+    """Tiles for the overview of the search area (area.Area) and the strips around lines,
+    up to max_zoom (a service of tiles only: its last zoom, the map enlarges it)."""
     # Web Mercator stretches distances by 1/cos(latitude)
     scale = 1 / math.cos(math.radians(area.center[0]))
     tiles = _tiles_in(area.shape_mercator(), OVERVIEW_ZOOMS)
@@ -80,7 +81,7 @@ def tiles_to_cache(lines: List[Dict], area) -> Set[Tile]:
         strips.append(LineString([_to_mercator.transform(lon1, lat1),
                                   _to_mercator.transform(lon2, lat2)]).buffer(BUFFER_M * scale))
     if strips:
-        tiles |= _tiles_in(unary_union(strips), DETAIL_ZOOMS)
+        tiles |= _tiles_in(unary_union(strips), range(DETAIL_ZOOMS[0], max_zoom + 1))
     return tiles
 
 
@@ -173,7 +174,12 @@ def _white_blocks(jpeg: bytes) -> Tuple[bool, bool]:
 def tile_content(service, z: int, x: int, y: int) -> bytes:
     """A tile as cached (JPEG). With a base service, the parts of the service without imagery
     (white) come from the base: a tile wholly outside its coverage is the base's tile, a tile
-    on the edge of the coverage is the service (transparent PNG) laid over the base."""
+    on the edge of the coverage is the service (transparent PNG) laid over the base. Without
+    a WMS the tile is the base's."""
+    if not service.url:
+        if z <= service.base_max_zoom:
+            return _get(service.base_url.format(z=z, x=x, y=y), None, z, x, y)
+        return _jpeg(_base_tile(service, z, x, y))
     content = _get_map(service.url, service.layer, z, x, y)
     if not service.base_url:
         return content
@@ -217,7 +223,7 @@ def download(service, tiles: List[Tile], folder: str, cache_dir: str):
                 errors.append(e)
             progress.download.update(1, MB=f"{received / 1e6:.0f}", failed=len(errors))
     progress.download.finish(f"{received / 1e6:.0f} MB")
-    cache.record_many(cache_dir, done, url=service.url)
+    cache.record_many(cache_dir, done, url=service.url or service.base_url)
     if errors:
         print(f"  {len(errors)} tiles failed (e.g. {str(errors[0])[:200]})")
         print("  The map loads them online instead; run again to retry them.")

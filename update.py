@@ -109,7 +109,7 @@ def _check(cache_dir: str, row: Dict, update: str) -> Optional[Check]:
 
             def ortho(service=service, tile=tile):
                 orthophoto._download_tile(service, *tile, full)
-                cache.record(cache_dir, full, url=service.url)
+                cache.record(cache_dir, full, url=service.url or service.base_url)
             return Check(service.name, path, orthophoto.bounds_wgs84(*tile), ortho)
     parts = path.split("/")
     if parts[:2] == ["osm", "themes"] and len(parts) == 4:

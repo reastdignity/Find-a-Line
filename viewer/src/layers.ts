@@ -1,29 +1,30 @@
 // Background layers: OpenTopoMap, OpenStreetMap, the orthophoto of the data source
-// (from the local tile cache when there, else its WMS over its base tiles, if any) and
-// Esri World Imagery.
+// (from the local tile cache when there, else its WMS over its base tiles, if any, or
+// the base tiles alone) and Esri World Imagery.
 
 import L from "leaflet";
 import type { Ortho } from "./types";
 
 const OSM = '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors';
 
-/** A WMS layer that tries the cached tile ({cache}/{z}/{x}/{y}.jpg) first. */
-const CachedWMS = L.TileLayer.WMS.extend({
-  createTile(this: L.TileLayer.WMS & {_cache: string | null}, coords: L.Coords, done: L.DoneCallback) {
-    const layer = this as any, cache = this._cache;
-    let online = !cache;
-    const tile = document.createElement("img");
-    tile.alt = "";
-    tile.setAttribute("role", "presentation");
-    L.DomEvent.on(tile, "load", L.Util.bind(layer._tileOnLoad, layer, done, tile));
-    L.DomEvent.on(tile, "error", (e) => {
-      if (!online) { online = true; tile.src = this.getTileUrl(coords); }
-      else layer._tileOnError(done, tile, e);
-    });
-    tile.src = online ? this.getTileUrl(coords) : cache + "/" + coords.z + "/" + coords.x + "/" + coords.y + ".jpg";
-    return tile;
-  },
-});
+/** A tile that tries the cached one ({cache}/{z}/{x}/{y}.jpg) first, then the service. */
+function createCachedTile(this: L.TileLayer & {_cache: string | null}, coords: L.Coords, done: L.DoneCallback) {
+  const layer = this as any, cache = this._cache;
+  let online = !cache;
+  const tile = document.createElement("img");
+  tile.alt = "";
+  tile.setAttribute("role", "presentation");
+  L.DomEvent.on(tile, "load", L.Util.bind(layer._tileOnLoad, layer, done, tile));
+  L.DomEvent.on(tile, "error", (e) => {
+    if (!online) { online = true; tile.src = this.getTileUrl(coords); }
+    else layer._tileOnError(done, tile, e);
+  });
+  tile.src = online ? this.getTileUrl(coords) : cache + "/" + coords.z + "/" + coords.x + "/" + coords.y + ".jpg";
+  return tile;
+}
+
+const CachedWMS = L.TileLayer.WMS.extend({createTile: createCachedTile});
+const CachedTiles = L.TileLayer.extend({createTile: createCachedTile});
 
 export function baseLayers(ortho: Ortho | null, maxZoom: number): Record<string, L.Layer> {
   const layers: Record<string, L.Layer> = {
@@ -35,7 +36,13 @@ export function baseLayers(ortho: Ortho | null, maxZoom: number): Record<string,
     "OpenStreetMap": L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
       maxZoom, maxNativeZoom: 19, attribution: OSM}),
   };
-  if (ortho) {
+  if (ortho && !ortho.url && ortho.base) {
+    // Tiles in the map's own tiling, no WMS (SWISSIMAGE)
+    const layer = new (CachedTiles as any)(ortho.base.url, {
+      maxZoom, maxNativeZoom: ortho.base.max_zoom, attribution: ortho.attribution}) as L.TileLayer;
+    (layer as any)._cache = ortho.cache;
+    layers[ortho.name] = layer;
+  } else if (ortho && ortho.url) {
     // National WMS (e.g. geoportal) may not support Web Mercator, so tiles are requested
     // in WGS84. WMS renders at any scale, so the orthophoto stays sharp up to maxZoom.
     const base = ortho.base;

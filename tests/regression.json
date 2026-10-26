@@ -480,5 +480,57 @@
     },
     "notes": "before 2026-10-25 within clipped the band to the land of the named area: no line reached the islet",
     "seconds": 4.5
+  },
+  "R19": {
+    "place": "Lauterbrunnen, Switzerland: swisstopo STAC tiles (2 m terrain, 0.5 m surface averaged to 2 m)",
+    "args": "--lat 46.5960 --lon 7.9070 --radius 400 --min-length 50 --max-length 400",
+    "sets": [
+      "sources",
+      "ch"
+    ],
+    "expected": {
+      "anchors": 5775,
+      "open": 928,
+      "checked": 1002,
+      "lines": 222,
+      "spots": 27,
+      "csv_sha256": "948123bb885175941a082db38e2af5d62ff53ed2d2b1abe10c48026d6d379a3c",
+      "length_km": 37.945,
+      "clearance_min": 0.03,
+      "clearance_mean": 11.74,
+      "clearance_max": 51.43,
+      "over_trees": 222,
+      "coverage": 100.0,
+      "empty_tiles": 0,
+      "source": "swisstopo (swissALTI3D / swissSURFACE3D)"
+    },
+    "notes": "first run on an empty cache: 18 s (4 DTM tiles 5 MB, 4 DSM tiles 70 MB); all lines cross the forest under the west wall (over trees)",
+    "seconds": 1.4
+  },
+  "R20": {
+    "place": "as R19 at 1 m: the 0.5 m terrain files",
+    "extends": "R19",
+    "args": "--resolution 1",
+    "sets": [
+      "ch"
+    ],
+    "expected": {
+      "anchors": 27951,
+      "open": 1886,
+      "checked": 10090,
+      "lines": 2259,
+      "spots": 40,
+      "csv_sha256": "f50d5577a850f64f4b5e71406cdb620411afcd8d99cb63430b24509290dc9822",
+      "length_km": 390.271,
+      "clearance_min": 0.0,
+      "clearance_mean": 7.233,
+      "clearance_max": 41.59,
+      "over_trees": 2259,
+      "coverage": 100.0,
+      "empty_tiles": 0,
+      "source": "swisstopo (swissALTI3D / swissSURFACE3D)"
+    },
+    "notes": "downloads the 0.5 m terrain tiles (about 80 MB) next to R19's 2 m ones",
+    "seconds": 2.5
   }
 }

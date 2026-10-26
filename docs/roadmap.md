@@ -83,7 +83,7 @@ Rules for every step:
 - Accounts (to be decided: invitations, OAuth, or anonymous with a quota), per-user quotas, admin view of jobs.
 
 ## New data sources
-Researched 2026-10-25 (how: docs/data-sources.md). Order: Slovakia (DSM needs a hosted copy, see below), then Switzerland; Greece has no usable national source.
+Researched 2026-10-25 (how: docs/data-sources.md). Order: Slovakia (DSM needs a hosted copy, see below), then Switzerland (done first, 2026-10-26: it needed no hosting); Greece has no usable national source.
 
 ### Switzerland (swisstopo): sheet-like files from STAC
 - **Data**: swissALTI3D (DTM, 0.5 m and 2 m) and swissSURFACE3D Raster (DSM, 0.5 m), whole country and Liechtenstein; 1 km tiles as COG GeoTIFF float32 (mm), LV95 EPSG:2056 with LN02 heights; pixel edges on whole metres (`grid_origin` 0); about 26 MB (0.5 m) or 1 MB (2 m) per tile. Licence: open government data, commercial use allowed, "© swisstopo" required.
@@ -91,6 +91,7 @@ Researched 2026-10-25 (how: docs/data-sources.md). Order: Slovakia (DSM needs a 
 - **Versions**: every tile exists per survey year (2019, 2024, 2025...), not every year for every tile; DSM tiles of neighbouring areas may be of different years.
 - **Plan**: a layer on the `SheetTiles` pattern: STAC answers cached per 0.25° tile (policy `sheet-index`), the newest year per tile, older years deleted when a newer one is downloaded; the 2 m files for working grids of 2 m and more, 0.5 m below. Orthophoto: SWISSIMAGE WMTS in EPSG:3857 (`https://wmts.geo.admin.ch/1.0.0/ch.swisstopo.swissimage/default/current/3857/{z}/{x}/{y}.jpeg`: the map's own tiling, CDN), with a lower default `--ortho-detail` to respect the fair-use terms (decided).
 - **Tests**: a regression test with the DSM (e.g. the cliffs of Lauterbrunnen), the data checks of a new source (shift against Copernicus, coverage at 5 m, a tile against its file); pytest with a fake STAC (newest year, deleting older ones).
+- **Done 2026-10-26** (`sources.StacTiles`, source `swisstopo`): the index logic of `SheetTiles` became a base class, `IndexedTiles`, shared by both. An item holds a COG and an XYZ zip at each resolution (`gsd`); only the COGs are used, stored as published in `switzerland/<product>/<res>m/<year>_<E>-<N>.tif` and checked against `file:checksum` (sha256 multihash `1220…`). Files: float32 metres, nodata -9999, pixel edges on whole metres, DTM values finer than mm, DSM in cm; 2 m tile 1.3 MB, 0.5 m 17–20 MB, about 0.5 s each from CloudFront. A 0.25° index tile in the Alps is about 1300 items in 14 pages (9 s), so it is cached as planned. At Lauterbrunnen the DTM has 2019 and 2025 surveys per tile, the DSM 2022. Data checks: no shift against Copernicus GLO-30 (DSM) or FABDEM (DTM) in a ±200 m search, 100% valid pixels at 2 and 5 m, a 2 m mosaic identical to its files. SWISSIMAGE WMTS has imagery up to zoom 20 (21 answers 400): `OrthoService` got `url=None` (base tiles only, cached up to its last zoom, enlarged by the map above it) and `detail` (20 groups, circles too; `--ortho-detail` overrides). Regression tests R19 (2 m) and R20 (1 m: the 0.5 m terrain files). `cache update` replaced a 2019 tile by its 2025 survey and deleted the older file.
 
 ### Slovakia (ÚGKK SR): own hosted tiles of DTM and DSM
 - **Data**: DMR 5.0 (DTM) and DMP 1.0 (DSM), 1 m, whole country (ALS 2017–2023); DMR 6.0 / DMP 2.0, 0.5 m, 2nd cycle (16 of 73 lots in 10/2026, not the Tatras). Licence CC BY 4.0, author ÚGKK SR (checked: the licence PDF inside the ZIPs says only this). Heights in S-JTSK [JTSK03] EPSG:8353 with Bpv EPSG:8357, or ETRS89-TM34 EPSG:3046 with ellipsoidal heights (about 43 m higher).
@@ -210,6 +211,7 @@ These apply from stage 3 on, the local version included.
   - FABDEM: CC BY-NC-SA 4.0 (non-commercial only; stated for V1-0, the V1-2 record at data.bris.ac.uk could not be read).
   - Malta 2018: the INSPIRE records say no conditions on access and use, and the data portal lists it as a High Value Dataset (Regulation 2023/138, which requires CC BY 4.0 or more permissive). Malta 2012: the MSDI records were reported as CC BY-NC-ND 4.0, the INSPIRE ones as no conditions; unresolved.
   - IGN: CC BY 4.0 (Orden FOM/2807/2015), attribution with product, date and "CC BY 4.0".
+  - swisstopo: open government data, free use including commercial, "© swisstopo" required; the download service asks for no bulk bot traffic (backoff with jitter, few detailed orthophoto tiles).
   - GUGiK: free for any use; the source must be stated (geoportal terms § 3.2).
   - OSM: ODbL, attribution.
   - Esri World Imagery: Esri Master License Agreement; the layer is not meant for offline tile export (there is a separate "for Export" layer), so it stays online only.

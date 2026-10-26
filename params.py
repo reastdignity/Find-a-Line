@@ -62,7 +62,8 @@ class SearchParams(BaseModel):
 
     # Elevation data
     source: str = field("auto", "data source; 'auto' picks the national source for the country of "
-                                "the centre (Poland, Malta) or the Europe-wide model elsewhere", "data",
+                                "the centre (Poland, Malta, Spain, Switzerland) or the Europe-wide model "
+                                "elsewhere", "data",
                         choices=SOURCE_CHOICES)
     elevation_file: Optional[str] = field(None, "your own terrain model (GeoTIFF/ASC, e.g. NASADEM from "
                                                 "OpenTopography); implies --source files", "data", cli_only=True)
@@ -130,8 +131,9 @@ class SearchParams(BaseModel):
     ortho: Literal["auto", "always", "never"] = field(
         "auto", "orthophoto tiles for offline use of the map: 'auto' asks when they would take longer than "
                 "30 min (--yes downloads), 'always', or 'never' (the map loads them online)", "output")
-    ortho_detail: int = field(50, "for --area: detailed orthophoto (up to zoom 21) only around this many best "
-                                  "groups; the others load it online", "output")
+    ortho_detail: Optional[int] = field(None, "detailed orthophoto (up to zoom 21) only around this many best "
+                                              "groups; the others load it online", "output",
+                                        default_text="50 for --area, all for a circle; swisstopo (fair use): 20")
 
     @property
     def nmpt_mode(self) -> Optional[str]:
