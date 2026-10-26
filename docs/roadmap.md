@@ -219,6 +219,26 @@ These apply from stage 3 on, the local version included.
 - **Public services:** the public Nominatim and Overpass instances forbid heavy use. A public site needs caching or its own instances.
 - **Accounts** (stage 4): a decision, not a check; to be made when stage 4 starts.
 
+## Resampling to the working resolution (measured 2026-10-26)
+- **What is cached**: only the data as the services deliver it (Polish sheets at 1 m, Malta tiles at `fetch_res` 1 m, Spain at 5 m, swisstopo files at 0.5 and 2 m); the same files serve every working resolution. The two fixed conversions on download (MDS05's 5.0045 m grid to 5 m, Malta 2018 served at 1 m by the WCS) do not depend on the chosen resolution. Bringing the data onto the working grid happens in every search, into `work/<id>/` (`nmt.npy`, `nmpt.npy`, masks), deleted when the search ends.
+- **Updates**: `cache update` / `--update` replaces source files only, so nothing derived needs to be invalidated; the next search builds its mosaics from the new files. Saved runs record the files they used (`run.json`), and `cache status` lists the runs whose files were fetched again or replaced since; they are not recomputed automatically.
+- **Cost** (cached data, numba warm, one process; time of `build_mosaic`, split into tiles copied onto the grid and tiles resampled):
+
+  | Search | Without downloads | Resampling | Share |
+  | --- | --- | --- | --- |
+  | Żabi Koń r 1 km, 1 m (default) | 1.7 s | 0.04 s (water mask only) | 2.5% |
+  | Żabi Koń r 1 km, 2 m | 0.8 s | 0.28 s | 35% |
+  | Będkowska r 1 km, 1 m (R4) | 1.3 s | 0.04 s | 3% |
+  | Lauterbrunnen r 400 m, 1 m (R20) | 1.3 s | 0.17 s | 13% |
+  | Lauterbrunnen r 400 m, 2 m (R19) | 0.3 s | 0.09 s | 24% |
+  | Dingli r 1 km, 1 m (sea filling) | 16.3 s | 0.04 s | 0.2% |
+  | Montserrat r 1 km, 5 m (R9) | 17.2 s | 0.01 s | 0% |
+  | R1 circle as an area in 600 m tiles, 1 m (R14) | 7.7 s | 0.45 s (water mask) | 6% |
+
+  At the default 1 m the Polish and Maltese data is already on the grid and only copied; Switzerland averages its 0.5 m files (13%). At 2 m the share is larger only because the whole search takes under a second. The start of the process and the imports (a few seconds) are not counted, so the share of the time a user waits is smaller still.
+- **Decided**: no cache of resampled tiles: it would save at most a few tenths of a second per search.
+- **Possible optimisation for large areas**: in an area computed in tiles (R14) building the mosaics takes about a third of the time (2.1 s of 7.7 s), all of it copying: every tile, with its overlap, reads the same sheets again.
+
 ## Open pits and other terraced walls (looked at 2026-10-25, Bełchatów)
 - The Bełchatów and Szczerców pits (200–250 m deep, walls of benches, about 20° overall) gave lines of 1.1 km at most, all near the bottom: the rims have no pixels of 45° or more, and with 5.5 kN and 70 g/m the sag is about 45 m at 1 km, 114 m at 2 km, 207 m at 3 km and 475 m at 5 km, deeper than the pits for lines from rim to rim. With 10 kN and 45° lines of up to 1.9 km appear across the Bełchatów pit.
 - Considered, not chosen for now: anchors on edges (the terrain drops by X m within Y m) instead of the slope of one pixel, so that the rim of a terraced wall is an anchor. *Measure* in the map (two points, the profile from the run's data, anchors above the ground) was built instead, to see why a line expected there is missing.
