@@ -65,9 +65,9 @@ def _live_layers() -> List[src.Layer]:
 
 
 @lru_cache(maxsize=None)
-def _sheet_layers() -> List[src.SheetTiles]:
+def _sheet_layers() -> List[src.IndexedTiles]:
     layers = {id(layer): layer for s in src.SOURCES.values() for layer in (s.nmt, s.nmpt)
-              if isinstance(layer, src.SheetTiles)}
+              if isinstance(layer, src.IndexedTiles)}
     return list(layers.values())
 
 
@@ -134,7 +134,7 @@ def _check(cache_dir: str, row: Dict, update: str) -> Optional[Check]:
     return None
 
 
-def _sheets(layer: src.SheetTiles, cache_dir: str, lat: float, lon: float) -> bool:
+def _sheets(layer: src.IndexedTiles, cache_dir: str, lat: float, lon: float) -> bool:
     new, mb, deleted = layer.update_index_tile(cache_dir, lat, lon)
     if new:
         print(f"  {osm.tile_name(lat, lon)}: {new} newer sheets ({mb:.0f} MB), {deleted} older deleted")

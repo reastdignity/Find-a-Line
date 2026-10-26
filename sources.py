@@ -9,8 +9,8 @@ between sources never downloads again what is already there.
 Kinds of layers:
 - WcsTiles: square tiles from an OGC WCS 2.0 service on a fixed grid in the
   service's coordinate system (Malta, IGN Spain).
-- SheetTiles: map sheets found through a WFS sheet index and downloaded as files
-  (geoportal.gov.pl).
+- IndexedTiles: files found through an index, newest survey per sheet or tile:
+  SheetTiles (map sheets from a WFS sheet index, geoportal.gov.pl).
 - DegreeTiles: 1°×1° GeoTIFF tiles in WGS84 (Copernicus DEM, FABDEM) and
   OpenTopography's global DEM API (NASADEM).
 - FileLayer: a local raster file (GeoTIFF, ASC...), e.g. NASADEM from OpenTopography.
@@ -472,89 +472,45 @@ class OpenTopographyTiles(DegreeTiles):
 
 @dataclass(frozen=True)
 class Sheet:
-    """One map sheet of a sheet index (see SheetTiles)."""
+    """One file of a tile index: a map sheet or a tile of one survey (see IndexedTiles)."""
     year: int
     name: str   # file name without extension, e.g. 77532_1356765_M-34-64-D-a-1-1
-    godlo: str
+    godlo: str  # the sheet or tile it covers; the newest survey of each is used
     url: str
     crs: str
     res: float
 
 
-# Coordinate systems named in the uklad_xy attribute of the geoportal.gov.pl sheet indexes
-SHEET_CRS = {"PL-1992": "EPSG:2180", "PL-2000:S5": "EPSG:2176", "PL-2000:S6": "EPSG:2177",
-             "PL-2000:S7": "EPSG:2178", "PL-2000:S8": "EPSG:2179"}
-SHEET_FORMATS = ("ARC/INFO ASCII GRID", "ASCII XYZ GRID")
+class IndexedTiles(Layer):
+    """Files found through an index of the service, one per sheet or tile and survey.
 
-
-class SheetTiles(Layer):
-    """Map sheets listed in a WFS sheet index, downloaded as files (geoportal.gov.pl).
-
-    The index has one layer per year (`<prefix><year>`); every sheet links to a file
-    (ASCII grid or XYZ, sometimes zipped). For every sheet name (godło) only the newest
-    sheet is used, and the sheets are ordered newest first, so where sheets of
-    different series overlap the newest data wins in the mosaic. Each sheet is cached
-    as a GeoTIFF named after its file.
+    For every sheet or tile (godło) only the newest survey is used, and the files are
+    ordered newest first, so where sheets of different series overlap the newest data
+    wins in the mosaic. Each file is cached as a GeoTIFF named <year>_<name>.tif.
 
     The index answers are cached too, per 0.25° tile (osm.tiles) in
-    <top folder>/sheet-index/<prefix>/<tile>.json with every sheet version and its
-    extent (EPSG:2180), so a search in a known place asks the index nothing. Without
-    the index (offline) and without its cached answer, the cached sheets over the
-    area are used.
+    <top folder>/sheet-index/<prefix>/<tile>.json with every listed version and its
+    extent (in index_crs), so a search in a known place asks the index nothing. Without
+    the index (offline) and without its cached answer, the cached files over the area
+    are used. An update asks the index again and replaces older surveys (update.py).
+
+    Subclasses ask the index (_fetch_tile) and download a file (download_tile).
     """
+    index_crs = ""  # CRS of the extents in the cached index answers
 
     def __init__(self, description: str, index_url: str, prefix: str, folder: str,
-                 native_res: float, min_res: float = 0.5, bytes_per_tile: float = 30e6):
-        """Sheets with a resolution between min_res and native_res are used (finer ones
-        are huge as text: a 0.15 m sheet is about 2 GB)."""
+                 native_res: float, bytes_per_tile: float):
         self.description, self.index_url, self.prefix = description, index_url, prefix
-        self.folder, self.native_res, self.min_res, self._bytes = folder, native_res, min_res, bytes_per_tile
-        self._years: Optional[List[str]] = None
+        self.folder, self.native_res, self._bytes = folder, native_res, bytes_per_tile
         self._listed: Dict[tuple, list] = {}
         self._versions: Dict[str, set] = {}  # every listed survey of a godło
         self._cache_dir: Optional[str] = None  # set by the methods that get it (tiles() does not)
         self._update: Optional[str] = None
 
-    def _wfs(self, **params) -> str:
-        response = requests.get(self.index_url, timeout=300, headers=HEADERS,
-                                params={"SERVICE": "WFS", "VERSION": "2.0.0", **params})
-        response.raise_for_status()
-        return response.text
-
-    def _year_layers(self) -> List[str]:
-        if self._years is None:
-            names = re.findall(rf"<Name>(gugik:{self.prefix}\d{{4}})</Name>", self._wfs(REQUEST="GetCapabilities"))
-            self._years = sorted(set(names))
-        return self._years
-
     def _fetch_tile(self, lat: float, lon: float, path: str):
-        """Every usable sheet version of the index in one 0.25° tile, saved as JSON."""
-        sheets = []
-        for layer in self._year_layers():
-            text = self._wfs(REQUEST="GetFeature", TYPENAMES=layer, COUNT=10000,
-                             PROPERTYNAME="godlo,akt_rok,char_przestrz,format,uklad_xy,url_do_pobrania,msGeometry",
-                             BBOX=f"{lat},{lon},{lat + osm.TILE_DEG},{lon + osm.TILE_DEG},urn:ogc:def:crs:EPSG::4326")
-            for member in text.split("<wfs:member>")[1:]:
-                f = dict(re.findall(r"<gugik:(\w+)>([^<]*)</gugik:\1>", member))
-                res = re.match(r"[\d.]+", f.get("char_przestrz", ""))
-                url = f.get("url_do_pobrania", "")
-                if not (res and url and f.get("format") in SHEET_FORMATS and f.get("uklad_xy") in SHEET_CRS):
-                    continue
-                if not self.min_res - 1e-6 <= float(res.group()) <= self.native_res + 1e-6:
-                    continue
-                # Extent from the sheet outline; EPSG:2180 lists northing before easting
-                values = [float(v) for v in " ".join(re.findall(r"<gml:posList[^>]*>([^<]*)<", member)).split()]
-                north, east = values[0::2], values[1::2]
-                if not north:
-                    continue
-                sheets.append({"year": int(f["akt_rok"]), "godlo": f.get("godlo", ""), "url": url,
-                               "crs": SHEET_CRS[f["uklad_xy"]], "res": float(res.group()),
-                               "extent": [min(east), min(north), max(east), max(north)]})
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        tmp = _part(path)
-        with open(tmp, "w", encoding="utf-8") as out:
-            json.dump({"layers": self._year_layers(), "sheets": sheets}, out)
-        os.replace(tmp, path)
+        """Every usable version listed by the index in one 0.25° tile, saved as JSON
+        ({"sheets": [{"year", "godlo", "url", "crs", "res", "extent"}, ...]})."""
+        raise NotImplementedError
 
     def index_path(self, cache_dir: str, lat: float, lon: float) -> str:
         """The cached index answer of one 0.25° tile."""
@@ -570,21 +526,24 @@ class SheetTiles(Layer):
         with open(path, encoding="utf-8") as f:
             return json.load(f)["sheets"]
 
-    @staticmethod
-    def _sheet(item: Dict) -> Sheet:
+    def _sheet(self, item: Dict) -> Sheet:
         url = item["url"]
         return Sheet(item["year"], re.sub(r"(\.[a-z]+)+$", "", url.rsplit("/", 1)[-1], flags=re.I),
                      item["godlo"], url, item["crs"], item["res"])
 
+    def _wanted(self, sheet: Sheet, grid: Grid) -> bool:
+        """Whether a listed file is used for this grid."""
+        return True
+
     def _query(self, grid: Grid, cache_dir: str) -> list:
         """The newest sheet per godło over the grid, newest first."""
         west, south, east, north = transform_bounds(grid.crs, "EPSG:4326", *grid.bounds)
-        g_left, g_bottom, g_right, g_top = transform_bounds(grid.crs, "EPSG:2180", *grid.bounds)
+        g_left, g_bottom, g_right, g_top = transform_bounds(grid.crs, self.index_crs, *grid.bounds)
         shape = None
         if grid.area_shape is not None:
             from area import project
             from shapely.geometry import box
-            shape = project(grid.area_shape, grid.crs, "EPSG:2180").intersection(
+            shape = project(grid.area_shape, grid.crs, self.index_crs).intersection(
                 box(g_left, g_bottom, g_right, g_top))
         newest: Dict[str, Sheet] = {}
         for lat, lon in osm.tiles(west, south, east, north):
@@ -595,6 +554,8 @@ class SheetTiles(Layer):
                 if shape is not None and not shape.intersects(box(left, bottom, right, top)):
                     continue
                 sheet = self._sheet(item)
+                if not self._wanted(sheet, grid):
+                    continue
                 self._versions.setdefault(sheet.godlo, set()).add(sheet)
                 old = newest.get(sheet.godlo)
                 if old is None or _sheet_order(sheet) > _sheet_order(old):
@@ -625,26 +586,31 @@ class SheetTiles(Layer):
         received = sum(self._download_and_record(s, cache_dir) for s in todo)
         return len(todo), received / 1e6, self._prune(cache_dir, list(newest.values()))
 
+    def _cached_files(self, grid: Grid, cache_dir: str) -> Tuple[List[str], float]:
+        """The cached files that could be used for this grid, and their resolution."""
+        return glob.glob(os.path.join(cache_dir, self.folder, "*.tif")), self.native_res
+
     def _cached(self, grid: Grid, cache_dir: str) -> list:
         """Cached sheets over the grid, newest first (when the index cannot be reached)."""
         sheets = []
-        for path in glob.glob(os.path.join(cache_dir, self.folder, "*.tif")):
+        paths, res = self._cached_files(grid, cache_dir)
+        for path in paths:
             with rio.open(path) as src:
                 left, bottom, right, top = transform_bounds(src.crs, grid.crs, *src.bounds)
             g_left, g_bottom, g_right, g_top = grid.bounds
             if left < g_right and right > g_left and bottom < g_top and top > g_bottom:
                 year, name = os.path.basename(path)[:-4].split("_", 1)
-                sheets.append(Sheet(int(year), name, "", "", "", self.native_res))
+                sheets.append(Sheet(int(year), name, "", "", "", res))
         return sorted(sheets, key=_sheet_order, reverse=True)
 
     def tiles(self, grid: Grid) -> list:
-        key = (grid.crs, tuple(grid.bounds), self._update)
+        key = (grid.crs, tuple(grid.bounds), grid.res, self._update)
         if key not in self._listed:
             try:
                 self._listed[key] = self._query(grid, self._cache_dir)
             except requests.RequestException as e:
-                print(f"{self.description}: sheet index not available ({type(e).__name__}); "
-                      "using the cached sheets")
+                print(f"{self.description}: index not available ({type(e).__name__}); "
+                      "using the cached files")
                 self._listed[key] = None
         return self._listed[key]
 
@@ -671,7 +637,7 @@ class SheetTiles(Layer):
             super().download(grid, cache_dir, update, label)
             pruned = self._prune(cache_dir, sheets)
             if pruned:
-                print(f"{self.description}: {pruned} older surveys replaced by newer sheets (deleted)")
+                print(f"{self.description}: {pruned} older surveys replaced by newer ones (deleted)")
 
     def files(self, grid: Grid, cache_dir: str) -> List[str]:
         self._use(cache_dir, self._update)
@@ -693,6 +659,69 @@ class SheetTiles(Layer):
 
     def bytes_per_tile(self) -> float:
         return self._bytes
+
+
+# Coordinate systems named in the uklad_xy attribute of the geoportal.gov.pl sheet indexes
+SHEET_CRS = {"PL-1992": "EPSG:2180", "PL-2000:S5": "EPSG:2176", "PL-2000:S6": "EPSG:2177",
+             "PL-2000:S7": "EPSG:2178", "PL-2000:S8": "EPSG:2179"}
+SHEET_FORMATS = ("ARC/INFO ASCII GRID", "ASCII XYZ GRID")
+
+
+class SheetTiles(IndexedTiles):
+    """Map sheets listed in a WFS sheet index, downloaded as files (geoportal.gov.pl).
+
+    The index has one layer per year (`<prefix><year>`); every sheet links to a file
+    (ASCII grid or XYZ, sometimes zipped). Extents are cached in EPSG:2180.
+    """
+    index_crs = "EPSG:2180"
+
+    def __init__(self, description: str, index_url: str, prefix: str, folder: str,
+                 native_res: float, min_res: float = 0.5, bytes_per_tile: float = 30e6):
+        """Sheets with a resolution between min_res and native_res are used (finer ones
+        are huge as text: a 0.15 m sheet is about 2 GB)."""
+        super().__init__(description, index_url, prefix, folder, native_res, bytes_per_tile)
+        self.min_res = min_res
+        self._years: Optional[List[str]] = None
+
+    def _wfs(self, **params) -> str:
+        response = requests.get(self.index_url, timeout=300, headers=HEADERS,
+                                params={"SERVICE": "WFS", "VERSION": "2.0.0", **params})
+        response.raise_for_status()
+        return response.text
+
+    def _year_layers(self) -> List[str]:
+        if self._years is None:
+            names = re.findall(rf"<Name>(gugik:{self.prefix}\d{{4}})</Name>", self._wfs(REQUEST="GetCapabilities"))
+            self._years = sorted(set(names))
+        return self._years
+
+    def _fetch_tile(self, lat: float, lon: float, path: str):
+        sheets = []
+        for layer in self._year_layers():
+            text = self._wfs(REQUEST="GetFeature", TYPENAMES=layer, COUNT=10000,
+                             PROPERTYNAME="godlo,akt_rok,char_przestrz,format,uklad_xy,url_do_pobrania,msGeometry",
+                             BBOX=f"{lat},{lon},{lat + osm.TILE_DEG},{lon + osm.TILE_DEG},urn:ogc:def:crs:EPSG::4326")
+            for member in text.split("<wfs:member>")[1:]:
+                f = dict(re.findall(r"<gugik:(\w+)>([^<]*)</gugik:\1>", member))
+                res = re.match(r"[\d.]+", f.get("char_przestrz", ""))
+                url = f.get("url_do_pobrania", "")
+                if not (res and url and f.get("format") in SHEET_FORMATS and f.get("uklad_xy") in SHEET_CRS):
+                    continue
+                if not self.min_res - 1e-6 <= float(res.group()) <= self.native_res + 1e-6:
+                    continue
+                # Extent from the sheet outline; EPSG:2180 lists northing before easting
+                values = [float(v) for v in " ".join(re.findall(r"<gml:posList[^>]*>([^<]*)<", member)).split()]
+                north, east = values[0::2], values[1::2]
+                if not north:
+                    continue
+                sheets.append({"year": int(f["akt_rok"]), "godlo": f.get("godlo", ""), "url": url,
+                               "crs": SHEET_CRS[f["uklad_xy"]], "res": float(res.group()),
+                               "extent": [min(east), min(north), max(east), max(north)]})
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        tmp = _part(path)
+        with open(tmp, "w", encoding="utf-8") as out:
+            json.dump({"layers": self._year_layers(), "sheets": sheets}, out)
+        os.replace(tmp, path)
 
     def download_tile(self, tile, path: str) -> Fetched:
         try:
