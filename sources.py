@@ -53,6 +53,9 @@ DOWNLOAD_THREADS = 4
 RETRIES = 3
 HEADERS = {"User-Agent": "Find-a-Line/1.0 (highline finder)"}
 VALID_MIN = -500  # metres; anything lower is treated as "no data"
+# Finest working resolution: finer grids bring nothing for highlines (clearances are
+# metres; 0.5 m LiDAR grids are partly interpolated) and cost 4x per halving
+MIN_RESOLUTION = 1.0
 
 
 def _get(url: str, params=None, timeout: int = 300, binary_types=("image", "octet", "tiff", "multipart")):
@@ -925,12 +928,16 @@ class Source:
     nmpt: Optional[Layer] = None
     countries: Tuple[str, ...] = ()
     crs: Optional[str] = None       # working CRS; None = UTM zone of the search centre
-    default_resolution: float = 2
+    default_resolution: Optional[float] = None  # None: the terrain data's own, at least MIN_RESOLUTION
     ortho: Optional[OrthoService] = None
     note: str = ""                  # licence or quality note printed at the start
     fallback: Optional[str] = "europe"  # source that fills gaps in the data on land
     bbox: Optional[Tuple[float, float, float, float]] = None  # (south, north, west, east) for --source auto
     grid_origin: Tuple[float, float] = (0.0, 0.0)  # pixel edges of the data in the working CRS (grid.make_grid)
+
+    def __post_init__(self):
+        if self.default_resolution is None:
+            self.default_resolution = max(float(self.nmt.native_res), MIN_RESOLUTION)
 
     def covers(self, lat: float, lon: float) -> bool:
         if self.bbox is None:
@@ -997,7 +1004,7 @@ def _spain(canary: bool) -> Source:
         # MDS05's grid is 5.0045 m; tiles are resampled to 5 m on download
         nmpt=WcsTiles(f"MDS05 (trees, buildings) {where}", SPAIN_MDS, "mds05", "EPSG:25830",
                       "spain/mds05/live", native_res=5.0, fetch_res=5.0, fmt="application/asc", bytes_per_px=8),
-        countries=("es",), crs=crs, default_resolution=5, ortho=SPAIN_ORTHO,
+        countries=("es",), crs=crs, ortho=SPAIN_ORTHO,
         bbox=(27.0, 29.6, -18.6, -13.0) if canary else None,
         note="IGN Spain data is available at 5 m: lines shorter than about 30 m are not reliable.")
 
@@ -1012,7 +1019,7 @@ def _malta(year: int, note: str = "") -> Source:
         id="malta" if year == 2018 else f"malta{year}", name=f"Malta {year} (MSDI)",
         description=f"Malta Planning Authority LiDAR {year}, DTM and DSM 1 m",
         nmt=layer("dtm", "DTM (terrain)"), nmpt=layer("dsm", "DSM (trees, buildings)"),
-        countries=("mt",) if year == 2018 else (), crs=crs, default_resolution=2,
+        countries=("mt",) if year == 2018 else (), crs=crs,
         fallback="malta" if year == 2012 else "europe",
         ortho=OrthoService("Orthophoto Malta 2018 (MSDI)", f"{MALTA}/wms/ortho_2018/ows",
                            "OI.OrthoimageCoverage", "malta/ortho/2018", "Planning Authority Malta"),
@@ -1032,7 +1039,7 @@ SOURCES: Dict[str, Source] = {s.id: s for s in [
         nmpt=SheetTiles("NMPT (digital surface model: trees, buildings)",
                         f"{GEOPORTAL}/NumerycznyModelPokryciaTerenuEVRF2007/WFS/Skorowidze",
                         "SkorowidzNMPT", "poland/nmpt", native_res=1.0),
-        countries=("pl",), crs="EPSG:2180", default_resolution=2, grid_origin=(0.5, 0.5),
+        countries=("pl",), crs="EPSG:2180", grid_origin=(0.5, 0.5),
         ortho=OrthoService("Orthophoto (geoportal.gov.pl)", f"{GEOPORTAL}/ORTO/WMS/HighResolution",
                            "Raster", "poland/ortho/live", "GUGiK",
                            # the WMS of StandardResolution answers about half of the requests
@@ -1052,7 +1059,7 @@ SOURCES: Dict[str, Source] = {s.id: s for s in [
         nmpt=StacTiles("swissSURFACE3D Raster (trees, buildings)", SWISSTOPO_STAC,
                        "ch.swisstopo.swisssurface3d-raster", "switzerland/swisssurface3d", "EPSG:2056",
                        sizes={0.5: 17e6}),
-        countries=("ch", "li"), crs="EPSG:2056", default_resolution=2, ortho=SWISSIMAGE,
+        countries=("ch", "li"), crs="EPSG:2056", ortho=SWISSIMAGE,
         note="Data © swisstopo."),
     _malta(2018, note="Malta 2018 heights are published in whole metres, which makes slopes and "
                       "clearances coarser; --source malta2012 has centimetre precision but gaps "
@@ -1066,14 +1073,13 @@ SOURCES: Dict[str, Source] = {s.id: s for s in [
         nmt=DegreeTiles("FABDEM (terrain)", "fabdem/v1-2", _fabdem_url, native_res=30, bytes_per_tile=20e6),
         nmpt=DegreeTiles("Copernicus DEM GLO-30 (surface)", "copernicus30/2021/dem", _copernicus_url,
                          native_res=30, bytes_per_tile=20e6),
-        default_resolution=30, fallback=None,
+        fallback=None,
         note="FABDEM is free for non-commercial use only (Non-Commercial Government Licence). "
              "At 30 m only long lines can be found reliably."),
     Source(
         id="nasadem", name="NASADEM (OpenTopography)",
         description="NASADEM 30 m (SRTM, includes some vegetation), from the OpenTopography API",
         nmt=OpenTopographyTiles("NASADEM", "nasadem/v1", "NASADEM"),
-        default_resolution=30,
         note="NASADEM is a radar surface model at 30 m: only long lines can be found reliably."),
 ]}
 
@@ -1113,7 +1119,7 @@ def choose_source(name: str, lat: float, lon: float, cache_dir: str, elevation_f
                 # The grid is in the file's CRS: put its edges on the file's pixel edges
                 source.grid_origin = (src.transform.c % abs(src.res[0]), src.transform.f % abs(src.res[1]))
         native = source.nmt.native_res
-        source.default_resolution = float(round(native)) if native >= 5 else max(1.0, round(native, 1))
+        source.default_resolution = float(round(native)) if native >= 5 else max(MIN_RESOLUTION, round(native, 1))
         return source, "--elevation-file given"
     if name != "auto":
         return SOURCES[name], f"--source {name}"

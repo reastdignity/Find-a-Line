@@ -86,7 +86,7 @@ Add options to the command to change what is searched. Some useful ones:
 | `--radius 2000` | Search area around the centre, in metres | 1000 |
 | `--min-length 50 --max-length 300` | Shortest and longest line, in metres | 30 and 1000 |
 | `--slope-threshold 60` | How steep the ground must be for an anchor (degrees); higher means only cliffs, fewer lines and a faster search | 45 |
-| `--resolution 1` | Detail of the terrain in metres; 1 is the most detailed but slower | 2 |
+| `--resolution 2` | Detail of the terrain in metres; 1 is the most detailed, 2 is about four times faster | 1 with detailed national data (5 in Spain, 30 elsewhere) |
 | `--nmpt reject` | Leave out lines that pass too close to trees or buildings; `--nmpt off` doesn't check trees at all (faster, less to download) | lines are marked in orange |
 | `--model sag` | Check the clearance with the webbing sag calculation instead of the simple formula; set your setup with `--pretension 3` (kN), `--stretch 4` (% at 10 kN), `--webbing-weight 60` (g/m), `--athlete-mass 75` (kg), `--fall-zone 4` (m) | simple formula |
 | `--name "My crag"` | Name of the search in the list | name of the place from OpenStreetMap |
@@ -166,7 +166,7 @@ uv run findaline.py osm download poland
 
 ## If something goes wrong
 - **`uv` is not recognised / command not found:** close the window and open a new one after installing uv. If it still isn't found, run the install command from step 1 again.
-- **It takes too long:** use a smaller `--radius`, a higher `--slope-threshold`, or a coarser `--resolution 5`. You can stop the script at any time with Ctrl+C.
+- **It takes too long:** use a smaller `--radius`, a higher `--slope-threshold`, or a coarser `--resolution 2` (or 5). You can stop the script at any time with Ctrl+C.
 - **"No lines found":** try a lower `--slope-threshold`, a larger `--radius` or other line lengths. Outside Poland and Malta the data is less detailed, so try longer lines, for example `--min-length 100`.
 - **Download errors:** the data servers are sometimes busy. Run the same command again; what was already downloaded is kept.
 - **Not enough disk space:** inside the `cache` folder, delete the folders of countries or datasets you no longer need (for example `cache/spain`), or the whole `cache` folder; everything is downloaded again when needed. Old searches can be deleted from the `runs` folder.

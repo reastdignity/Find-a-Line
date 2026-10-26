@@ -1,7 +1,7 @@
 {
   "R1": {
-    "place": "Żabi Koń, Poland: geoportal source, defaults",
-    "args": "--lat 50.1559508 --lon 19.7562722",
+    "place": "Żabi Koń, Poland: geoportal source, defaults at 2 m",
+    "args": "--lat 50.1559508 --lon 19.7562722 --resolution 2",
     "sets": [
       "pl",
       "search",
@@ -128,7 +128,7 @@
   },
   "R6": {
     "place": "Dingli cliffs, Malta 2018: sea filling, lines over water",
-    "args": "--lat 35.8565 --lon 14.3830",
+    "args": "--lat 35.8565 --lon 14.3830 --resolution 2",
     "sets": [
       "water"
     ],
@@ -186,7 +186,7 @@
   },
   "R8": {
     "place": "Dingli – zatoka (centre over the sea)",
-    "args": "--lat 35.848778 --lon 14.383533 --slope-threshold 60",
+    "args": "--lat 35.848778 --lon 14.383533 --slope-threshold 60 --resolution 2",
     "sets": [
       "water"
     ],
@@ -343,7 +343,7 @@
   },
   "R14": {
     "place": "R1's circle as a polygon file, computed in tiles of 600 m: same lines as R1",
-    "args": "--area tests/data/r1_circle.geojson --tile-size 600",
+    "args": "--area tests/data/r1_circle.geojson --tile-size 600 --resolution 2",
     "sets": [
       "pl",
       "search"
@@ -397,7 +397,7 @@
   },
   "R16": {
     "place": "North coast of Gozo as a coast area in tiles, with the sag model: sea, gap filling at tile borders, profiles of the lines shown for groups (no group of this area joins two tiles, so the profiles computed after the tiles are not exercised)",
-    "args": "--area coast --buffer 100 --within 36.06,14.20,36.085,14.27 --model sag --tile-size 800 --min-length 20",
+    "args": "--area coast --buffer 100 --within 36.06,14.20,36.085,14.27 --model sag --tile-size 800 --min-length 20 --resolution 2",
     "sets": [
       "water",
       "search"
@@ -483,7 +483,7 @@
   },
   "R19": {
     "place": "Lauterbrunnen, Switzerland: swisstopo STAC tiles (2 m terrain, 0.5 m surface averaged to 2 m)",
-    "args": "--lat 46.5960 --lon 7.9070 --radius 400 --min-length 50 --max-length 400",
+    "args": "--lat 46.5960 --lon 7.9070 --radius 400 --min-length 50 --max-length 400 --resolution 2",
     "sets": [
       "sources",
       "ch"
@@ -508,9 +508,8 @@
     "seconds": 1.4
   },
   "R20": {
-    "place": "as R19 at 1 m: the 0.5 m terrain files",
-    "extends": "R19",
-    "args": "--resolution 1",
+    "place": "Lauterbrunnen at the default resolution (1 m: the 0.5 m swissALTI3D files)",
+    "args": "--lat 46.5960 --lon 7.9070 --radius 400 --min-length 50 --max-length 400",
     "sets": [
       "ch"
     ],

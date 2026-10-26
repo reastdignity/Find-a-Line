@@ -86,9 +86,10 @@ class SearchParams(BaseModel):
 
     # Search
     radius: float = field(1000, "search radius around the centre in metres", "search")
-    resolution: Optional[float] = field(None, "working resolution in metres (data is resampled to it); "
-                                              "default: 2 for national LiDAR sources, 30 for Europe-wide/NASADEM, "
-                                              "the file resolution for --elevation-file", "search")
+    resolution: Optional[float] = field(None, "working resolution in metres (data is resampled to it), at "
+                                              "least 1", "search",
+                                        default_text="the resolution of the data, at least 1: 1 for the national "
+                                                     "LiDAR sources, 5 for Spain, 30 for Europe-wide/NASADEM")
     min_length: float = field(30, "minimum line length in metres", "search")
     max_length: float = field(1000, "maximum line length in metres", "search")
     max_anchor_diff: float = field(5, "maximum height difference of the anchors in % of the line length",
@@ -155,8 +156,8 @@ class SearchParams(BaseModel):
             raise ValueError("both --northing and --easting are required")
         if self.source not in SOURCE_CHOICES:
             raise ValueError(f"unknown --source {self.source}")
-        if self.resolution is not None and self.resolution <= 0:
-            raise ValueError("--resolution must be positive")
+        if self.resolution is not None and self.resolution < src.MIN_RESOLUTION:
+            raise ValueError(f"--resolution must be at least {src.MIN_RESOLUTION:g} m")
         for path in (self.elevation_file, self.surface_file):
             if path and not os.path.exists(path):
                 raise ValueError(f"file not found: {path}")

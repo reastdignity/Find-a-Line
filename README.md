@@ -73,7 +73,7 @@ Anchors are taken at ground level, as with the formula. With the default values 
 - With the default `--source auto`, the country of the search centre is looked up in OpenStreetMap: Poland uses `geoportal`, Malta uses `malta` (2018), Spain uses `spain` (or `spain_canarias` on the Canary Islands), Switzerland and Liechtenstein use `swisstopo`, anywhere else uses `europe`. Giving `--elevation-file` selects `files`.
 - Downloaded data is kept in `cache/`, with one folder per country or Europe-wide dataset (`poland`, `malta`, `spain`, `switzerland`, `copernicus30`, `fabdem`, `nasadem`, `osm`): switching between sources (or back) never downloads again what is already there, and deleting such a folder frees its space (it is downloaded again when needed). Inside, the path names the dataset, its edition and the tiling, e.g. `malta/dtm/2018/epsg32633-1m-2000px-tif/` or `copernicus30/2021/dem/`; `live` marks services that always serve their current state. Each folder has an `index.sqlite` listing its files with when and where they were fetched; every run records in `run.json` which data it used. Polish data is cached per map sheet (1:5000, about 2.3 × 2.3 km, one GeoTIFF of about 9 MB each), Swiss data per 1 km tile and survey as published (0.5 m: about 17–20 MB, 2 m: about 1.3 MB), Malta and Spain in WCS tiles of 2000 × 2000 pixels at native resolution (2 km and 10 km), the 30 m models in 1°×1° tiles; the same files serve every working resolution.
 - **Keeping the cache up to date**: nothing is updated on its own. `python findaline.py cache status` lists the folders with their size, when their data was fetched and last used, what is due for a check, and the saved runs computed on data that has changed since. `python findaline.py cache update [FOLDER] [--all] [--bbox S,W,N,E | --point LAT,LON]` checks what is due: new surveys of the cached geoportal.gov.pl sheets and swisstopo tiles (the index is asked again after 180 days; a newer survey replaces the older file), tiles of services that serve their current state (IGN Spain, the orthophotos of geoportal.gov.pl, IGN and swisstopo; after 2 years), OpenStreetMap coastline and cliff tiles from Overpass (after a year), the world water polygons (after a year) and the OpenStreetMap extracts (after 30 days); tiles where a service had no data are checked again after 90 days. `--all` checks all of it however recent. Versioned releases (Copernicus 2021, FABDEM V1-2, NASADEM, Malta 2012/2018) never change and are never checked. A search can do the same for its own area first with `--update stale` or `--update all`.
-- The default `--resolution` is 2 m for the LiDAR sources, 30 m for `europe` and `nasadem`, and the file's own resolution for `files`. The grouping distance follows it (twice the resolution, at least 20 m).
+- The default `--resolution` is the resolution of the terrain data, but not finer than 1 m: 1 m for the LiDAR sources (Poland, Malta, Switzerland), 5 m for Spain, 30 m for `europe` and `nasadem`, and the file's own resolution for `files`. Finer than 1 m cannot be chosen: it brings nothing for highlines (clearances are a matter of metres, and 0.5 m LiDAR grids are partly interpolated) and costs four times the pixels. A 1 m grid has four times the pixels of a 2 m one and finds many more lines (often ten times more in steep terrain), so `--resolution 2` is a good start for large areas. The grouping distance follows the resolution (twice the resolution, at least 20 m).
 - Esri World Imagery is available as an online background layer everywhere; it is not cached, because Esri's terms do not allow downloading tiles for offline use.
 - **NASADEM**: `--source nasadem` needs a free API key from [opentopography.org](https://portal.opentopography.org/myopentopo), given with `--opentopo-key` or in the `OPENTOPOGRAPHY_API_KEY` environment variable (step-by-step: [getting an API key](setup-for-regular-folk.md#getting-an-opentopography-api-key-optional)). Alternatively download a NASADEM GeoTIFF (or a slope raster) from the [OpenTopography portal](https://portal.opentopography.org/raster?opentopoID=OTSDEM.032021.4326.2), as in the original version of this tool, and use `--elevation-file` (and `--slope-file`).
 - **Spain**: IGN publishes MDT05/MDS05 (5 m) through WCS; the finer MDT02 (2 m) is only available as files from the [CNIG download centre](https://centrodedescargas.cnig.es/CentroDescargas/modelo-digital-terreno-mdt02-segunda-cobertura), which has no download API, so it is not built in (you can download sheets yourself and use them with `--elevation-file`). At 5 m, lines shorter than about 30 m are not reliable. The data is requested as ASCII grids, which keep centimetres (the WCS GeoTIFF output is rounded to whole metres).
@@ -105,12 +105,12 @@ Source(
                  native_res=1.0, fetch_res=1.0, axes=("E", "N")),
     nmpt=WcsTiles("DSM Austria", "https://.../wcs", "coverage_id", "EPSG:31287", "austria/dsm",
                   native_res=1.0, fetch_res=1.0, axes=("E", "N")),
-    countries=("at",), crs="EPSG:31287", default_resolution=2,
+    countries=("at",), crs="EPSG:31287",
     ortho=OrthoService("Orthophoto Austria", "https://.../wms", "layer", "austria/ortho", "BEV"))
 ```
 
 - `crs` is the service's coordinate system (metric), `axes` the axis labels the service expects in `SUBSET` (see its DescribeCoverage), and `fetch_res` the resolution of the cached tiles (usually the native resolution; leaving it out lets the server downsample to the working resolution, which some services do badly: check the coverage at coarse resolutions).
-- `countries` holds the ISO codes for which `--source auto` picks it.
+- `countries` holds the ISO codes for which `--source auto` picks it. The default working resolution follows the terrain layer's `native_res` (at least 1 m); `default_resolution` overrides it.
 - `OrthoService` is a WMS requested in WGS84. When it covers only part of the country and answers with white elsewhere, `base_url` (a `{z}/{x}/{y}` Web Mercator tile URL, up to `base_max_zoom`) fills those parts, as for geoportal.gov.pl.
 - `OrthoService` without a WMS (`url=None`) uses the `base_url` tiles alone, as for SWISSIMAGE; `detail` limits the groups with detailed tiles where the service's terms ask for restraint.
 - Services that publish files instead of WCS can use `DegreeTiles` with a function returning the URL of a tile, as for FABDEM and Copernicus, `SheetTiles` when a sheet index lists the files (geoportal.gov.pl), or `StacTiles` for a STAC collection with one item per tile and survey (swisstopo).
@@ -169,7 +169,7 @@ Several places at once: give `--point LAT,LON` (WGS84) once per place, optionall
 | `--fill-gaps` | `on` | Fill gaps in the data on land from another source |
 | `--opentopo-key` | `OPENTOPOGRAPHY_API_KEY` | OpenTopography API key for `--source nasadem` |
 | `--radius` | 1000 | Search radius around the centre, in metres |
-| `--resolution` | depends on the source | Working resolution in metres: 2 for LiDAR sources, 30 for `europe`/`nasadem` |
+| `--resolution` | the data's own, at least 1 | Working resolution in metres, at least 1: by default 1 for LiDAR sources, 5 for Spain, 30 for `europe`/`nasadem` |
 | `--min-length` / `--max-length` | 30 / 1000 | Line length constraints, in metres |
 | `--slope-threshold` | 45 | Minimum terrain slope (degrees) for an anchor |
 | `--max-anchor-diff` / `--max-anchor-diff-m` | 5 / 50 | Maximum height difference of the anchors: % of the line length / metres (whichever is smaller) |
@@ -212,18 +212,18 @@ The search runs in five steps (data, slopes, anchor pairs, coordinates/groups/pr
 While the script runs, two progress bars at the bottom of the terminal show downloads (elevation and orthophoto tiles) and computations (stitching tiles, finding anchors, evaluating anchor pairs, profiles, grouping), each with the current stage, speed and remaining time. When the output is written to a file instead of a terminal, a line of text with the progress is printed every 10 seconds. Set `FINDALINE_PROGRESS=bars` or `FINDALINE_PROGRESS=text` to force one of the two.
 
 ### Run time and data size
-With the defaults (1 km radius at 2 m, NMPT on) the first run downloads about 100 MB and takes a minute or two, mostly downloading NMPT, which is much slower than NMT. The line search itself takes seconds. Larger areas grow quickly in data: a 20 km radius at 2 m is about 1.5 GB for NMT alone. Before downloading, the script prints an estimate and asks for confirmation if the download looks large. If it is too slow, compromise by doing at least one of the following:
+With the defaults (1 km radius at 1 m, NMPT on) the first run in Poland downloads about 100 MB and takes a minute or two (in Switzerland about 300 MB, which downloads in seconds), mostly downloading NMPT, which is much slower than NMT. The line search itself takes seconds. Larger areas grow quickly in data: a 20 km radius at 2 m is about 1.5 GB for NMT alone. Before downloading, the script prints an estimate and asks for confirmation if the download looks large. If it is too slow, compromise by doing at least one of the following:
 - Use a smaller `--radius`
-- Use a coarser `--resolution` (5 or 10 metres is good for a first look at a large area)
+- Use a coarser `--resolution` (2 metres finds the longer lines with a quarter of the pixels; 5 or 10 metres is good for a first look at a large area)
 - Raise `--slope-threshold`
 - Change your minimum or maximum line lengths
 
 ## Examples
 ### Żabi Koń, Dolina Kobylańska
-Żabi Koń is a limestone rock in Dolina Kobylańska near Kraków. Searching within 1 km of it with the default settings (2 m grid, slope ≥45°, lines 30–1000 m, anchors at most 5% / 50 m apart in height, NMPT marking, maximum elevation formula):
+Żabi Koń is a limestone rock in Dolina Kobylańska near Kraków. Searching within 1 km of it with a 2 m grid (`--resolution 2`; the default is 1 m) and the other settings at their defaults (slope ≥45°, lines 30–1000 m, anchors at most 5% / 50 m apart in height, NMPT marking, maximum elevation formula):
 
 ```
-python findaline.py --lat 50.1559508 --lon 19.7562722
+python findaline.py --lat 50.1559508 --lon 19.7562722 --resolution 2
 ```
 
 The terminal shows the settings, the progress of every step and finally the spots found (shortened):
