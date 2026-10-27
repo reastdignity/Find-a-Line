@@ -40,6 +40,7 @@ Finds possible highlines in elevation data: anchors on steep pixels, every pair 
 | `orthophoto.py` | Orthophoto tile cache (XYZ tiles requested from a WMS in EPSG:4326) |
 | `runs.py` | Saved runs (`runs/<date>_<time>_<place>_<random>/`), `runs/index.html`, `runs/runs.js`, run names |
 | `progress.py` | Two tqdm bars (Download / Compute); listeners (`progress.subscribe`) for the web worker |
+| `limits.py` | `Limits` (pydantic-settings, `FINDALINE_LIMIT_*`; nothing set means no limit, as locally): time limits of the worker's phases and of the quick lane |
 
 ## Things that must stay in sync
 - `mapping.group_lines` (Python) and `groupLines` (`viewer/src/grouping.ts`): the same greedy algorithm with the same cell index and the same order of the lines (`_rank` / `compare`: clearance, longest, height); the browser must produce the same groups. Values used for grouping are passed to the viewer unrounded.

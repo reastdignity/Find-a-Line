@@ -17,6 +17,7 @@ dependencies = [
     "pillow>=12",
     "psutil>=7",
     "pydantic>=2.11",
+    "pydantic-settings>=2.16.1",
     "pyproj>=3.7",
     "rasterio>=1.4",
     "requests>=2.32",

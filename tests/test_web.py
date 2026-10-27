@@ -13,6 +13,7 @@ REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DATA = os.path.join(REPO, "tests", "data")
 sys.path.insert(0, REPO)
 from jobs import Jobs, Scheduler  # noqa: E402
+from limits import Limits  # noqa: E402
 import web  # noqa: E402
 
 pytest.importorskip("httpx2")
@@ -250,11 +251,11 @@ def test_download_process_ending_late(tmp_path):
     job = jobs.add({"params": {}, "geometry": None}, "job")
     jobs.set(job, "computing")
     scheduler = Scheduler(jobs)
-    scheduler.running["download"] = (job, _Ended())
-    scheduler.running["compute"] = (job, type("Running", (), {"is_alive": lambda self: True})())
+    scheduler.running["download"] = (job, _Ended(), time.time())
+    scheduler.running["compute"] = (job, type("Running", (), {"is_alive": lambda self: True})(), time.time())
     scheduler._check()
     assert jobs.get(job)["status"] == "computing"
-    scheduler.running["compute"] = (job, _Ended())
+    scheduler.running["compute"] = (job, _Ended(), time.time())
     scheduler._check()
     assert jobs.get(job)["status"] == "failed"
 
@@ -413,7 +414,7 @@ def test_quick_lane(tmp_path, monkeypatch):
         for key in ("HTTP_PROXY", "HTTPS_PROXY"):
             monkeypatch.setenv(key, proxy)  # the processes of the worker inherit it
         monkeypatch.setenv("NO_PROXY", "")
-        scheduler = Scheduler(Jobs(str(tmp_path)), quick_timeout=3)
+        scheduler = Scheduler(Jobs(str(tmp_path)), limits=Limits(quick_seconds=3))
         scheduler.start()
         try:
             with TestClient(web.create_app(str(tmp_path), token=TOKEN, start_scheduler=False)) as client:
@@ -430,6 +431,33 @@ def test_quick_lane(tmp_path, monkeypatch):
         finally:
             scheduler.stop()
     assert Jobs(str(tmp_path))._db().execute("SELECT COUNT(*) FROM quick").fetchone()[0] == 0
+
+
+def test_time_limits(tmp_path, monkeypatch):
+    """Limits come from FINDALINE_LIMIT_* (none by default); a phase over its limit gets its processes
+    killed and its folder removed, and its job fails with "time limit"."""
+    import pydantic
+    assert Limits().download_seconds is None
+    monkeypatch.setenv("FINDALINE_LIMIT_COMPUTE_SECONDS", "7200")
+    assert Limits().compute_seconds == 7200 and Limits().phase_seconds("compute") == 7200
+    monkeypatch.setenv("FINDALINE_LIMIT_QUICK_SECONDS", "-1")
+    with pytest.raises(pydantic.ValidationError):
+        Limits()
+    monkeypatch.delenv("FINDALINE_LIMIT_QUICK_SECONDS")
+    with _black_hole() as proxy:
+        for key in ("HTTP_PROXY", "HTTPS_PROXY"):
+            monkeypatch.setenv(key, proxy)  # the processes of the worker inherit it
+        monkeypatch.setenv("NO_PROXY", "")
+        jobs = Jobs(str(tmp_path))
+        job = jobs.add({"params": {"area": "osm:Nowhere at all"}, "geometry": None}, "hanging")
+        scheduler = Scheduler(jobs, limits=Limits(download_seconds=3))
+        scheduler.start()
+        try:
+            result = _wait(jobs, job, ("failed", "done", "cancelled"), 25)  # Nominatim would wait 30 s
+        finally:
+            scheduler.stop()
+    assert result["status"] == "failed" and result["error"].startswith("time limit"), result
+    assert not os.path.exists(jobs.folder(job))
 
 
 def _clip_run(tmp_path, monkeypatch, *extra) -> str:

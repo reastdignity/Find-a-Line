@@ -37,6 +37,7 @@ from typing import Dict, Iterable, List, Optional, Set
 
 import cache
 import params as pm
+from limits import Limits
 
 TICK = 0.5                # seconds between looks at the queue
 PROGRESS_INTERVAL = 0.3   # seconds between progress events of a job
@@ -498,12 +499,12 @@ def kill_tree(pid: int):
 class Scheduler:
     """The worker: starts the processes of the jobs, one downloading and one computing job at a time."""
 
-    def __init__(self, jobs: Jobs, worker_id: Optional[str] = None, quick_timeout: Optional[float] = None):
+    def __init__(self, jobs: Jobs, worker_id: Optional[str] = None, limits: Optional[Limits] = None):
         self.jobs = jobs
+        self.limits = limits or Limits()  # time limits (FINDALINE_LIMIT_*; none locally)
         self.quick = None  # the process of the quick lane
-        self.quick_timeout = quick_timeout  # seconds a quick task may take (None: no limit)
         self.worker_id = worker_id or f"{socket.gethostname()}-{os.getpid()}-{uuid.uuid4().hex[:6]}"
-        self.running: Dict[str, tuple] = {}  # phase -> (job id, process)
+        self.running: Dict[str, tuple] = {}  # phase -> (job id, process, start time)
         self.lock = threading.Lock()
         self.context = multiprocessing.get_context("spawn")  # the same on every OS
         self.stopped = threading.Event()
@@ -543,7 +544,7 @@ class Scheduler:
             self.jobs.unregister(self.worker_id)
 
     def _kill_all(self):
-        for phase, (job_id, process) in list(self.running.items()):
+        for phase, (job_id, process, _) in list(self.running.items()):
             kill_tree(process.pid)
             process.join()
             del self.running[phase]
@@ -587,26 +588,36 @@ class Scheduler:
                 self.quick = None
                 if task:
                     self.jobs.quick_answer(task["id"], 500, "the worker of estimates and profiles stopped")
-            elif task and self.quick_timeout is not None and time.time() - task["started"] > self.quick_timeout:
+            elif task and self.limits.quick_seconds and time.time() - task["started"] > self.limits.quick_seconds:
                 kill_tree(self.quick.pid)
                 self.quick.join()
                 self.quick = None
-                self.jobs.quick_answer(task["id"], 504, f"time limit: stopped after {self.quick_timeout:g} s")
+                self.jobs.quick_answer(task["id"], 504, f"time limit: stopped after {self.limits.quick_seconds:g} s")
         if self.quick is None:
             self.quick = self.context.Process(target=run_quick, args=(self.jobs.data_dir, self.worker_id, os.getpid()),
                                               daemon=True)
             self.quick.start()
 
+    def _kill(self, phase: str):
+        job_id, process, _ = self.running.pop(phase)
+        kill_tree(process.pid)
+        process.join()
+        self._remove_folder(job_id)
+
     def _check(self):
-        for job_id in self.jobs.cancel_requested(job_id for job_id, _ in self.running.values()):
-            for phase, (running_id, process) in list(self.running.items()):
+        for job_id in self.jobs.cancel_requested(job_id for job_id, _, _ in self.running.values()):
+            for phase, (running_id, _, _) in list(self.running.items()):
                 if running_id == job_id:
-                    kill_tree(process.pid)
-                    process.join()
-                    del self.running[phase]
+                    self._kill(phase)
             self._remove_folder(job_id)
             self.jobs.set(job_id, "cancelled", when=ACTIVE + WAITING)
-        for phase, (job_id, process) in list(self.running.items()):
+        for phase, (job_id, process, started) in list(self.running.items()):
+            limit = self.limits.phase_seconds(phase)
+            if limit and process.is_alive() and time.time() - started > limit:
+                self._kill(phase)
+                self.jobs.set(job_id, "failed", when=(PHASE_STATUS[phase],),
+                              error=f"time limit: the {phase} phase was stopped after {limit:g} s")
+                continue
             if process.is_alive():
                 continue
             process.join()
@@ -622,7 +633,7 @@ class Scheduler:
                     process = self.context.Process(target=run_phase, args=(self.jobs.data_dir, job["id"], phase),
                                                    daemon=True)
                     process.start()
-                    self.running[phase] = (job["id"], process)
+                    self.running[phase] = (job["id"], process, time.time())
 
 
 def main(argv: List[str]) -> int:
