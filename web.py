@@ -39,6 +39,8 @@ import params as pm
 from jobs import TICK, Jobs, Scheduler, search_params
 
 PORT = 8765
+PING = 15           # seconds between the keep-alive comments of the event stream
+SEND_TIMEOUT = 30   # seconds a client may take to accept a message of the event stream
 APP_DIST = os.path.join(os.path.dirname(os.path.abspath(__file__)), "viewer", "dist")
 
 
@@ -108,8 +110,9 @@ def create_app(data_dir: str, token: Optional[str] = None, port: int = PORT, sta
     """The FastAPI application (tests create it without the scheduler)."""
     from fastapi import FastAPI, HTTPException, Request
     from fastapi.concurrency import run_in_threadpool
-    from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
+    from fastapi.responses import HTMLResponse, JSONResponse
     from fastapi.staticfiles import StaticFiles
+    from sse_starlette import EventSourceResponse
 
     import runs as rn
     import search
@@ -240,13 +243,16 @@ def create_app(data_dir: str, token: Optional[str] = None, port: int = PORT, sta
         start = max(since, int(last) if last.isdigit() else 0)
 
         async def stream():
+            # sse-starlette ends the generator when the client goes away (or the server stops)
             seq = start
-            while not await request.is_disconnected():
+            while True:
                 for event in await run_in_threadpool(jobs.events, seq):
                     seq = event["seq"]
-                    yield f"id: {seq}\ndata: {json.dumps(event)}\n\n"
+                    yield {"id": str(seq), "data": json.dumps(event)}
                 await asyncio.sleep(TICK)
-        return StreamingResponse(stream(), media_type="text/event-stream", headers={"Cache-Control": "no-cache"})
+        # A comment every PING seconds keeps proxies from closing a quiet stream and finds dead
+        # connections; a client that takes no data for SEND_TIMEOUT seconds is dropped
+        return EventSourceResponse(stream(), ping=PING, send_timeout=SEND_TIMEOUT)
 
     @app.get("/api/runs")
     def list_runs():

@@ -364,31 +364,66 @@ MEASURE_SCRIPT = """
 """
 
 
-def _edge_page(tmp_path, page: str) -> str:
-    """The DOM of a page of the app (a path on a real server over tmp_path) after headless Edge ran its scripts."""
+import contextlib  # noqa: E402
+
+
+@contextlib.contextmanager
+def _server(data_dir, start_scheduler: bool = False):
+    """The app on a real server (uvicorn in a thread) over the data folder; yields its port."""
     import socket
-    import subprocess
     import threading
 
     import uvicorn
     with socket.socket() as s:
         s.bind(("127.0.0.1", 0))
         port = s.getsockname()[1]
-    server = uvicorn.Server(uvicorn.Config(web.create_app(str(tmp_path), token=TOKEN, port=port,
-                                                          start_scheduler=False),
+    server = uvicorn.Server(uvicorn.Config(web.create_app(str(data_dir), token=TOKEN, port=port,
+                                                          start_scheduler=start_scheduler),
                                            host="127.0.0.1", port=port, log_level="warning"))
     thread = threading.Thread(target=server.run, daemon=True)
     thread.start()
     try:
         while not server.started:
             time.sleep(0.1)
+        yield port
+    finally:
+        server.should_exit = True
+        thread.join(10)
+
+
+def test_event_stream(tmp_path, monkeypatch):
+    """/api/events sends the events after Last-Event-ID (or `since`) with their ids, and keep-alive
+    comments while nothing happens."""
+    import http.client
+    monkeypatch.setattr(web, "PING", 1)
+    jobs = Jobs(str(tmp_path))
+    jobs.add({"params": {}, "geometry": None}, "first")
+    seen = jobs.last_seq()
+    second = jobs.add({"params": {}, "geometry": None}, "second")
+    with _server(tmp_path) as port:
+        for headers, url in (({"Last-Event-ID": str(seen)}, "/api/events"), ({}, f"/api/events?since={seen}")):
+            connection = http.client.HTTPConnection("127.0.0.1", port, timeout=20)
+            connection.request("GET", url, headers=headers)
+            response = connection.getresponse()
+            assert response.status == 200 and response.getheader("content-type").startswith("text/event-stream")
+            lines, started = [], time.time()
+            while not any(line.startswith(":") for line in lines) and time.time() - started < 15:
+                lines.append(response.fp.readline().decode("utf-8").rstrip("\r\n"))
+            connection.close()
+            data = [json.loads(line[5:]) for line in lines if line.startswith("data:")]
+            assert [(e["job"], e["data"]["title"]) for e in data] == [(second, "second")], lines
+            assert f"id: {data[0]['seq']}" in lines and data[0]["seq"] > seen
+            assert any(line.startswith(":") for line in lines), lines  # the keep-alive
+
+
+def _edge_page(tmp_path, page: str, start_scheduler: bool = False) -> str:
+    """The DOM of a page of the app (a path on a real server over tmp_path) after headless Edge ran its scripts."""
+    import subprocess
+    with _server(tmp_path, start_scheduler) as port:
         return subprocess.run(
             [EDGE, "--headless", "--disable-gpu", f"--user-data-dir={tmp_path / 'edge'}", "--no-first-run",
              "--virtual-time-budget=60000", "--dump-dom", f"http://127.0.0.1:{port}/{page}"],
             capture_output=True, text=True, encoding="utf-8", timeout=180).stdout
-    finally:
-        server.should_exit = True
-        thread.join(10)
 
 
 @pytest.mark.skipif(not os.path.exists(EDGE), reason="needs Microsoft Edge")
