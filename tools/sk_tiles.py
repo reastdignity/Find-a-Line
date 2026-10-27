@@ -11,6 +11,7 @@ above it, see sources.mirror_urls), later it downloads the same tiles from Huggi
 Licence CC BY 4.0, author ÚGKK SR (the licence PDF in the ZIPs).
 
     python tools/sk_tiles.py download dmp1 --zips C:\\sk-zips                    # the ZIP (resumable)
+    python tools/sk_tiles.py extract dmp1 --zips C:\\sk-zips                     # the TIFF beside it
     python tools/sk_tiles.py cut dmp1 --zips C:\\sk-zips --out C:\\mirror\\slovakia  # tiles + index (resumable)
     python tools/sk_tiles.py upload dmp1 --out C:\\mirror\\slovakia --repo user/name  # needs HF_TOKEN
 
@@ -19,10 +20,11 @@ Licence CC BY 4.0, author ÚGKK SR (the licence PDF in the ZIPs).
 Layout in the dataset: <product>/1m/<block>/<E>_<N>.tif, where E, N are the tile's lower
 left corner in km divided by 2 (E = floor(x / 2000)) and <block> groups 10 x 10 tiles
 (E // 10, N // 10) so no folder holds more than 100 files; <product>/1m/index.json lists
-the tiles with their sha256 (None: no data there). The TIFF is read straight from the ZIP
-(GDAL /vsizip/; the national ZIPs are plain Deflate), in 2 km bands of the full width from
-the top, so the ZIP is read forwards only and never unpacked: a backward seek in a Deflate
-stream decompresses it again from an earlier point.
+the tiles with their sha256 (None: no data there). The TIFF is read in 2 km bands of the
+full width from the top. Extract it first (122–157 GB): GDAL can read it straight from the
+ZIP (/vsizip/; the national ZIPs are plain Deflate, forwards only), but at about 7 MB/s
+(DMP 1.0: 9 min per band, 15 h in all) against 400 MB/s for Python's zipfile, and from the
+plain file the band takes a fraction of that; cut uses the extracted TIFF when it is there.
 Encoding: LERC_ZSTD with a maximum error of 5 mm (5.5 MB per km² at 0.5 m in the trial
 on lot 04, against 9.4 MB lossless; the surveys are accurate to centimetres).
 """
@@ -35,6 +37,8 @@ import math
 import os
 import sys
 import time
+import zipfile
+from concurrent.futures import ThreadPoolExecutor
 from typing import Optional
 
 import numpy as np
@@ -57,8 +61,9 @@ TILE_M = 2000
 BLOCK = 10          # tiles per folder side
 MAX_Z_ERROR = 0.005  # metres
 # GDAL's block cache keeps the TIFF blocks a band shares with the previous one (a block
-# row of the whole country is a few hundred MB), so they are not read from the ZIP again
+# row of the whole country is a few hundred MB), so they are not read again
 CACHE_MB = 4096
+WRITE_THREADS = os.cpu_count() or 4  # LERC and the COG driver release the GIL
 HEADERS = {"User-Agent": "Find-a-Line/1.0 (highline finder; tiles for a public mirror)"}
 
 
@@ -95,6 +100,34 @@ def download(product: str, zips: str):
     return path
 
 
+def extracted(product: str, zips: str) -> str:
+    """Path of the TIFF extracted beside the ZIP."""
+    return os.path.join(zips, os.path.basename(PRODUCTS[product]["member"]))
+
+
+def extract(product: str, zips: str):
+    """Extract the TIFF from the ZIP into the folder zips (through a .part file)."""
+    spec = PRODUCTS[product]
+    path = extracted(product, zips)
+    with zipfile.ZipFile(os.path.join(zips, os.path.basename(spec["zip"]))) as archive:
+        total = archive.getinfo(spec["member"]).file_size
+        if os.path.exists(path) and os.path.getsize(path) == total:
+            print(f"{path}: already extracted ({total / 1e9:.1f} GB)")
+            return path
+        start, last, done = time.time(), time.time(), 0
+        with archive.open(spec["member"]) as src, open(path + ".part", "wb") as dst:
+            while chunk := src.read(64 << 20):
+                dst.write(chunk)
+                done += len(chunk)
+                if time.time() - last > 30:
+                    last = time.time()
+                    print(f"  {done / 1e9:.1f} of {total / 1e9:.1f} GB, {(time.time() - start) / 60:.0f} min",
+                          flush=True)
+    os.replace(path + ".part", path)
+    print(f"{path}: {total / 1e9:.1f} GB in {(time.time() - start) / 60:.0f} min")
+    return path
+
+
 def _write(path: str, band: np.ndarray, crs, transform):
     tmp = path + ".part"
     with rio.open(tmp, "w", driver="COG", width=band.shape[1], height=band.shape[0], count=1, dtype="float32",
@@ -113,10 +146,12 @@ def _sha256(path: str) -> str:
 
 
 def cut(product: str, zips: str, root: str, rows_limit: Optional[int] = None):
-    """Cut the TIFF inside the ZIP into 2 km tiles under root (skips rows already written;
-    rows_limit stops after that many rows, for a timing trial)."""
+    """Cut the TIFF (extracted, or else inside the ZIP) into 2 km tiles under root (skips
+    rows already written; rows_limit stops after that many rows, for a timing trial)."""
     spec = PRODUCTS[product]
-    source = f"/vsizip/{os.path.join(zips, os.path.basename(spec['zip']))}/{spec['member']}"
+    source = extracted(product, zips)
+    if not os.path.exists(source):
+        source = f"/vsizip/{os.path.join(zips, os.path.basename(spec['zip']))}/{spec['member']}"
     out = os.path.join(root, tile_folder(product))
     index_path = os.path.join(out, "index.json")
     index = {"tiles": {}}
@@ -124,7 +159,8 @@ def cut(product: str, zips: str, root: str, rows_limit: Optional[int] = None):
         with open(index_path, encoding="utf-8") as f:
             index = json.load(f)
     start = time.time()
-    with rio.Env(GDAL_CACHEMAX=CACHE_MB), rio.open(source) as src:
+    with rio.Env(GDAL_CACHEMAX=CACHE_MB, GDAL_NUM_THREADS="ALL_CPUS"), rio.open(source) as src, \
+            ThreadPoolExecutor(max_workers=WRITE_THREADS) as pool:
         res = src.res[0]
         assert abs(res - 1.0) < 1e-9, f"expected 1 m, got {res}"
         left, bottom, right, top = src.bounds
@@ -151,15 +187,18 @@ def cut(product: str, zips: str, root: str, rows_limit: Optional[int] = None):
             part = src.read(1, window=Window(c_in, r_in, c_end - c_in, r_end - r_in), masked=True)
             band[r_in - row0:r_end - row0, c_in - c0:c_end - c0] = part.astype(np.float32).filled(np.nan)
             del part
-            for i in todo:
+
+            def save(i):
                 tile = np.ascontiguousarray(band[:, (i - cols[0]) * TILE_M:(i - cols[0] + 1) * TILE_M])
                 if not np.isfinite(tile).any():
-                    index["tiles"][f"{i}_{j}"] = None  # no data: not uploaded
-                    continue
+                    return None  # no data: not uploaded
                 path = os.path.join(out, tile_name(i, j))
                 os.makedirs(os.path.dirname(path), exist_ok=True)
                 _write(path, tile, src.crs, from_origin(i * TILE_M, (j + 1) * TILE_M, res, res))
-                index["tiles"][f"{i}_{j}"] = _sha256(path)
+                return _sha256(path)
+
+            for i, digest in zip(todo, pool.map(save, todo)):
+                index["tiles"][f"{i}_{j}"] = digest
             del band
             index.update(product=product, title=spec["title"], source=spec["zip"], crs="EPSG:8353",
                          heights="EPSG:8357 (Baltic 1957)", tile_m=TILE_M, resolution=res, block=BLOCK,
@@ -228,7 +267,7 @@ def upload(product: str, root: str, repo: str):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("step", choices=["download", "cut", "upload"])
+    parser.add_argument("step", choices=["download", "extract", "cut", "upload"])
     parser.add_argument("product", choices=list(PRODUCTS))
     parser.add_argument("--zips", help="folder of the ZIPs (download, cut)")
     parser.add_argument("--out", help="folder of the tiles, laid out as the dataset (cut, upload)")
@@ -238,13 +277,15 @@ def main():
     args = parser.parse_args()
     zips = args.zips or args.work
     out = args.out or (os.path.join(args.work, "tiles") if args.work else None)
-    if args.step in ("download", "cut") and not zips:
+    if args.step in ("download", "extract", "cut") and not zips:
         sys.exit("--zips (or --work) is needed")
     if args.step in ("cut", "upload") and not out:
         sys.exit("--out (or --work) is needed")
     if args.step == "download":
         os.makedirs(zips, exist_ok=True)
         download(args.product, zips)
+    elif args.step == "extract":
+        extract(args.product, zips)
     elif args.step == "cut":
         cut(args.product, zips, out, args.rows)
     else:

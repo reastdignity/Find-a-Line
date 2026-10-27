@@ -107,14 +107,17 @@ def _synthetic_zip(tmp_path):
     return work, band, left, top
 
 
-def _cut(tmp_path, monkeypatch):
-    """The synthetic raster cut by tools/sk_tiles.py into a mirror folder (<mirror>/slovakia/test/1m)."""
+def _cut(tmp_path, monkeypatch, extract=False):
+    """The synthetic raster cut by tools/sk_tiles.py into a mirror folder (<mirror>/slovakia/test/1m),
+    from the ZIP or from the TIFF extracted beside it."""
     sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "tools"))
     import sk_tiles
     work, band, left, top = _synthetic_zip(tmp_path)
     monkeypatch.setitem(sk_tiles.PRODUCTS, "test", {"zip": "https://example.org/test.zip", "member": "t.tif",
                                                    "title": "test"})
     mirror = tmp_path / "mirror"
+    if extract:
+        assert sk_tiles.extract("test", str(work)) == sk_tiles.extracted("test", str(work))
     sk_tiles.cut("test", str(work), str(mirror / "slovakia"))
     assert (mirror / "slovakia" / "README.md").exists()   # the dataset card goes with the tiles
     return mirror, mirror / "slovakia" / "test" / "1m", band, left, top
@@ -163,7 +166,7 @@ def test_slovak_tiles_from_the_local_mirror(tmp_path, monkeypatch):
     """Before the upload GridTiles copies the tiles from the folder made by tools/sk_tiles.py."""
     import grid as gd
     import cache
-    mirror, root, band, left, top = _cut(tmp_path, monkeypatch)
+    mirror, root, band, left, top = _cut(tmp_path, monkeypatch, extract=True)
     monkeypatch.setattr(src, "_get", lambda *a, **k: pytest.fail("no network with a mirror"))
     layer = src.GridTiles("Test DSM", [], "EPSG:8353", "slovakia/test/1m", 2000, 1.0, 6e6, mirror="slovakia/test/1m")
     monkeypatch.delenv(src.MIRROR_ENV, raising=False)
