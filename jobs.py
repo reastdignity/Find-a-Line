@@ -27,13 +27,16 @@ PROGRESS_INTERVAL = 0.3   # seconds between progress events of a job
 # What a job is doing; "ready" means its data is downloaded and it waits to compute
 ACTIVE = ("downloading", "computing")
 PHASE_STATUS = {"download": "downloading", "compute": "computing"}  # the status each phase works in
-SCHEMA = """
-CREATE TABLE IF NOT EXISTS jobs (
-    id TEXT PRIMARY KEY, created TEXT, status TEXT, request TEXT, title TEXT,
-    run_id TEXT, error TEXT, finished TEXT);
-CREATE TABLE IF NOT EXISTS events (
-    seq INTEGER PRIMARY KEY AUTOINCREMENT, job TEXT, kind TEXT, data TEXT);
-"""
+# The schema of jobs.sqlite, one step per version (cache.migrate; never change a released step).
+# Version 1 is the schema from before the versions: such a database (user_version 0)
+# already has these tables, so the step only marks it, and its jobs stay.
+MIGRATIONS = [
+    """CREATE TABLE IF NOT EXISTS jobs (
+           id TEXT PRIMARY KEY, created TEXT, status TEXT, request TEXT, title TEXT,
+           run_id TEXT, error TEXT, finished TEXT);
+       CREATE TABLE IF NOT EXISTS events (
+           seq INTEGER PRIMARY KEY AUTOINCREMENT, job TEXT, kind TEXT, data TEXT);""",
+]
 
 
 class Jobs:
@@ -42,8 +45,11 @@ class Jobs:
     def __init__(self, data_dir: str):
         self.data_dir = data_dir
         self.path = os.path.join(data_dir, "jobs.sqlite")
-        with self._db() as db:
-            db.executescript(SCHEMA)
+        db = self._db()
+        try:
+            cache.migrate(db, MIGRATIONS)
+        finally:
+            db.close()
 
     def _db(self) -> sqlite3.Connection:
         db = sqlite3.connect(self.path, timeout=60)

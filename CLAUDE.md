@@ -23,7 +23,7 @@ Finds possible highlines in elevation data: anchors on steep pixels, every pair 
 | `area.py` | Search areas (`Circle`, `Polygon`): grid bounds, mask, shapes for maps and orthophoto; `from_spec` builds `--area` (coast, cliffs, file, osm:name) |
 | `sources.py` | Data sources (`SOURCES`), tiled download (WCS tiles, 1° tiles, indexed files: geoportal sheets from a WFS, swisstopo tiles from STAC; our own grid tiles: Slovakia), mosaics, water and gap filling |
 | `tools/sk_tiles.py` | Run by hand: ÚGKK SR's national ZIPs → 2 km COG tiles + `index.json` + dataset card (the local mirror, later Hugging Face) |
-| `cache.py` | Data folder (`cache/`, `runs/`, `work/`), cache layout, `index.sqlite` per top-level folder |
+| `cache.py` | Data folder (`cache/`, `runs/`, `work/`), cache layout, `index.sqlite` per top-level folder; `migrate` (schema versions of the SQLite databases, `PRAGMA user_version`) |
 | `osm.py` | OSM themes in 0.25° tiles (`coastline`, `cliff`) from Overpass or the extracts, cached Nominatim answers |
 | `coast.py` | Sea mask: OSM coastline (theme tiles from Overpass or extracts, or the world file) or the Copernicus water mask |
 | `grid.py` | Working grid (metric CRS: the source's, or the UTM zone of the centre; edges on the source's pixel edges, `Source.grid_origin`) |
@@ -34,7 +34,7 @@ Finds possible highlines in elevation data: anchors on steep pixels, every pair 
 | `mapping.py` | Coordinates, grouping, matplotlib map; `save_map` writes a run's `map.html` + `data.js` for the viewer |
 | `viewer/` | The result viewer (TypeScript, Preact, Leaflet; `src/`), bundled by esbuild into `dist/` (committed); copied to `runs/_viewer/` by every run |
 | `web.py` | `findaline.py web`: FastAPI on 127.0.0.1 (Host check, session token, CSP), the requests the page may send, SSE events, `/api/profile` (a line's profile computed again, or of two points measured on the map: `search.profile_of_line`); the page is `viewer/src/app` |
-| `jobs.py` | The web app's job queue (`Jobs`, `jobs.sqlite` with the events) and its worker processes (`Scheduler`, `run_phase`: download, then compute) |
+| `jobs.py` | The web app's job queue (`Jobs`, `jobs.sqlite` with the events; its schema steps in `MIGRATIONS`) and its worker processes (`Scheduler`, `run_phase`: download, then compute) |
 | `update.py` | `findaline.py cache status/update` and `osm download/update`: which cached data can change, checks, runs on changed data |
 | `osmextract.py` | Geofabrik OSM extracts: download, replication diffs (pyosmium), theme features, theme tiles built from extracts |
 | `orthophoto.py` | Orthophoto tile cache (XYZ tiles requested from a WMS in EPSG:4326) |

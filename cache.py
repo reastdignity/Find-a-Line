@@ -76,6 +76,50 @@ def replacing(path: str, mode: str = "wb", **kwargs):
         raise
 
 
+def _statements(script: str) -> Iterable[str]:
+    """The SQL statements of a script, one by one (executescript would commit before it runs)."""
+    current = ""
+    for part in script.split(";"):
+        current += part + ";"
+        if sqlite3.complete_statement(current):
+            if current.strip(" \t\r\n;"):
+                yield current
+            current = ""
+
+
+def migrate(db: sqlite3.Connection, steps: List) -> int:
+    """Bring a database of the data folder to its newest schema; returns its version.
+
+    The schema version is PRAGMA user_version: steps[0] makes version 1, steps[1]
+    version 2 and so on. Each step is an SQL script or a callable taking the connection.
+    The missing steps run in one transaction (BEGIN IMMEDIATE, so two processes opening
+    the database at once migrate it once); if one fails, the database stays as it was.
+    A step is never changed once released: a change of the schema is a new step.
+    """
+    version = db.execute("PRAGMA user_version").fetchone()[0]
+    if version >= len(steps):
+        return version
+    isolation, db.isolation_level = db.isolation_level, None  # our own BEGIN / COMMIT
+    try:
+        db.execute("BEGIN IMMEDIATE")
+        try:
+            version = db.execute("PRAGMA user_version").fetchone()[0]  # another process may have migrated
+            for number, step in enumerate(steps[version:], version + 1):
+                if callable(step):
+                    step(db)
+                else:
+                    for statement in _statements(step):
+                        db.execute(statement)
+                db.execute(f"PRAGMA user_version = {number:d}")
+            db.execute("COMMIT")
+        except BaseException:
+            db.execute("ROLLBACK")
+            raise
+    finally:
+        db.isolation_level = isolation
+    return max(version, len(steps))
+
+
 def data_dir(arg: Optional[str] = None) -> str:
     """The data folder: --data-dir, else FINDALINE_DATA, else the folder of the scripts."""
     return os.path.abspath(arg or os.environ.get("FINDALINE_DATA") or os.path.dirname(os.path.abspath(__file__)))

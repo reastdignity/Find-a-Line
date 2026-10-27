@@ -133,6 +133,38 @@ def test_drawn_area_through_the_queue(tmp_path, monkeypatch):
     assert len(lines.splitlines()) > 10 and lines == cli_csv.read_bytes()
 
 
+def test_jobs_database_migrated(tmp_path):
+    """A jobs.sqlite from before the schema versions keeps its jobs and gets the newest version;
+    a failing step leaves a database as it was."""
+    import sqlite3
+
+    import cache
+    import jobs as jb
+    db = sqlite3.connect(tmp_path / "jobs.sqlite")
+    db.executescript("""
+        CREATE TABLE jobs (id TEXT PRIMARY KEY, created TEXT, status TEXT, request TEXT, title TEXT,
+                           run_id TEXT, error TEXT, finished TEXT);
+        CREATE TABLE events (seq INTEGER PRIMARY KEY AUTOINCREMENT, job TEXT, kind TEXT, data TEXT);
+        INSERT INTO jobs VALUES ('old', '2026-10-01T10:00:00', 'done', '{}', 'Old job', 'run', NULL,
+                                 '2026-10-01T11:00:00');""")
+    db.close()
+    jobs = Jobs(str(tmp_path))
+    assert jobs.get("old")["title"] == "Old job"
+    db = sqlite3.connect(tmp_path / "jobs.sqlite")
+    assert db.execute("PRAGMA user_version").fetchone()[0] == len(jb.MIGRATIONS)
+    db.close()
+    Jobs(str(tmp_path))  # opened again: nothing to do
+
+    db = sqlite3.connect(tmp_path / "other.sqlite")
+    with pytest.raises(sqlite3.OperationalError):
+        cache.migrate(db, ["CREATE TABLE a (x); CREATE TABLE b (y)", "CREATE TABLE c (z); CREATE TABLE a (x)"])
+    assert db.execute("PRAGMA user_version").fetchone()[0] == 0
+    assert db.execute("SELECT name FROM sqlite_master").fetchall() == []
+    assert cache.migrate(db, ["CREATE TABLE a (x); CREATE TABLE b (y)", lambda d: d.execute("CREATE TABLE c (z)")]) == 2
+    assert {r[0] for r in db.execute("SELECT name FROM sqlite_master")} == {"a", "b", "c"}
+    db.close()
+
+
 def test_schema_has_no_file_fields(client):
     names = {f["name"] for f in client.get("/api/schema").json()["fields"]}
     assert {"lat", "radius", "model", "ortho"} <= names
