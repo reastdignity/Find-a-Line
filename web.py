@@ -141,7 +141,7 @@ def create_app(data_dir: str, token: Optional[str] = None, port: int = PORT, sta
             return JSONResponse({"detail": "missing or wrong token"}, status_code=403)
         response = await call_next(request)
         response.headers["Content-Security-Policy"] = (
-            "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; "
+            "default-src 'self'; script-src 'self'; style-src 'self'; "
             "img-src 'self' data: https:; connect-src 'self'; frame-ancestors 'none'")
         response.headers["X-Content-Type-Options"] = "nosniff"
         # The viewer and the app change with the code, run data with every run: always revalidate

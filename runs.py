@@ -27,6 +27,7 @@ import secrets
 import unicodedata
 from datetime import datetime
 from typing import Dict, List, Optional
+from urllib.parse import quote
 
 import requests
 
@@ -274,7 +275,7 @@ def write_index(runs_dir: str):
         links = []
         for label, file in (("map", "map.html"), ("CSV", "lines.csv"), ("GeoJSON", "lines.geojson")):
             if os.path.exists(os.path.join(runs_dir, r["id"], file)):
-                links.append(f"<a href='{e(r['id'])}/{file}'>{label}</a>")
+                links.append(f"<a href='{e(quote(r['id']))}/{file}'>{label}</a>")
         rows.append(
             f"<tr><td>{e(r['created'][:16].replace('T', ' '))}</td><td>{e(r['name'])}</td>"
             f"<td>{r['center']['lat']:.5f}, {r['center']['lon']:.5f}</td>"
@@ -282,17 +283,13 @@ def write_index(runs_dir: str):
             f"<td class='n'>{r['summary']['lines']}</td><td class='n'>{r['summary']['spots']}</td>"
             f"<td>{' · '.join(links)}</td></tr>")
 
+    import mapping
+    mapping.install_viewer(runs_dir)  # its index.css styles the page (no inline styles: the CSP)
     with open(os.path.join(runs_dir, "index.html"), "w", encoding="utf-8") as f:
         f.write(f"""<!doctype html>
 <html><head><meta charset="utf-8"><title>Find-a-Line runs</title>
-<style>
-  body {{ font: 14px/1.5 sans-serif; margin: 24px; color: #222; }}
-  table {{ border-collapse: collapse; }}
-  th, td {{ padding: 4px 10px; border-bottom: 1px solid #ddd; text-align: left; vertical-align: top; }}
-  th {{ background: #f4f4f4; }}
-  td.n {{ text-align: right; }}
-  tr:hover td {{ background: #fafafa; }}
-</style></head>
+<link rel="stylesheet" href="{mapping.VIEWER_FOLDER}/index.css">
+</head>
 <body>
 <h1>Find-a-Line runs</h1>
 <p>{len(runs)} runs, newest first. Spots are groups of similar lines.</p>

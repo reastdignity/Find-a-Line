@@ -204,18 +204,20 @@ def test_download_process_ending_late(tmp_path):
     assert jobs.get(job)["status"] == "failed"
 
 
-def _clip_run(tmp_path, monkeypatch) -> str:
+def _clip_run(tmp_path, monkeypatch, *extra) -> str:
     """A run of the Żabi Koń clip (sag model) in the data folder tmp_path; its id."""
     import subprocess
     _offline(monkeypatch)
+    runs = tmp_path / "runs"
+    before = set(os.listdir(runs)) if runs.exists() else set()
     result = subprocess.run(
         [sys.executable, "findaline.py", "--elevation-file", os.path.join(DATA, "zabi_kon_nmt.tif"),
          "--surface-file", os.path.join(DATA, "zabi_kon_nmpt.tif"), "--northing", "254608", "--easting", "553966",
          "--radius", "150", "--model", "sag", "--water", "off", "--fill-gaps", "off", "--no-plot", "--yes",
-         "--ortho", "never", "--data-dir", str(tmp_path)],
+         "--ortho", "never", "--data-dir", str(tmp_path), *extra],
         cwd=REPO, capture_output=True, text=True, encoding="utf-8", timeout=600, env=dict(os.environ))
     assert result.returncode == 0, result.stdout + result.stderr
-    return next(d for d in os.listdir(tmp_path / "runs") if os.path.isfile(tmp_path / "runs" / d / "run.json"))
+    return next(d for d in set(os.listdir(runs)) - before if os.path.isfile(runs / d / "run.json"))
 
 
 def _lines_of(tmp_path, run_id):
@@ -365,8 +367,31 @@ def test_measure_in_the_map(tmp_path, monkeypatch):
     assert raised.startswith(f"Measured: {row[8]:.0f} m, A1 {row[11] + 5:.1f} m"), text
 
 
+# Loaded first on a test page: records every violation of the Content-Security-Policy and
+# writes them into <pre id="csp"> after 30 s (virtual time)
+CSP_STUB = """
+window.CSP_VIOLATIONS = [];
+document.addEventListener("securitypolicyviolation", (e) => CSP_VIOLATIONS.push(
+  e.violatedDirective + " " + e.blockedURI + " " + (e.sample || "")));
+setTimeout(() => {
+  const out = document.createElement("pre");
+  out.id = "csp";
+  out.textContent = JSON.stringify(CSP_VIOLATIONS);
+  document.body.appendChild(out);
+}, 30000);
+"""
+
+
+def _violations(dom: str) -> list:
+    import re
+    found = re.search(r'<pre id="csp">(.*?)</pre>', dom, re.S)
+    assert found, dom[-2000:]
+    return json.loads(found.group(1).replace("&quot;", '"').replace("&amp;", "&").replace("&lt;", "<")
+                      .replace("&gt;", ">"))
+
+
 # Before the app: no event stream (headless Edge would wait for it), a fixed estimate
-APP_STUBS = """
+APP_STUBS = CSP_STUB + """
 window.EventSource = class { constructor() {} close() {} };
 const realFetch = window.fetch;
 window.fetch = (url, init) => String(url).startsWith("/api/estimate")
@@ -438,6 +463,7 @@ def test_app_counts_and_clears_areas(tmp_path):
     assert drawn.startswith("2 separate areas (3 shapes"), text
     assert cleared == "none, drawn no", text
     assert started == "after start: none", text
+    assert _violations(dom) == []  # style-src 'self': no inline styles in the app
     jobs = Jobs(str(tmp_path))
     queued = jobs.all()
     assert len(queued) == 1
@@ -520,3 +546,63 @@ def test_app_reads_area_files(tmp_path):
     geometry = json.loads(Jobs(str(tmp_path)).get(queued[0]["id"])["request"])["geometry"]
     assert [f["geometry"]["type"] for f in geometry["features"]] == ["LineString"]
     assert geometry["features"][0]["geometry"]["coordinates"][0][:2] == [19.753, 50.155]
+
+
+XSS_NAME = "<img src=x onerror=window.XSS=1>"
+
+OTHER_RUN_SCRIPT = """
+(function () {
+  const out = document.createElement("pre");
+  out.id = "result";
+  document.body.appendChild(out);
+  const map = window.FINDALINE_MAP;
+  const wait = (ok, then, tries = 100) => ok() ? then() : tries ? setTimeout(() => wait(ok, then, tries - 1), 200)
+                                                    : (out.textContent += "timeout: " + JSON.stringify({
+      boxes: document.querySelectorAll(".fal-other input").length,
+      others: document.querySelector(".fal-others") && document.querySelector(".fal-others").textContent,
+      popups: Object.values(map._layers).filter((l) => l.getPopup && l.getPopup()).length}));
+  const box = () => [...document.querySelectorAll(".fal-other input")][0];
+  const otherLine = () => Object.values(map._layers).find((l) => l.getPopup && l.getPopup()
+    && String(l.getPopup().getContent()).includes("Run:"));
+  wait(() => box(), () => {
+    box().click();
+    wait(() => otherLine(), () => {
+      otherLine().openPopup();
+      setTimeout(() => {
+        const popup = document.querySelector(".leaflet-popup-content");
+        const swatch = popup.querySelector(".fal-swatch");
+        const link = popup.querySelector("a");
+        out.textContent = JSON.stringify({swatch: swatch.style.background, link: link.getAttribute("href"),
+          text: popup.textContent.slice(0, 200), xss: window.XSS || null, imgs: popup.querySelectorAll("img").length});
+      }, 300);
+    });
+  });
+})();
+"""
+
+
+@pytest.mark.skipif(not os.path.exists(EDGE), reason="needs Microsoft Edge")
+def test_map_without_inline_styles(tmp_path, monkeypatch):
+    """A map served by the app runs under style-src 'self' without violations; another run shown
+    in it, named like an HTML tag, gets its swatch colour and its link, and runs no script."""
+    import re
+    run_id = _clip_run(tmp_path, monkeypatch)
+    other = _clip_run(tmp_path, monkeypatch, "--name", XSS_NAME, "--easting", "554066")  # lines of its own
+    folder = tmp_path / "runs" / run_id
+    (folder / "csp_stub.js").write_text(CSP_STUB, encoding="utf-8")
+    (folder / "other_test.js").write_text(OTHER_RUN_SCRIPT, encoding="utf-8")
+    page = (folder / "map.html").read_text(encoding="utf-8")
+    assert "<style" not in page and " style=" not in page
+    (folder / "other_test.html").write_text(
+        page.replace("<head>", '<head><script src="csp_stub.js"></script>')
+            .replace("</body>", '<script src="other_test.js"></script></body>'), encoding="utf-8")
+    dom = _edge_page(tmp_path, f"runs/{run_id}/other_test.html")
+    result = json.loads(re.search(r'<pre id="result">(.*?)</pre>', dom, re.S).group(1)
+                        .replace("&quot;", '"').replace("&lt;", "<").replace("&gt;", ">").replace("&amp;", "&"))
+    assert result["swatch"].startswith("rgb"), result       # coloured through the CSSOM
+    assert result["link"] == f"../{other}/map.html", result
+    assert XSS_NAME in result["text"] and result["xss"] is None and result["imgs"] == 0, result
+    assert _violations(dom) == []
+    index = (tmp_path / "runs" / "index.html").read_text(encoding="utf-8")
+    assert "<style" not in index and "_viewer/index.css" in index and XSS_NAME not in index
+    assert os.path.exists(tmp_path / "runs" / "_viewer" / "index.css")

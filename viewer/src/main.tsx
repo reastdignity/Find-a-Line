@@ -41,9 +41,10 @@ let highAbove = 20;  // m, the run's high_above (set by start)
 function lineInfo(l: Line): string {
   let html = "";
   if (l.run) {
-    html += "<b>Run:</b> <span class='fal-swatch' style='background:" + l.run.color + "'></span> " +
+    // No style attribute (the CSP allows none): the colour is set on popupopen (showColors)
+    html += "<b>Run:</b> <span class='fal-swatch' data-color='" + escape(l.run.color) + "'></span> " +
       escape(l.run.info.created.slice(0, 10) + " " + l.run.info.name) + " (<a href='../" +
-      encodeURIComponent(l.run.info.id) + "/map.html'>its map, with the profile</a>)<br>";
+      escape(encodeURIComponent(l.run.info.id)) + "/map.html'>its map, with the profile</a>)<br>";
   }
   html += "<b>Length:</b> " + l.len.toFixed(0) + " m<br>" +
     "<b>Anchor 1:</b> " + l.lat1.toFixed(6) + ", " + l.lon1.toFixed(6) + " (" + l.e1.toFixed(1) + " m)<br>" +
@@ -70,12 +71,17 @@ function lineInfo(l: Line): string {
   return html;
 }
 
+/** Swatches of a popup get their colour (data-color) through the CSSOM, which the CSP allows. */
+function showColors(element: HTMLElement | undefined) {
+  element?.querySelectorAll<HTMLElement>("[data-color]").forEach((s) => { s.style.background = s.dataset.color!; });
+}
+
 function groupInfo(g: Group<Line>, by: string): string {
   if (g.members.length === 1) return lineInfo(g.rep);
   return "<b>" + g.members.length + " similar lines</b> (shown thin)<br>" +
     "<b>Lengths:</b> " + range(g.members.map((m) => m.len), 0, " m") + "<br>" +
     "<b>Clearances:</b> " + range(g.members.map((m) => m.clr), 1, " m") + "<br>" +
-    "<hr style='margin:4px 0'><i>Shown line (" + (by === "longest" ? "longest" : by === "height"
+    "<hr class='fal-hr'><i>Shown line (" + (by === "longest" ? "longest" : by === "height"
       ? "highest above the terrain" : "largest clearance") +
     "):</i><br>" + lineInfo(g.rep);
 }
@@ -279,6 +285,7 @@ function start(data: RunData) {
       pl.bindPopup("<div class='fal-drag'>&#10021; drag to move</div>" + groupInfo(g, state.by) +
                    "<div class='fal-popup-tools'><button class='fal-zoom'>Zoom to line</button></div>");
       pl.on("popupopen", (e) => {
+        showColors(e.popup.getElement());
         focusOn(pl);
         showProfile(l);
         if (!l.prof && !l.run) {
