@@ -279,6 +279,7 @@ def save_map(results: List[Dict], area, run_path: str, runs_dir: str, run: Dict,
             "base": {"url": ortho_service.base_url, "max_zoom": ortho_service.base_max_zoom}
                     if ortho_service.base_url else None,
             "cache": _relative_url(ortho_cache, path) if ortho_cache else None},
+        "attribution": run.get("attribution", []),  # credits of the data used (sources.Credit)
         "distance": group_distance, "by": group_by, "model": model,
         "rigging": dataclasses.asdict(rigging or Rigging()),
         "slope": SLOPE, "leash_fall": LEASH_FALL, "high_above": high_above, "max_zoom": MAX_ZOOM,

@@ -8,6 +8,7 @@ Layout:
     runs/<id>/lines.csv      every valid line with its group
     runs/<id>/lines.geojson  the same as GeoJSON, with the public part of run.json
     runs/<id>/run.json       parameters and summary
+    runs/<id>/ATTRIBUTION.txt  licences and notices of the data used (run.json "attribution")
 The id of a run is <date>_<time>_<place>_<random>: unique and not guessable (older runs
 have no random part and keep their ids).
     runs/runs.js                       list of all runs, loaded by every map
@@ -155,8 +156,28 @@ def _rows(groups: List[Dict]):
 LINES_CHUNK = 10_000  # lines written between two progress updates
 
 
+def attribution_text(meta: Dict) -> str:
+    """ATTRIBUTION.txt of a run: the licence and the notice of every dataset it used."""
+    lines = [f"Find-a-Line run \"{meta.get('name', '')}\" ({meta.get('created', '')})", "",
+             "Data used for this run, its licence and the notice it must be shown with:", ""]
+    credits = meta.get("attribution") or []
+    for credit in credits:
+        lines.append(credit["data"])
+        lines.append(f"  Notice: {credit['attribution']}")
+        lines.append(f"  Licence: {credit['licence']}" + (f" ({credit['url']})" if credit.get("url") else ""))
+        if credit.get("notice"):
+            lines.append(f"  {credit['notice']}")
+        lines.append("")
+    source = meta.get("source") or {}
+    if source.get("id") == "files":
+        lines += [source.get("description", "local files"), "  Credit these as their own licences require.", ""]
+    elif not credits:
+        lines += ["Not recorded for this run.", ""]
+    return "\n".join(lines)
+
+
 def save_results(run_path: str, groups: List[Dict], meta: Dict, on_lines=lambda n, file: None):
-    """Write lines.csv, lines.geojson and run.json for a run.
+    """Write lines.csv, lines.geojson, ATTRIBUTION.txt and run.json for a run.
 
     on_lines(n, file) reports progress: three passes over the lines (the rows, lines.csv,
     lines.geojson), then run.json with n=0.
@@ -190,6 +211,8 @@ def save_results(run_path: str, groups: List[Dict], meta: Dict, on_lines=lambda 
             on_lines(len(features), "lines.geojson")
         f.write('], "findaline": ' + encoder.encode(public_meta(meta)) + "}")
 
+    with open(os.path.join(run_path, "ATTRIBUTION.txt"), "w", encoding="utf-8") as f:
+        f.write(attribution_text(meta))
     with open(os.path.join(run_path, "run.json"), "w", encoding="utf-8") as f:
         json.dump(meta, f, ensure_ascii=False, indent=2)
     on_lines(0, "run.json")
@@ -254,8 +277,8 @@ def _bbox(run: Dict) -> Optional[List[float]]:
 
 
 def _listed(run: Dict) -> Dict:
-    """A run as runs.js lists it: without the data files and the area outline, with its box."""
-    listed = {k: v for k, v in run.items() if k not in ("data", "area")}
+    """A run as runs.js lists it: without the data files, their credits and the area outline, with its box."""
+    listed = {k: v for k, v in run.items() if k not in ("data", "area", "attribution")}
     listed["bbox"] = _bbox(run)
     return listed
 

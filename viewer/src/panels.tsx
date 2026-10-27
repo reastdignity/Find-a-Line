@@ -5,7 +5,7 @@ import { render, type ComponentChild } from "preact";
 import { useState } from "preact/hooks";
 import { active, NO_FILTERS, type Filters, type Range } from "./filters";
 import { COLORS } from "./style";
-import type { RunInfo } from "./types";
+import type { Credit, RunInfo } from "./types";
 
 /** A Leaflet control whose content is rendered by Preact; returns the function that renders it. */
 export function control(map: L.Map, position: L.ControlPosition, className: string) {
@@ -84,8 +84,9 @@ function DistanceSlider({value, max, onChange}: {value: number; max: number; onC
   </span>;
 }
 
-/** The run's parameters and a list of all saved runs (runs/runs.js; without it, this run only). */
-export function RunPanel({current, runs}: {current: RunInfo; runs: RunInfo[]}) {
+/** The run's parameters, the licences of its data and a list of all saved runs (runs/runs.js;
+ * without it, this run only). */
+export function RunPanel({current, runs, credits}: {current: RunInfo; runs: RunInfo[]; credits: Credit[]}) {
   const label = (r: RunInfo) => r.created.slice(0, 16).replace("T", " ") + " - " + r.name;
   return <div>
     <b>Run</b> · <a href="../index.html">all runs</a>
@@ -94,6 +95,11 @@ export function RunPanel({current, runs}: {current: RunInfo; runs: RunInfo[]}) {
       {runs.map((r) => <option value={r.id} selected={r.id === current.id}>{label(r)}</option>)}
     </select>
     <div class="fal-params">{current.description}</div>
+    {credits.length > 0 && <div class="fal-credits">
+      Data: {credits.map((c, i) => <span>{i > 0 && "; "}{c.data} (
+        {/^https?:\/\//.test(c.url) ? <a href={c.url} target="_blank" rel="noopener">{c.licence}</a> : c.licence})
+      </span>)} · <a href="ATTRIBUTION.txt" target="_blank">notices</a>
+    </div>}
   </div>;
 }
 

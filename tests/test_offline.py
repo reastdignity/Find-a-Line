@@ -88,6 +88,12 @@ def test_zabi_kon_clip(tmp_path):
     }
     assert found == ZABI_KON, output
     assert "[Download]" not in output  # nothing fetched (and requests would fail anyway)
+    # Local files: no credits of ours, ATTRIBUTION.txt says to credit the files' own sources
+    folder = os.path.dirname(glob.glob(str(tmp_path / "runs" / "*" / "run.json"))[0])
+    read = lambda name: (tmp_path / "runs" / os.path.basename(folder) / name).read_text(encoding="utf-8")  # noqa: E731
+    assert json.loads(read("run.json"))["attribution"] == []
+    assert "zabi_kon_nmt.tif" in read("ATTRIBUTION.txt") and "as their own licences require" in read("ATTRIBUTION.txt")
+    assert json.loads(read("data.js").partition(" = ")[2].rstrip().rstrip(";"))["attribution"] == []
 
 
 def _lines(rows):

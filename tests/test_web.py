@@ -617,3 +617,56 @@ def test_map_without_inline_styles(tmp_path, monkeypatch):
     index = (tmp_path / "runs" / "index.html").read_text(encoding="utf-8")
     assert "<style" not in index and "_viewer/index.css" in index and XSS_NAME not in index
     assert os.path.exists(tmp_path / "runs" / "_viewer" / "index.css")
+
+
+# Between data.js and the viewer: credits as a run records them, one with markup in its texts
+CREDITS_STUB = """
+window.FINDALINE_RUN.attribution = [
+  {data: "FABDEM V1-2", attribution: "FABDEM V1-2 © University of Bristol", licence: "CC BY-NC-SA 4.0",
+   url: "https://creativecommons.org/licenses/by-nc-sa/4.0/", notice: ""},
+  {data: "Bad", attribution: "<img src=x onerror=window.XSS=1>", licence: "<b>x</b>",
+   url: "javascript:window.XSS=2", notice: ""}];
+"""
+
+CREDITS_SCRIPT = """
+(function () {
+  const out = document.createElement("pre");
+  out.id = "result";
+  document.body.appendChild(out);
+  setTimeout(() => {
+    const control = document.querySelector(".leaflet-control-attribution");
+    const panel = document.querySelector(".fal-credits");
+    out.textContent = JSON.stringify({control: control.textContent, panel: panel.textContent,
+      links: [...control.querySelectorAll("a"), ...panel.querySelectorAll("a")].map((a) => a.getAttribute("href")),
+      imgs: control.querySelectorAll("img").length + panel.querySelectorAll("img").length,
+      xss: window.XSS || null});
+  }, 1000);
+})();
+"""
+
+
+@pytest.mark.skipif(not os.path.exists(EDGE), reason="needs Microsoft Edge")
+def test_map_shows_data_credits(tmp_path, monkeypatch):
+    """The map shows the credits of its data in the attribution control and the run panel,
+    as text: markup in them is not rendered and only http(s) addresses become links."""
+    import re
+    run_id = _clip_run(tmp_path, monkeypatch)
+    folder = tmp_path / "runs" / run_id
+    assert (folder / "ATTRIBUTION.txt").exists()
+    (folder / "credits_stub.js").write_text(CREDITS_STUB, encoding="utf-8")
+    (folder / "credits_test.js").write_text(CREDITS_SCRIPT, encoding="utf-8")
+    page = (folder / "map.html").read_text(encoding="utf-8")
+    (folder / "credits_test.html").write_text(
+        page.replace('<script src="data.js"></script>', '<script src="data.js"></script><script src="credits_stub.js">'
+                                                         '</script>')
+            .replace("</body>", '<script src="credits_test.js"></script></body>'), encoding="utf-8")
+    dom = _edge_page(tmp_path, f"runs/{run_id}/credits_test.html")
+    result = json.loads(re.search(r'<pre id="result">(.*?)</pre>', dom, re.S).group(1)
+                        .replace("&quot;", '"').replace("&lt;", "<").replace("&gt;", ">").replace("&amp;", "&"))
+    assert "Data: FABDEM V1-2 © University of Bristol (CC BY-NC-SA 4.0)" in result["control"], result
+    assert "<img src=x onerror=window.XSS=1> (<b>x</b>)" in result["control"], result
+    assert "FABDEM V1-2 (CC BY-NC-SA 4.0); Bad (<b>x</b>)" in result["panel"], result
+    links = result["links"]
+    assert links.count("https://creativecommons.org/licenses/by-nc-sa/4.0/") == 2 and "ATTRIBUTION.txt" in links, result
+    assert not any(link.startswith("javascript") for link in links if link), result
+    assert result["imgs"] == 0 and result["xss"] is None, result

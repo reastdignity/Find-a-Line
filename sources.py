@@ -20,6 +20,9 @@ Kinds of layers:
 
 To add a national source, add a Source with WcsTiles layers to SOURCES (see the
 Malta entries) and its country code to `countries`; see README, "Data sources".
+Every source and every layer used for filling (the water mask, the gap filling
+source) names its licence and the notice its data must be shown with (`Credit`):
+each run records them for the layers it used (run.json, the map, ATTRIBUTION.txt).
 """
 
 import glob
@@ -34,7 +37,7 @@ import threading
 import time
 import zipfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from typing import Callable, Dict, List, NamedTuple, Optional, Tuple
 
 import numpy as np
@@ -120,10 +123,73 @@ def _clean(band: np.ndarray, zero_is_nodata: bool = False) -> np.ndarray:
     return band
 
 
+@dataclass(frozen=True)
+class Credit:
+    """Who a dataset must be credited to and under which terms: recorded with every run
+    that used it (run.json), shown in its map and written to its ATTRIBUTION.txt."""
+    data: str         # the dataset
+    attribution: str  # the notice to show with what is made from it (plain text)
+    licence: str      # short name of the licence or terms of use
+    url: str = ""     # where the licence or terms are stated
+    notice: str = ""  # more the licence asks for in a notice (citation, disclaimer): ATTRIBUTION.txt only
+
+    def as_dict(self) -> Dict:
+        return asdict(self)
+
+
+# Checked 2026-10-27 (docs/roadmap.md, "Before going public")
+COPERNICUS_NOTICE = ("produced using Copernicus WorldDEM-30 © DLR e.V. 2010-2014 and © Airbus Defence and "
+                     "Space GmbH 2014-2018 provided under COPERNICUS by the European Union and ESA; "
+                     "all rights reserved")
+COPERNICUS_DISCLAIMER = ("The organisations in charge of the Copernicus programme by law or by delegation do "
+                         "not incur any liability for any use of the Copernicus WorldDEM-30.")
+COPERNICUS_LICENCE = ("Copernicus DEM licence", "https://docs.sentinel-hub.com/api/latest/static/files/data/dem/"
+                                                "resources/license/License-COPDEM-30.pdf")
+CC_BY = ("CC BY 4.0", "https://creativecommons.org/licenses/by/4.0/")
+GUGIK_CREDIT = Credit("NMT / NMPT (GUGiK, Poland)",
+                      "Source: Główny Urząd Geodezji i Kartografii (GUGiK), geoportal.gov.pl",
+                      "geoportal.gov.pl terms (free use, source stated)",
+                      "https://www.geoportal.gov.pl/pl/o-geoportalu/regulamin/")
+SWISSTOPO_CREDIT = Credit("swissALTI3D / swissSURFACE3D (swisstopo)", "© swisstopo",
+                          "swisstopo OGD terms (free use, source stated)",
+                          "https://www.swisstopo.admin.ch/en/conditions-geodata")
+UGKK_CREDIT = Credit("DMR 5.0 / DMP 1.0 (ÚGKK SR, Slovakia)", "© ÚGKK SR", *CC_BY)
+# IGN's form of a credit for a derived work (Orden FOM/2807/2015): "Obra derivada de <product> CC-BY 4.0 ign.es"
+IGN_CREDIT = Credit("MDT05 / MDS05 (IGN Spain, PNOA-LiDAR)", "Obra derivada de MDT05 / MDS05 CC-BY 4.0 ign.es",
+                    CC_BY[0], "https://www.ign.es/web/en/politica-datos")
+MSDI = "https://msdi.data.gov.mt/geonetwork/"
+MALTA_CREDITS = {
+    2018: Credit("Malta LiDAR 2018 (Planning Authority, MSDI)", "Planning Authority Malta (MSDI), LiDAR 2018",
+                 "no conditions on access and use (INSPIRE metadata)", MSDI),
+    # The MSDI records were reported as CC BY-NC-ND 4.0, the INSPIRE ones as without conditions
+    2012: Credit("Malta LiDAR 2012 (Planning Authority, MSDI)", "Planning Authority Malta (MSDI), LiDAR 2012",
+                 "unresolved (CC BY-NC-ND 4.0 or no conditions)", MSDI),
+}
+COPERNICUS_CREDIT = Credit("Copernicus DEM GLO-30", COPERNICUS_NOTICE[0].upper() + COPERNICUS_NOTICE[1:],
+                           *COPERNICUS_LICENCE, notice=COPERNICUS_DISCLAIMER)
+WATER_MASK_CREDIT = Credit("Copernicus DEM GLO-30 water body mask", COPERNICUS_CREDIT.attribution,
+                           *COPERNICUS_LICENCE, notice=COPERNICUS_DISCLAIMER)
+# The record at data.bris.ac.uk states CC BY-NC-SA 4.0 in its description and its
+# license.txt (its licence field says "Non-Commercial Government Licence"; both are non-commercial)
+FABDEM_CREDIT = Credit(
+    "FABDEM V1-2", "FABDEM V1-2 © University of Bristol; FABDEM is " + COPERNICUS_NOTICE,
+    "CC BY-NC-SA 4.0", "https://creativecommons.org/licenses/by-nc-sa/4.0/",
+    notice="Neal, J., Hawker, L. (2023): FABDEM V1-2. https://doi.org/10.5523/bris.s5hqmjcdj8yo2ibzi9b4ew3sn. "
+           "Non-commercial use only; results computed from FABDEM are adapted material, shared under "
+           "the same licence. " + COPERNICUS_DISCLAIMER)
+NASADEM_CREDIT = Credit("NASADEM", "NASADEM: NASA JPL (2020), NASA LP DAAC, via OpenTopography",
+                        "NASA open data (no restrictions)",
+                        "https://doi.org/10.5067/MEaSUREs/NASADEM/NASADEM_HGT.001",
+                        notice="Data accessed through OpenTopography (opentopography.org).")
+OSM_CREDIT = Credit("OpenStreetMap", "© OpenStreetMap contributors", "ODbL 1.0",
+                    "https://www.openstreetmap.org/copyright")
+
+
 class Layer:
     """One elevation model of a source, cached in cache/<folder> (see cache.py)."""
     description = ""
     folder = ""
+    credit: Optional[Credit] = None  # the source's, unless set for this layer (Source.__post_init__)
     # Correction (east, north) in metres of the layer CRS for data whose service is
     # georeferenced wrongly; applied when tiles are placed on the grid
     shift: Tuple[float, float] = (0.0, 0.0)
@@ -200,9 +266,12 @@ class Layer:
     def used(self, grid: Grid, cache_dir: str) -> Dict:
         """What a run records about the data it used (see runs.py)."""
         files = self.files(grid, cache_dir)
-        return {"layer": self.description, "folder": self.folder, "files": len(files),
+        info = {"layer": self.description, "folder": self.folder, "files": len(files),
                 "fetched": cache.touch(cache_dir, files),
                 "paths": sorted(cache.relative(cache_dir, p) for p in files)}
+        if self.credit:
+            info["credit"] = self.credit.as_dict()
+        return info
 
 
 class WcsTiles(Layer):
@@ -497,9 +566,10 @@ class DegreeTiles(Layer):
     """1°×1° tiles in WGS84, downloaded whole at native resolution."""
 
     def __init__(self, description: str, folder: str, url: Callable[[int, int], str],
-                 native_res: float = 30, bytes_per_tile: float = 15e6):
+                 native_res: float = 30, bytes_per_tile: float = 15e6, credit: Optional[Credit] = None):
         self.description, self.folder, self.url = description, folder, url
         self.native_res, self._bytes = native_res, bytes_per_tile
+        self.credit = credit
 
     def tiles(self, grid: Grid):
         west, south, east, north = transform_bounds(grid.crs, "EPSG:4326", *grid.bounds)
@@ -1000,10 +1070,27 @@ class Source:
     fallback: Optional[str] = "europe"  # source that fills gaps in the data on land
     bbox: Optional[Tuple[float, float, float, float]] = None  # (south, north, west, east) for --source auto
     grid_origin: Tuple[float, float] = (0.0, 0.0)  # pixel edges of the data in the working CRS (grid.make_grid)
+    # Licences and notices of the data; a source with one credit gives it to its layers,
+    # one with more sets each layer's own (europe: FABDEM and Copernicus)
+    credits: Tuple[Credit, ...] = ()
 
     def __post_init__(self):
         if self.default_resolution is None:
             self.default_resolution = max(float(self.nmt.native_res), MIN_RESOLUTION)
+        for layer in (self.nmt, self.nmpt):
+            if layer is not None and layer.credit is None and len(self.credits) == 1:
+                layer.credit = self.credits[0]
+
+    @property
+    def licence(self) -> str:
+        """The licences of the source's data ("" for local files)."""
+        return "; ".join(dict.fromkeys(f"{c.data}: {c.licence}" if len(self.credits) > 1 else c.licence
+                                       for c in self.credits))
+
+    @property
+    def attribution(self) -> str:
+        """The notice its data must be shown with ("" for local files)."""
+        return "; ".join(dict.fromkeys(c.attribution for c in self.credits))
 
     def covers(self, lat: float, lon: float) -> bool:
         if self.bbox is None:
@@ -1076,7 +1163,7 @@ def _spain(canary: bool) -> Source:
         # MDS05's grid is 5.0045 m; tiles are resampled to 5 m on download
         nmpt=WcsTiles(f"MDS05 (trees, buildings) {where}", SPAIN_MDS, "mds05", "EPSG:25830",
                       "spain/mds05/live", native_res=5.0, fetch_res=5.0, fmt="application/asc", bytes_per_px=8),
-        countries=("es",), crs=crs, ortho=SPAIN_ORTHO,
+        countries=("es",), crs=crs, ortho=SPAIN_ORTHO, credits=(IGN_CREDIT,),
         bbox=(27.0, 29.6, -18.6, -13.0) if canary else None,
         note="IGN Spain data is available at 5 m: lines shorter than about 30 m are not reliable.")
 
@@ -1092,7 +1179,7 @@ def _malta(year: int, note: str = "") -> Source:
         description=f"Malta Planning Authority LiDAR {year}, DTM and DSM 1 m",
         nmt=layer("dtm", "DTM (terrain)"), nmpt=layer("dsm", "DSM (trees, buildings)"),
         countries=("mt",) if year == 2018 else (), crs=crs,
-        fallback="malta" if year == 2012 else "europe",
+        fallback="malta" if year == 2012 else "europe", credits=(MALTA_CREDITS[year],),
         ortho=OrthoService("Orthophoto Malta 2018 (MSDI)", f"{MALTA}/wms/ortho_2018/ows",
                            "OI.OrthoimageCoverage", "malta/ortho/2018", "Planning Authority Malta"),
         note=note)
@@ -1111,7 +1198,7 @@ SOURCES: Dict[str, Source] = {s.id: s for s in [
         nmpt=SheetTiles("NMPT (digital surface model: trees, buildings)",
                         f"{GEOPORTAL}/NumerycznyModelPokryciaTerenuEVRF2007/WFS/Skorowidze",
                         "SkorowidzNMPT", "poland/nmpt", native_res=1.0),
-        countries=("pl",), crs="EPSG:2180", grid_origin=(0.5, 0.5),
+        countries=("pl",), crs="EPSG:2180", grid_origin=(0.5, 0.5), credits=(GUGIK_CREDIT,),
         ortho=OrthoService("Orthophoto (geoportal.gov.pl)", f"{GEOPORTAL}/ORTO/WMS/HighResolution",
                            "Raster", "poland/ortho/live", "GUGiK",
                            # the WMS of StandardResolution answers about half of the requests
@@ -1131,7 +1218,7 @@ SOURCES: Dict[str, Source] = {s.id: s for s in [
         nmpt=StacTiles("swissSURFACE3D Raster (trees, buildings)", SWISSTOPO_STAC,
                        "ch.swisstopo.swisssurface3d-raster", "switzerland/swisssurface3d", "EPSG:2056",
                        sizes={0.5: 17e6}),
-        countries=("ch", "li"), crs="EPSG:2056", ortho=SWISSIMAGE,
+        countries=("ch", "li"), crs="EPSG:2056", ortho=SWISSIMAGE, credits=(SWISSTOPO_CREDIT,),
         note="Data © swisstopo."),
     Source(
         id="slovakia", name="ÚGKK SR (DMR 5.0 / DMP 1.0)",
@@ -1143,7 +1230,7 @@ SOURCES: Dict[str, Source] = {s.id: s for s in [
                       "slovakia/dmr5/5.0/epsg8353-1m-2km", 2000, 1.0, 4.8e6, mirror="slovakia/dmr5/1m"),
         nmpt=GridTiles("DMP 1.0 (trees, buildings)", [f"{base}/dmp1/1m" for base in SLOVAK_TILES], "EPSG:8353",
                        "slovakia/dmp1/1.0/epsg8353-1m-2km", 2000, 1.0, 5.7e6, mirror="slovakia/dmp1/1m"),
-        countries=("sk",), crs="EPSG:8353", ortho=ZBGIS_ORTHO,
+        countries=("sk",), crs="EPSG:8353", ortho=ZBGIS_ORTHO, credits=(UGKK_CREDIT,),
         note="Data © ÚGKK SR, CC BY 4.0 (laser scanning 2017-2023)."),
     _malta(2018, note="Malta 2018 heights are published in whole metres, which makes slopes and "
                       "clearances coarser; --source malta2012 has centimetre precision but gaps "
@@ -1154,16 +1241,17 @@ SOURCES: Dict[str, Source] = {s.id: s for s in [
     Source(
         id="europe", name="FABDEM + Copernicus DEM",
         description="FABDEM V1-2 (terrain, trees and buildings removed) and Copernicus GLO-30 (surface), 30 m",
-        nmt=DegreeTiles("FABDEM (terrain)", "fabdem/v1-2", _fabdem_url, native_res=30, bytes_per_tile=20e6),
+        nmt=DegreeTiles("FABDEM (terrain)", "fabdem/v1-2", _fabdem_url, native_res=30, bytes_per_tile=20e6,
+                        credit=FABDEM_CREDIT),
         nmpt=DegreeTiles("Copernicus DEM GLO-30 (surface)", "copernicus30/2021/dem", _copernicus_url,
-                         native_res=30, bytes_per_tile=20e6),
-        fallback=None,
-        note="FABDEM is free for non-commercial use only (Non-Commercial Government Licence). "
-             "At 30 m only long lines can be found reliably."),
+                         native_res=30, bytes_per_tile=20e6, credit=COPERNICUS_CREDIT),
+        fallback=None, credits=(FABDEM_CREDIT, COPERNICUS_CREDIT),
+        note="FABDEM is licensed for non-commercial use only (CC BY-NC-SA 4.0): results made from it may "
+             "be shared only under the same terms. At 30 m only long lines can be found reliably."),
     Source(
         id="nasadem", name="NASADEM (OpenTopography)",
         description="NASADEM 30 m (SRTM, includes some vegetation), from the OpenTopography API",
-        nmt=OpenTopographyTiles("NASADEM", "nasadem/v1", "NASADEM"),
+        nmt=OpenTopographyTiles("NASADEM", "nasadem/v1", "NASADEM"), credits=(NASADEM_CREDIT,),
         note="NASADEM is a radar surface model at 30 m: only long lines can be found reliably."),
 ]}
 
@@ -1331,7 +1419,7 @@ SHORE_BUFFER = 45  # m around water in the mask that may still be water (the mas
 SEA_LEVEL_TOLERANCE = 1.0  # m; data at most this high inside the sea counts as water
 WATER_MASK = DegreeTiles("Copernicus water body mask", "copernicus30/2021/wbm",
                          lambda lat, lon: _copernicus_url(lat, lon, "WBM"), native_res=30,
-                         bytes_per_tile=1e5)
+                         bytes_per_tile=1e5, credit=WATER_MASK_CREDIT)
 
 
 def water_body_mask(grid: Grid, cache_dir: str, out_path: str, update: Optional[str] = None) -> np.ndarray:

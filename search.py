@@ -437,6 +437,8 @@ def prepare_data(plan: Plan) -> Data:
             wbm = src.water_body_mask(grid, cache_dir, os.path.join(work, "wbm.npy"), p.update)
             sea, coast_source, warning = coast.sea_mask(grid, cache_dir, p.coastline, wbm == src.OCEAN, p.update)
             emit("info", f"Coastline: {coast_source}")
+            if coast_source.startswith("OpenStreetMap"):
+                src.used_data.append({"layer": coast_source, "credit": src.OSM_CREDIT.as_dict()})
             if warning:
                 emit("warning", warning)
             sea_zone = src.near(sea, p.shore_buffer, grid.res)
@@ -749,6 +751,21 @@ def _merged_data() -> List[Dict]:
     return list(merged.values())
 
 
+def _credits(plan: Plan, data: List[Dict]) -> List[Dict]:
+    """Licences and notices of the data a run used (sources.Credit), each once: its layers,
+    the OSM coastline, and OSM when the search area came from it (--area coast, cliffs,
+    osm:<name> or --within osm:<name>)."""
+    credits = [entry["credit"] for entry in data if entry.get("credit")]
+    spec = getattr(plan.area, "spec", None) or {}
+    if spec.get("area") in ("coast", "cliffs") or any(str(spec.get(k) or "").startswith("osm:")
+                                                       for k in ("area", "within")):
+        credits.append(src.OSM_CREDIT.as_dict())
+    unique: Dict[str, Dict] = {}
+    for credit in credits:
+        unique.setdefault(json.dumps(credit, sort_keys=True), credit)
+    return list(unique.values())
+
+
 def _run_params(plan: Plan) -> Dict:
     """The parameters run.json records (also what profile_of_line needs)."""
     p, circle = plan.params, isinstance(plan.area, ar.Circle)
@@ -802,6 +819,7 @@ def save_run(plan: Plan, lines: Lines, confirm: Optional[Confirm] = None, run: O
                     "clear_spots": sum(not g["rep"]["over_obstacles"] for g in spot_groups)},
     }
     meta["description"] = rn.params_summary(meta)
+    meta["attribution"] = _credits(plan, meta["data"])  # also ATTRIBUTION.txt and the map
     def on_lines(n: int, file: str):
         progress.compute.update(n, file=file)
 

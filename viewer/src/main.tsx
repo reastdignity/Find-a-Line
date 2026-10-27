@@ -20,7 +20,7 @@ import { control, LinesPanel, OtherRunsPanel, RunPanel, type LinesState, type Ot
 import { draggablePopups } from "./popups";
 import { ProfilePanel } from "./Profile";
 import { COLORS } from "./style";
-import { toLine, type Line, type Profile, type RunData, type RunInfo } from "./types";
+import { toLine, type Credit, type Line, type Profile, type RunData, type RunInfo } from "./types";
 
 // The default marker icon finds its images through the CSS path, which a bundle does not have
 L.Icon.Default.mergeOptions({iconRetinaUrl, iconUrl, shadowUrl});
@@ -34,6 +34,14 @@ function range(values: number[], digits: number, unit: string): string {
 
 function escape(text: string): string {
   return text.replace(/[&<>"']/g, (c) => "&#" + c.charCodeAt(0) + ";");
+}
+
+/** The data credits for Leaflet's attribution control, which renders HTML: escaped text, links to http(s) only. */
+function creditsHtml(credits: Credit[]): string {
+  const parts = credits.map((c) => escape(c.attribution) + " (" + (/^https?:\/\//.test(c.url)
+    ? '<a href="' + escape(c.url) + '" target="_blank" rel="noopener">' + escape(c.licence) + "</a>"
+    : escape(c.licence)) + ")");
+  return "Data: " + Array.from(new Set(parts)).join(" | ");
 }
 
 let highAbove = 20;  // m, the run's high_above (set by start)
@@ -92,6 +100,8 @@ function start(data: RunData) {
   const map = L.map("map", {center: data.center, zoom: 15, maxZoom: data.max_zoom});
   (window as any).FINDALINE_MAP = map;  // for tests and the browser console
   L.control.scale().addTo(map);
+  const credits = data.attribution || [];
+  if (credits.length) map.attributionControl.addAttribution(creditsHtml(credits));
   const layers = baseLayers(data.ortho, data.max_zoom);
   Object.values(layers)[0].addTo(map);
   draggablePopups(map);
@@ -316,7 +326,7 @@ function start(data: RunData) {
     ? inLocalPlane(lines, data.center[0], data.center[1]) : lines;
   const runPanel = control(map, "topleft", "fal-panel fal-run");
   const drawRunPanel = () => runPanel(<div>
-    <RunPanel current={data.run} runs={runs} />
+    <RunPanel current={data.run} runs={runs} credits={credits} />
     <OtherRunsPanel items={items} nearbyKm={NEARBY_KM} onToggle={toggle} />
   </div>);
   const update = () => {

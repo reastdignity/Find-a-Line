@@ -73,6 +73,15 @@ export interface Ortho {
   cache: string | null; // {z}/{x}/{y}.jpg folder relative to the map, or null
 }
 
+/** Licence and notice of a dataset a run used (sources.Credit; run.json "attribution"). */
+export interface Credit {
+  data: string;
+  attribution: string;  // plain text
+  licence: string;
+  url: string;          // of the licence or terms, may be ""
+  notice: string;       // more for ATTRIBUTION.txt (citation, disclaimer)
+}
+
 export interface RunInfo {
   id: string;
   name: string;
@@ -90,6 +99,7 @@ export interface RunData {
   area: Geometry;
   crs: string;                    // of x1, y1, x2, y2
   ortho: Ortho | null;
+  attribution?: Credit[];         // the data used; runs saved before 2026-10-27 have none
   distance: number;               // grouping distance, m
   by: "clearance" | "longest" | "height";
   model: "formula" | "sag";

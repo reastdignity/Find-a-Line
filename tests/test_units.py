@@ -402,6 +402,59 @@ def test_run_ids_and_public_meta(tmp_path):
     assert json.load(open(os.path.join(first["path"], "run.json"), encoding="utf-8")) == meta  # run.json keeps them
 
 
+def test_every_source_has_licence_and_attribution():
+    """Every source, each of its layers and the layers used for filling name their licence and notice."""
+    layers = [src.WATER_MASK]
+    for source in src.SOURCES.values():
+        assert source.licence and source.attribution, source.id
+        layers += [layer for layer in (source.nmt, source.nmpt) if layer is not None]
+    for layer in layers:
+        credit = layer.credit
+        assert credit and credit.data and credit.attribution and credit.licence, layer.description
+        assert credit.url.startswith("https://"), layer.description
+    assert src.SOURCES["europe"].nmt.credit is src.FABDEM_CREDIT  # the gap filling layer has its own
+    assert "CC BY-NC-SA 4.0" in src.SOURCES["europe"].licence
+
+
+def test_used_layers_carry_their_credit(tmp_path):
+    """What a run records about a layer (run.json "data") includes its credit."""
+    from types import SimpleNamespace
+    grid = SimpleNamespace(crs="EPSG:2180", bounds=(553000, 254000, 554000, 255000))
+    assert src.WATER_MASK.used(grid, str(tmp_path))["credit"] == src.WATER_MASK_CREDIT.as_dict()
+    assert src.SOURCES["geoportal"].nmt.credit is src.GUGIK_CREDIT
+
+
+def test_run_credits(tmp_path):
+    """A run lists each dataset's credit once, OSM too when the area came from it, and writes
+    them to ATTRIBUTION.txt; runs.js leaves them out."""
+    import json
+    from datetime import datetime
+    import runs as rn
+    import search
+    from types import SimpleNamespace
+    europe = src.SOURCES["europe"]
+    data = [{"layer": "FABDEM", "credit": europe.nmt.credit.as_dict()},
+            {"layer": "FABDEM", "credit": europe.nmt.credit.as_dict()},  # e.g. the gap filling of a second tile
+            {"layer": "Terrain file", "file": "x.tif"}]
+    area = ar.Circle(50.0, 19.0, 100)
+    assert search._credits(SimpleNamespace(area=area), data) == [src.FABDEM_CREDIT.as_dict()]
+    area.spec = {"area": "cliffs", "within": "osm:Gozo"}
+    credits = search._credits(SimpleNamespace(area=area), data)
+    assert credits == [src.FABDEM_CREDIT.as_dict(), src.OSM_CREDIT.as_dict()]
+    run = rn.new_run(str(tmp_path), "Gozo", datetime(2026, 10, 27, 12, 0, 0))
+    meta = {"id": run["id"], "name": "Gozo", "created": "2026-10-27T12:00:00", "description": "",
+            "summary": {"lines": 0}, "source": {"id": "europe"}, "data": data, "attribution": credits}
+    rn.save_results(run["path"], [], meta)
+    with open(os.path.join(run["path"], "ATTRIBUTION.txt"), encoding="utf-8") as f:
+        text = f.read()
+    for credit in credits:
+        assert credit["attribution"] in text and credit["licence"] in text and credit["url"] in text
+    assert src.COPERNICUS_DISCLAIMER in text  # FABDEM's notice
+    assert "attribution" not in rn._listed(meta)  # runs.js
+    with open(os.path.join(run["path"], "run.json"), encoding="utf-8") as f:
+        assert json.load(f)["attribution"] == credits
+
+
 def test_replacing(tmp_path):
     """A file written under a unique temporary name replaces the old one only when complete."""
     path = tmp_path / "runs.js"
