@@ -14,6 +14,9 @@ export interface Filters {
   meanMin: number | null;     // its mean along the line
   highPctMin: number | null;  // % of the line at least high_above over the terrain
   angleMax: number | null;    // angle to the wall at both anchors
+  promMin: number | null;     // prominence of the more prominent anchor
+  promBothMin: number | null; // ... of the less prominent one
+  dropMin: number | null;     // drop below both anchors
   water: "all" | "water" | "land";
   hideFilled: boolean;        // hide lines over gaps filled from another source
   groupMin: number | null;    // similar lines in a group (with grouping on)
@@ -21,12 +24,16 @@ export interface Filters {
 
 export const NO_FILTERS: Filters = {lenMin: null, lenMax: null, clrMin: null, clrNMin: null, dhMax: null,
                                     elevMin: null, heightMin: null, meanMin: null, highPctMin: null,
-                                    angleMax: null, water: "all", hideFilled: false, groupMin: null};
+                                    angleMax: null, promMin: null, promBothMin: null, dropMin: null, water: "all", hideFilled: false, groupMin: null};
 const STORAGE_KEY = "findaline.filters";
 
 export const dh = (l: Line) => Math.abs(l.e1 - l.e2);
 export const lowerAnchor = (l: Line) => Math.min(l.e1, l.e2);
 export const wallAngle = (l: Line) => Math.max(l.angle1, l.angle2);
+const known = (v: number | null) => v === null ? NaN : v;  // NaN fails every limit
+/** The prominence of the more (Math.max) or less (Math.min) prominent anchor; NaN if not known. */
+export const prominence = (l: Line, pick: (a: number, b: number) => number) => pick(known(l.prom1), known(l.prom2));
+export const drop = (l: Line) => Math.min(known(l.drop1), known(l.drop2));
 
 export function passes(l: Line, f: Filters): boolean {
   return (f.lenMin === null || l.len >= f.lenMin) && (f.lenMax === null || l.len <= f.lenMax) &&
@@ -35,6 +42,9 @@ export function passes(l: Line, f: Filters): boolean {
     (f.dhMax === null || dh(l) <= f.dhMax) && (f.elevMin === null || lowerAnchor(l) >= f.elevMin) &&
     (f.heightMin === null || l.hmax >= f.heightMin) && (f.meanMin === null || l.hmean >= f.meanMin) &&
     (f.highPctMin === null || l.highPct >= f.highPctMin) && (f.angleMax === null || wallAngle(l) <= f.angleMax) &&
+    (f.promMin === null || prominence(l, Math.max) >= f.promMin) &&
+    (f.promBothMin === null || prominence(l, Math.min) >= f.promBothMin) &&
+    (f.dropMin === null || drop(l) >= f.dropMin) &&
     (f.water === "all" || (f.water === "water" ? l.water > 0 : l.water === 0)) &&
     (!f.hideFilled || l.filled === 0);
 }

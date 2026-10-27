@@ -170,7 +170,9 @@ def test_evaluate_lines_matches_evaluate_line(model):
     found = rng.integers(0, 400, (3000, 2))
     table = sag.EnvelopeTable(sag.Rigging(), 20, 200) if model == "sag" else None
     for mode, high_above in (("mark", sh.HIGH_ABOVE), ("reject", 35.0)):
-        fast = ls.evaluate_lines(found, anchors, terrain, 1.0, surface, table, mode, high_above)
+        values = rng.random((len(anchors), 2)) * 50  # prominence, drop of the anchors
+        fast = ls.evaluate_lines(found, anchors, terrain, 1.0, surface, table, mode, high_above,
+                                 anchor_values=values)
         down = sh.downslope(terrain, anchors, 1.0)
         angles = np.column_stack(sh.wall_angles(anchors[found[:, 0]], anchors[found[:, 1]],
                                                 down[found[:, 0]], down[found[:, 1]])).tolist()
@@ -180,7 +182,8 @@ def test_evaluate_lines_matches_evaluate_line(model):
             if sh.is_valid(result, mode):  # as find_valid_lines always made them
                 elev_a1, elev_a2, length, clearance, clearance_nmpt, *heights = result
                 slow.append(sh.Line(tuple(map(int, anchors[i])), tuple(map(int, anchors[j])),
-                                    length, elev_a1, elev_a2, clearance, clearance_nmpt, *heights, angle1, angle2))
+                                    length, elev_a1, elev_a2, clearance, clearance_nmpt, *heights, angle1, angle2,
+                                    values[i, 0], values[j, 0], values[i, 1], values[j, 1]))
         assert slow and fast == slow
         assert 0 < sum(0 < line.high_pct < 100 for line in fast)  # the threshold is crossed
 
@@ -200,6 +203,47 @@ def test_wall_angles():
     assert np.allclose(angle1, [0, 90, 45]) and np.allclose(angle2, [180, 90, 135])  # east, north, south-east
     assert np.array_equal(sh.downslope(np.full((3, 3), 5.0), [(1, 1)], 1.0), [[0, 0]])  # flat: 90° to all
     assert np.allclose(sh.wall_angles(np.array([[1, 1]]), np.array([[1, 2]]), np.zeros((1, 2)), np.zeros((1, 2))), 90)
+
+
+def _flooded_prominence(z, pixel, span):
+    """Prominence by labelling the terrain at or above every level (slow, for the test)."""
+    from scipy import ndimage
+    e = z[pixel]
+    for level in sorted(set(z[~np.isnan(z)].tolist()), reverse=True):
+        if level <= e:
+            labels, _ = ndimage.label(z >= level, structure=np.ones((3, 3)))
+            rows, cols = np.nonzero(labels == labels[pixel])
+            if rows.max() - rows.min() + 1 >= span or cols.max() - cols.min() + 1 >= span:
+                return e - level
+    return np.nan
+
+
+def test_prominence_matches_flooding():
+    import terrain
+    rng = np.random.default_rng(3)
+    z = np.round(rng.random((40, 50)) * 20, 1).astype(np.float32)
+    z[rng.random(z.shape) < 0.05] = np.nan
+    anchors = np.argwhere(~np.isnan(z))[rng.integers(0, 1800, 60)]
+    anchors = np.vstack([anchors, anchors[:3]])  # several anchors on one pixel
+    fast = terrain.prominence(z, anchors, 2.0, 24)  # 12 pixels
+    slow = np.array([_flooded_prominence(z, tuple(a), 12) for a in anchors])
+    assert np.allclose(fast, slow, equal_nan=True) and np.nanmax(fast) > 3
+
+
+def test_prominence_and_drop_of_a_tower():
+    """A 30 m cone on a plain next to a wall: an anchor on the cone has its height above the
+    plain, the edge of the wall none; the drop is the height above the lowest ground near."""
+    import terrain
+    yy, xx = np.mgrid[0:400, 0:400]
+    z = 100.0 + np.maximum(0, 30 - np.hypot(yy - 200, xx - 200) * 1.5)
+    z[:, 330:] = 200
+    anchors = np.array([[200, 205], [200, 335], [200, 330]])
+    assert np.allclose(terrain.prominence(z, anchors, 1.0, 300), [22.5, 0, 0])
+    assert np.isnan(terrain.prominence(z, anchors, 1.0, 1000)).all()  # nothing spans more than the grid
+    import runs
+    assert runs.rounded(float("nan"), 1) is None and runs.rounded(2.345, 1) == 2.3
+    assert np.allclose(terrain.drop(z, anchors, 1.0, 50), [22.5, 100, 100])
+    assert np.allclose(terrain.drop(z, anchors[1:2], 1.0, 4), [0])  # the wall's foot is 5 px away
 
 
 def test_webbing_heights():
@@ -249,7 +293,8 @@ def _fake_lines(n):
              "a2_xy": (2.0, k / 3), "length": 100 + k / 7, "clearance": k / 3, "clearance_nmpt": None if k % 2 else k / 9,
              "over_obstacles": bool(k % 3), "elev_a1": 400 + k / 11, "elev_a2": 410.0, "water_m": 0.0, "filled_m": k / 13,
              "height_max": 30 + k / 17, "height_mean": 20 + k / 19, "high_pct": k / 0.23, "angle1": k * 7.3,
-             "angle2": 90 - k / 3, "profile": None}
+             "angle2": 90 - k / 3, "prom1": k / 1.7, "prom2": 4.0, "drop1": k * 2.1,
+             "drop2": 30.0, "profile": None}
             for k in range(n)]
 
 

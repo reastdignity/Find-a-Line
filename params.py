@@ -113,6 +113,15 @@ class SearchParams(BaseModel):
     max_wall_angle: Optional[float] = field(None, "keep only lines that leave both anchors at most this many "
                                                   "degrees from the downslope direction there (0: straight out "
                                                   "over the drop, 90: along the wall)", "search")
+    min_prominence: Optional[float] = field(None, "keep only lines with at least one anchor this many metres "
+                                                  "prominent (its height above the level at which the rock it "
+                                                  "stands on joins terrain wider than --prominence-span)", "search")
+    min_prominence_both: Optional[float] = field(None, "the same for both anchors of each line", "search")
+    prominence_span: float = field(300, "width in metres from which terrain no longer counts as the anchor's "
+                                        "own rock (for the prominence)", "search")
+    min_drop: Optional[float] = field(None, "keep only lines whose anchors are both at least this many metres "
+                                            "above the lowest terrain within --drop-radius", "search")
+    drop_radius: float = field(50, "metres around an anchor in which its drop is measured", "search")
     threads: Optional[int] = field(None, "number of threads for the line search (default: CPU count - 1)",
                                    "search")
     tile_size: Optional[float] = field(None, "large areas are computed in square tiles of this size in metres "
@@ -187,6 +196,8 @@ class SearchParams(BaseModel):
             raise ValueError("--min-high-share is a share of the length: 0 to 100")
         if self.max_wall_angle is not None and not 0 <= self.max_wall_angle <= 180:
             raise ValueError("--max-wall-angle is 0 to 180 degrees")
+        if self.prominence_span <= 0 or self.drop_radius <= 0:
+            raise ValueError("--prominence-span and --drop-radius must be positive")
         if self.tile_size is not None and self.tile_size < 100:
             raise ValueError("--tile-size must be at least 100 m")
         if self.within and self.area is None:

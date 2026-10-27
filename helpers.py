@@ -33,6 +33,10 @@ class Line(NamedTuple):
     high_pct: float                # % of those pixels where it is at least high_above
     angle1: float                  # degrees between the line and the downslope direction at anchor 1
     angle2: float                  # the same at anchor 2 (wall_angles)
+    prom1: float                   # prominence of anchor 1 (terrain.prominence; NaN: not computed)
+    prom2: float
+    drop1: float                   # drop below anchor 1 (terrain.drop)
+    drop2: float
 
 
 @dataclass

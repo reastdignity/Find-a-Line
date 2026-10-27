@@ -9,8 +9,10 @@ import iconUrl from "leaflet/dist/images/marker-icon.png";
 import shadowUrl from "leaflet/dist/images/marker-shadow.png";
 import { render } from "preact";
 import "./viewer.css";
-import { dh, lowerAnchor, passes, range as valueRange, saveFilters, savedFilters, wallAngle,
+import { dh, drop, lowerAnchor, passes, prominence, range as valueRange, saveFilters, savedFilters, wallAngle,
          type Filters } from "./filters";
+
+const finite = (v: number) => isFinite(v) ? v : null;
 import { groupLines, type Group } from "./grouping";
 import { baseLayers } from "./layers";
 import { inLocalPlane, listOthers, loadLines, colorOf, NEARBY_KM, saveChoice, savedChoice } from "./others";
@@ -55,6 +57,11 @@ function lineInfo(l: Line): string {
   if (isFinite(l.angle1)) {
     html += "<br><b>Angle to the wall:</b> A1 " + l.angle1.toFixed(0) + "°, A2 " + l.angle2.toFixed(0) +
       "° (0° straight out over the drop)";
+  }
+  const m = (v: number | null) => v === null ? "–" : v.toFixed(0) + " m";
+  if (l.prom1 !== null || l.drop1 !== null) {
+    html += "<br><b>Anchors stand out:</b> prominence A1 " + m(l.prom1) + ", A2 " + m(l.prom2) +
+      "; drop A1 " + m(l.drop1) + ", A2 " + m(l.drop2);
   }
   if (l.water > 0) html += "<br><b>Over water:</b> " + l.water.toFixed(0) + " m of " + l.len.toFixed(0) + " m";
   if (l.filled > 0)
@@ -196,7 +203,7 @@ function start(data: RunData) {
                           len: p.d[n], clr: p.min[1], clrN: p.min_nmpt ? p.min_nmpt[1] : null,
                           e1: p.z[0]!, e2: p.z[n]!, over: false, water: p.water_m, filled: p.filled_m,
                           hmax: p.max_height ? p.max_height[1] : NaN, hmean: NaN, highPct: NaN,
-                          angle1: NaN, angle2: NaN, prof: p};
+                          angle1: NaN, angle2: NaN, prom1: null, prom2: null, drop1: null, drop2: null, prof: p};
           drawBox();
           showProfile(measuredLine);
         })
@@ -244,6 +251,8 @@ function start(data: RunData) {
                          elev: valueRange(all, lowerAnchor), hmax: valueRange(all, (l) => l.hmax),
                          hmean: valueRange(all, (l) => l.hmean), highPct: valueRange(all, (l) => l.highPct),
                          highAbove: data.high_above, angle: valueRange(all, wallAngle),
+                         prom: valueRange(all, (l) => finite(prominence(l, Math.max))),
+                         drop: valueRange(all, (l) => finite(drop(l))),
                          group: largestGroup > 1 ? {min: 1, max: largestGroup} : null,
                          water: all.some((l) => l.water > 0), filled: all.some((l) => l.filled > 0)}}
                 onChange={(next) => { state = next; drawLines(); }}

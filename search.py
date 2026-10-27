@@ -50,6 +50,7 @@ import osm
 import runs as rn
 import sag as sg
 import sources as src
+import terrain
 from params import SearchParams
 from progress import progress
 
@@ -62,7 +63,7 @@ ORTHO_DETAIL = 50  # groups of an area with detailed orthophoto, unless the serv
 # Tiles of large areas: the grids of one tile may use this share of the free memory,
 # counting this many bytes per pixel (terrain, surface, water, gaps, masks, temporaries)
 TILE_MEMORY_SHARE = 0.25
-TILE_BYTES_PER_PIXEL = 64
+TILE_BYTES_PER_PIXEL = 100  # 64 of them, and the union-find of the anchor prominence (terrain.py)
 DOWNLOAD_MB_PER_S = 5  # for the time estimate of area searches
 MAX_MEASURED_PX = 6000  # the longest line measured on the map, in pixels (profile_of_line builds a square grid around it)
 
@@ -156,8 +157,10 @@ def _print(kind: str, text: str):
     print(text)
 
 
-def plan_search(params: SearchParams, paths: Paths, on_event: Optional[OnEvent] = None) -> Plan:
-    """Choose the source and the grid, and describe the search."""
+def plan_search(params: SearchParams, paths: Paths, on_event: Optional[OnEvent] = None,
+                with_margin: bool = True) -> Plan:
+    """Choose the source and the grid, and describe the search. The grid covers the area
+    and _margin around it, unless with_margin is False (a profile needs no anchor values)."""
     emit = on_event or _print
     src.used_data.clear()  # several searches may run in one process
     cache.check_layout(paths.cache)
@@ -192,7 +195,10 @@ def plan_search(params: SearchParams, paths: Paths, on_event: Optional[OnEvent] 
 
     crs = source.working_crs(center_lat, center_lon)
     x, y = ar._to(crs)(center_lon, center_lat)
-    grid = gd.make_grid(area.bounds(crs), resolution, crs, source.grid_origin)
+    margin = _margin(params, resolution) if with_margin else 0.0
+    left, bottom, right, top = area.bounds(crs)
+    grid = gd.make_grid((left - margin, bottom - margin, right + margin, top + margin), resolution, crs,
+                        source.grid_origin)
     tiles = core = None
     if isinstance(area, ar.Polygon):
         grid.area_shape = ar.project(area.geometry, "EPSG:4326", crs)
@@ -245,9 +251,16 @@ def _area_text(params: SearchParams) -> str:
     return text + (f" within {params.within}" if params.within else "")
 
 
+def _margin(params: SearchParams, res: float) -> float:
+    """Terrain around the anchors that their prominence and drop look at (terrain.py):
+    the grid covers this much around the area, so the values do not depend on its edge."""
+    return math.ceil(max(params.prominence_span, params.drop_radius) / res) * res
+
+
 def _overlap(params: SearchParams, res: float) -> float:
-    """Margin around a tile core: the longest line, plus pixels for the slope at the edge."""
-    return math.ceil(params.max_length / res) * res + 2 * res
+    """Margin around a tile core: the longest line, the terrain around its far anchor
+    (_margin), plus pixels for the slope at the edge."""
+    return math.ceil(params.max_length / res) * res + _margin(params, res) + 2 * res
 
 
 def tile_core_size(params: SearchParams, res: float) -> float:
@@ -264,7 +277,10 @@ def tile_core_size(params: SearchParams, res: float) -> float:
 def _tiles(grid: gd.Grid, params: SearchParams, res: float, origin, core: float) -> Optional[list]:
     """(core bounds, grid with overlap) of each tile under the area; None if one grid will do."""
     from shapely.geometry import box
-    left, bottom, right, top = grid.bounds
+    # Cores over the area (the grid without its _margin); the margin is for the overlaps
+    margin = _margin(params, res)
+    g_left, g_bottom, g_right, g_top = grid.bounds
+    left, bottom, right, top = g_left + margin, g_bottom + margin, g_right - margin, g_top - margin
     if max(right - left, top - bottom) <= core:
         return None
     overlap = _overlap(params, res)
@@ -274,8 +290,8 @@ def _tiles(grid: gd.Grid, params: SearchParams, res: float, origin, core: float)
             c = (left + i * core, max(bottom, top - (j + 1) * core), min(right, left + (i + 1) * core), top - j * core)
             if not grid.area_shape.intersects(box(*c)):
                 continue
-            ext = (max(left, c[0] - overlap), max(bottom, c[1] - overlap),
-                   min(right, c[2] + overlap), min(top, c[3] + overlap))
+            ext = (max(g_left, c[0] - overlap), max(g_bottom, c[1] - overlap),
+                   min(g_right, c[2] + overlap), min(g_top, c[3] + overlap))
             tile = gd.make_grid(ext, res, grid.crs, origin)
             tile.area_shape = grid.area_shape
             tiles.append((c, tile))
@@ -420,6 +436,28 @@ def _lines(plan: Plan, data: Data, core: Optional[tuple] = None) -> Tuple[List[D
             return [], []
         raise SearchError("Not enough steep terrain. Try a lower --slope-threshold or a larger --radius.")
 
+    # How far each anchor stands out (terrain.py); the limits for both anchors leave anchors out
+    progress.compute.start("anchor prominence and drop", 2, unit="step")
+    prom = terrain.prominence(data.elevation, anchors, plan.resolution, p.prominence_span)
+    progress.compute.update(1)
+    drop = terrain.drop(data.elevation, anchors, plan.resolution, p.drop_radius)
+    progress.compute.finish()
+    keep = np.ones(len(anchors), dtype=bool)
+    if p.min_prominence_both is not None:
+        keep &= prom >= p.min_prominence_both
+    if p.min_drop is not None:
+        keep &= drop >= p.min_drop
+    if not keep.all():
+        emit("info", f"Anchors left after the prominence and drop limits: {int(keep.sum())}")
+        anchors, prom, drop = anchors[keep], prom[keep], drop[keep]
+    # --min-prominence: one anchor of each line; the others stay as partners
+    strong = None if p.min_prominence is None else prom >= p.min_prominence
+    if len(anchors) < 2 or (strong is not None and not strong.any()):
+        if core is not None:
+            return [], []
+        raise SearchError("No anchors stand out enough. Try a lower --min-prominence, --min-prominence-both "
+                          "or --min-drop.")
+
     # Step 3: Compare each promising anchor to every other anchor
     _step(plan, 3, "evaluating anchor pairs")
     sag_table = None
@@ -435,7 +473,8 @@ def _lines(plan: Plan, data: Data, core: Optional[tuple] = None) -> Tuple[List[D
                                       p.min_length, p.max_length, plan.nmpt, p.threads,
                                       sag_table, p.max_anchor_diff / 100, p.max_anchor_diff_m, first,
                                       p.high_above, sh.LineLimits(p.min_height, p.min_mean_height,
-                                                                  p.min_high_share, p.max_wall_angle))
+                                                                  p.min_high_share, p.max_wall_angle),
+                                      np.column_stack([prom, drop]), strong)
     if not valid_lines and core is None:
         raise SearchError("No lines found matching elevation requirements.")
 
@@ -650,7 +689,9 @@ def _run_params(plan: Plan) -> Dict:
             "max_anchor_diff_m": p.max_anchor_diff_m,
             "slope_threshold": p.slope_threshold, "slope_file": p.slope_file, "high_above": p.high_above,
             "min_height": p.min_height, "min_mean_height": p.min_mean_height, "min_high_share": p.min_high_share,
-            "max_wall_angle": p.max_wall_angle,
+            "max_wall_angle": p.max_wall_angle, "min_prominence": p.min_prominence,
+            "min_prominence_both": p.min_prominence_both, "prominence_span": p.prominence_span,
+            "min_drop": p.min_drop, "drop_radius": p.drop_radius,
             "nmpt": plan.nmpt, "water": p.water, "coastline": p.coastline,
             "shore_buffer": p.shore_buffer, "fill_gaps": p.fill_gaps,
             "group_distance": plan.group_distance,
@@ -768,7 +809,7 @@ def profile_of_line(meta: Dict, paths: Paths, anchor1: Tuple[float, float], anch
         raise SearchError("the points are too close")
     lat, lon = (anchor1[0] + anchor2[0]) / 2, (anchor1[1] + anchor2[1]) / 2
     values.update(lat=lat, lon=lon, radius=length / 2 + 10 * p["resolution"] + 20)
-    plan = plan_search(SearchParams(**values), paths, lambda kind, text: None)
+    plan = plan_search(SearchParams(**values), paths, lambda kind, text: None, with_margin=False)
     if plan.crs != meta["center"]["crs"]:
         raise SearchError(f"the run used {meta['center']['crs']}, a search here would use {plan.crs}")
     data = prepare_data(plan)

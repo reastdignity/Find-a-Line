@@ -15,6 +15,7 @@ from pyproj import Transformer
 from grid import Grid
 from helpers import HIGH_ABOVE, LEASH_FALL, SLOPE, Line
 from progress import progress
+from runs import rounded
 from sag import Rigging
 
 MAX_ZOOM = 21  # about 5 cm per pixel, the detail of the best geoportal orthophotos
@@ -69,6 +70,8 @@ def coordify(lines: List[Line], grid: Grid, nmpt_mode: Optional[str]) -> List[Di
             "high_pct": line.high_pct,
             "angle1": line.angle1,
             "angle2": line.angle2,
+            "prom1": line.prom1, "prom2": line.prom2,
+            "drop1": line.drop1, "drop2": line.drop2,
         })
     progress.compute.finish()
     return results
@@ -259,7 +262,8 @@ def save_map(results: List[Dict], area, run_path: str, runs_dir: str, run: Dict,
                   round(r["elev_a1"], 2), round(r["elev_a2"], 2), r["over_obstacles"],
                   round(r.get("water_m", 0.0), 1), round(r.get("filled_m", 0.0), 1),
                   r["height_max"], round(r["height_mean"], 2), round(r["high_pct"], 1),
-                  round(r["angle1"], 1), round(r["angle2"], 1)] for r in chunk]
+                  round(r["angle1"], 1), round(r["angle2"], 1),
+                  *(rounded(r[k], 1) for k in ("prom1", "prom2", "drop1", "drop2"))] for r in chunk]
         on_lines(len(chunk), "data.js")
     data = {
         "run": {"id": run["id"], "name": run["name"], "created": run["created"],

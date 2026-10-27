@@ -95,9 +95,14 @@ FIELDS = ["group", "representative", "group_size", "length_m", "clearance_m",
           "clearance_nmpt_m", "over_trees_buildings", "water_m", "filled_m",
           "height_max_m", "height_mean_m", "high_pct",
           "anchor1_lat", "anchor1_lon", "anchor1_elev_m", "anchor1_northing", "anchor1_easting",
-          "anchor1_wall_angle",
+          "anchor1_wall_angle", "anchor1_prominence_m", "anchor1_drop_m",
           "anchor2_lat", "anchor2_lon", "anchor2_elev_m", "anchor2_northing", "anchor2_easting",
-          "anchor2_wall_angle"]
+          "anchor2_wall_angle", "anchor2_prominence_m", "anchor2_drop_m"]
+
+
+def rounded(value: float, digits: int):
+    """round(), with None (an empty cell) for NaN."""
+    return None if value != value else round(value, digits)
 
 
 def _rows(groups: List[Dict]):
@@ -121,10 +126,12 @@ def _rows(groups: List[Dict]):
                 "anchor1_elev_m": round(r["elev_a1"], 2),
                 "anchor1_northing": round(r["a1_xy"][1], 2), "anchor1_easting": round(r["a1_xy"][0], 2),
                 "anchor1_wall_angle": round(r["angle1"], 1),
+                "anchor1_prominence_m": rounded(r["prom1"], 1), "anchor1_drop_m": rounded(r["drop1"], 1),
                 "anchor2_lat": round(r["anchor2"][0], 7), "anchor2_lon": round(r["anchor2"][1], 7),
                 "anchor2_elev_m": round(r["elev_a2"], 2),
                 "anchor2_northing": round(r["a2_xy"][1], 2), "anchor2_easting": round(r["a2_xy"][0], 2),
                 "anchor2_wall_angle": round(r["angle2"], 1),
+                "anchor2_prominence_m": rounded(r["prom2"], 1), "anchor2_drop_m": rounded(r["drop2"], 1),
             }
 
 
@@ -204,7 +211,9 @@ def params_summary(meta: Dict) -> str:
     limits = [f"{text}{p[key]:g}{unit}" for key, text, unit in (
         ("min_height", "height ≥", " m"), ("min_mean_height", "mean height ≥", " m"),
         ("min_high_share", f"≥{p.get('high_above', 20):g} m high over ≥", "%"),
-        ("max_wall_angle", "wall angle ≤", "°")) if p.get(key) is not None]
+        ("max_wall_angle", "wall angle ≤", "°"), ("min_prominence", "an anchor prominent ≥", " m"),
+        ("min_prominence_both", "both anchors prominent ≥", " m"), ("min_drop", "drop ≥", " m"))
+        if p.get(key) is not None]
     if limits:
         text += ", " + ", ".join(limits)
     if p.get("model") == "sag":

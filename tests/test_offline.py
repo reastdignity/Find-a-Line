@@ -119,6 +119,20 @@ def test_height_limits_filter_the_lines(tmp_path):
     expected = [r for r in everything if angle(r) <= 40]
     assert 0 < len(expected) < len(everything)
     assert clear(straight) == clear(expected) and all(angle(r) <= 40.05 for r in straight)
+    # Prominence and drop: anchors are left out before the pairs (one prominent anchor is enough
+    # for --min-prominence, both must reach --min-prominence-both and --min-drop)
+    _, standing = run_search(tmp_path / "standing", *common, "--min-prominence", "3.03", "--min-drop", "35.03")
+    value = lambda r, k: float(r[k]) if r[k] else float("nan")
+    expected = [line_values(r) for r in everything
+                if max(value(r, "anchor1_prominence_m"), value(r, "anchor2_prominence_m")) >= 3.03
+                and min(value(r, "anchor1_drop_m"), value(r, "anchor2_drop_m")) >= 35.03]
+    assert 0 < len(expected) < len(everything) / 2
+    assert sorted(map(line_values, standing), key=key) == sorted(expected, key=key)
+    _, both = run_search(tmp_path / "both", *common, "--min-prominence-both", "0.53")
+    expected = [line_values(r) for r in everything
+                if min(value(r, "anchor1_prominence_m"), value(r, "anchor2_prominence_m")) >= 0.53]
+    assert 0 < len(expected) < len(everything)
+    assert sorted(map(line_values, both), key=key) == sorted(expected, key=key)
 
 
 def test_area_in_tiles(tmp_path):
@@ -135,6 +149,11 @@ def test_area_in_tiles(tmp_path):
     assert one and _lines(one) == _lines(tiled)
     assert one == tiled  # every column, the order of the anchors too (their pixels depend on it)
     assert len(glob.glob(str(tmp_path / "tiled" / "runs" / "*" / "tiles" / "*.pkl.gz"))) > 1
+    # the prominence and drop of the anchors too, so their limits give one grid's lines as well
+    limits = ["--min-prominence", "2", "--min-drop", "30"]
+    _, one_limited = run_search(tmp_path / "one-limited", *common, *limits)
+    _, tiled_limited = run_search(tmp_path / "tiled-limited", *common, "--tile-size", "150", *limits)
+    assert one_limited and one_limited == tiled_limited and len(one_limited) < len(one)
     # The map of an area keeps the profiles of the lines shown for the groups, no others
     for name, rows in (("one", one), ("tiled", tiled)):
         data = glob.glob(str(tmp_path / name / "runs" / "*" / "data.js"))[0]
