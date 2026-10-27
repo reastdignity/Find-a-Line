@@ -32,7 +32,7 @@ import sys
 import threading
 import time
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Dict, Iterable, List, Optional, Set
 
 import cache
@@ -44,6 +44,8 @@ PROGRESS_INTERVAL = 0.3   # seconds between progress events of a job
 HEARTBEAT = 5.0           # seconds between renewals of a worker's lease
 HOUSEKEEPING = 6 * 3600   # seconds between clean-ups of the data folder (and at the start)
 QUICK_POLL = 0.05         # seconds between looks of the quick lane at its table
+KEEP_WORK_DAYS = 7        # days the work folder of a job that failed unexpectedly is kept (to look at)
+KEEP_QUICK_SECONDS = 3600  # an answer of the quick lane nobody took (the page was closed) is deleted after it
 LEASE = 30.0              # seconds a lease lasts without a renewal
 # What a job is doing; "ready" means its data is downloaded and it waits to compute
 ACTIVE = ("downloading", "computing")
@@ -271,6 +273,19 @@ class Jobs:
             row = db.execute("SELECT * FROM quick WHERE status = 'running' AND worker_id = ?", (worker_id,)).fetchone()
         return dict(row) if row else None
 
+    def forget_quick(self, seconds: float = KEEP_QUICK_SECONDS) -> int:
+        """Delete tasks of the quick lane nobody waits for any more (older than `seconds`, not running)."""
+        with self._db() as db:
+            return db.execute("DELETE FROM quick WHERE created < ? AND status != 'running'",
+                              (time.time() - seconds,)).rowcount
+
+    def forget_events(self, days: float) -> int:
+        """Delete the events (messages, progress) of jobs finished more than `days` ago; the jobs stay."""
+        cutoff = (datetime.now() - timedelta(days=days)).isoformat(timespec="seconds")
+        with self._db() as db:
+            return db.execute(f"DELETE FROM events WHERE job IN (SELECT id FROM jobs WHERE status IN {_in(FINISHED)} "
+                              "AND finished < ?)", (*FINISHED, cutoff)).rowcount
+
     def quick_answer(self, task_id: int, code: int, body):
         """The answer of a running task."""
         with self._db() as db:
@@ -414,6 +429,8 @@ def run_phase(data_dir: str, job_id: str, phase: str):
             import gc
             gc.collect()  # close the memory-mapped grids before deleting them (Windows)
             cache.remove_work(paths.work)
+            if (jobs.get(job_id) or {}).get("status") in FINISHED:  # the job ended: tile_core.json is not needed
+                shutil.rmtree(jobs.folder(job_id), ignore_errors=True)
 
 
 def quick_estimate(data_dir: str, request: Dict) -> Dict:
@@ -442,7 +459,8 @@ def quick_profile(data_dir: str, request: Dict) -> Dict:
     with open(os.path.join(data_dir, "runs", request["run"], "run.json"), encoding="utf-8") as f:
         meta = json.load(f)
     lat1, lon1, lat2, lon2 = request["line"]
-    paths = search.Paths(data_dir, cache.new_work(data_dir))
+    paths = search.Paths(data_dir, os.path.join(data_dir, "work", "profiles", uuid.uuid4().hex))
+    os.makedirs(paths.work)
     try:
         return search.profile_of_line(meta, paths, (lat1, lon1), (lat2, lon2))
     finally:
@@ -480,6 +498,17 @@ def run_quick(data_dir: str, worker_id: str, parent: int):
         except Exception as e:
             traceback.print_exc()
             jobs.quick_answer(task["id"], 500, f"internal error: {type(e).__name__}: {cache.clean_error(e)}")
+
+
+def _remove_old(folder: str, days: float, keep: Iterable[str] = ()):
+    """Delete the entries of a folder not changed for `days`, except those named in `keep`."""
+    limit, keep = time.time() - days * 86400, set(keep)
+    if not os.path.isdir(folder):
+        return
+    for entry in os.scandir(folder):
+        with contextlib.suppress(OSError):
+            if entry.name not in keep and entry.stat().st_mtime < limit:
+                shutil.rmtree(entry.path) if entry.is_dir() else os.remove(entry.path)
 
 
 def kill_tree(pid: int):
@@ -529,8 +558,19 @@ class Scheduler:
         self.jobs.interrupted()  # jobs of workers that are gone
 
     def housekeeping(self):
-        """Clean the data folder up: temporary files of downloads killed while writing."""
-        cache.remove_stale_parts(os.path.join(self.jobs.data_dir, "cache"))
+        """Clean the data folder up: temporary files of downloads killed while writing; events of
+        jobs finished more than Limits.keep_events_days ago; answers of the quick lane nobody took;
+        work folders of ended jobs (kept after an unexpected error) after KEEP_WORK_DAYS, and those
+        of estimates and profiles (left by a killed quick lane) after a day."""
+        data = self.jobs.data_dir
+        cache.remove_stale_parts(os.path.join(data, "cache"))
+        if self.limits.keep_events_days:
+            self.jobs.forget_events(self.limits.keep_events_days)
+        self.jobs.forget_quick()
+        unfinished = {job["id"] for job in self.jobs.waiting_or_running()}
+        _remove_old(os.path.join(data, "work", "jobs"), KEEP_WORK_DAYS, keep=unfinished)
+        for name in ("estimates", "profiles"):
+            _remove_old(os.path.join(data, "work", name), 1)
 
     def _remove_folder(self, job_id: str):
         """The work folder of a job whose processes were killed (their memory-mapped grids are closed)."""

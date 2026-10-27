@@ -121,7 +121,7 @@ def test_drawn_area_through_the_queue(tmp_path, monkeypatch):
     folder = tmp_path / "web" / "runs" / result["run_id"]
     meta = json.loads((folder / "run.json").read_text(encoding="utf-8"))
     assert meta["params"]["area"]["area"] == "drawn area" and meta["area"]["spec"]["area"] == "drawn area"
-    assert not os.path.exists(tmp_path / "web" / "work" / "jobs" / job / "area.geojson")
+    assert not os.path.exists(jobs.folder(job))  # tile_core.json and the grids are gone with the job
 
     path = tmp_path / "drawn.geojson"
     path.write_text(json.dumps(geometry), encoding="utf-8")
@@ -222,6 +222,7 @@ def test_job_through_the_queue(tmp_path, monkeypatch):
     result = jobs.get(job)
     assert result["status"] == "done", result["error"]
     assert os.path.exists(tmp_path / "runs" / result["run_id"] / "map.html")
+    assert not os.path.exists(jobs.folder(job))
     assert jobs.get(other)["status"] == "cancelled"
     kinds = {e["kind"] for e in jobs.events(0, job)}
     assert {"status", "info", "progress"} <= kinds
@@ -458,6 +459,36 @@ def test_time_limits(tmp_path, monkeypatch):
             scheduler.stop()
     assert result["status"] == "failed" and result["error"].startswith("time limit"), result
     assert not os.path.exists(jobs.folder(job))
+
+
+def test_housekeeping(tmp_path):
+    """Events of jobs finished long ago, answers nobody took, the work folders of ended jobs after a
+    week and leftovers of estimates and profiles after a day are deleted; everything else stays."""
+    jobs = Jobs(str(tmp_path))
+    old, recent, running = (jobs.add({"params": {}, "geometry": None}, name) for name in ("old", "recent", "running"))
+    jobs.set(old, "done")
+    jobs.set(recent, "failed", error="x")
+    jobs.set(running, "computing")
+    with jobs._db() as db:
+        db.execute("UPDATE jobs SET finished = '2020-01-01T00:00:00' WHERE id = ?", (old,))
+    taken = jobs.quick_add("estimate", {})
+    with jobs._db() as db:
+        db.execute("UPDATE quick SET status = 'done', created = ? WHERE id = ?", (time.time() - 7200, taken))
+    fresh = jobs.quick_add("estimate", {})
+    week_ago = time.time() - 8 * 86400
+    folders = {name: tmp_path / "work" / kind / name for kind, name in (
+        ("jobs", old), ("jobs", running), ("jobs", "unknown"), ("estimates", "a"), ("profiles", "b"))}
+    for folder in folders.values():
+        folder.mkdir(parents=True)
+        os.utime(folder, (week_ago, week_ago))
+    (tmp_path / "work" / "estimates" / "new").mkdir()
+    Scheduler(jobs).housekeeping()
+    assert jobs.events(0, old) == [] and jobs.events(0, recent) and jobs.events(0, running)
+    assert jobs.get(old)["status"] == "done"  # the job stays
+    remaining = {r[0] for r in jobs._db().execute("SELECT id FROM quick")}
+    assert remaining == {fresh}
+    assert [n for n, f in folders.items() if f.exists()] == [running]
+    assert (tmp_path / "work" / "estimates" / "new").exists()
 
 
 def _clip_run(tmp_path, monkeypatch, *extra) -> str:
