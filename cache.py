@@ -5,7 +5,8 @@ Data folder (--data-dir or FINDALINE_DATA; default: the folder of the scripts):
     cache/     downloaded data (below)
     runs/      saved runs (runs.py)
     work/      working grids of the searches in progress, one folder per search,
-               deleted when the search ends without an error
+               deleted when the search ends without an error; the web worker's are
+               work/jobs/<job>/<phase>
 
 Cache layout: <country or global dataset>/<dataset>/<edition>/<tiling>/<tile>, e.g.
     poland/nmt/<year>_<sheet file>.tif           (sheets never change: no edition)
@@ -38,6 +39,7 @@ import shutil
 import sqlite3
 import sys
 import tempfile
+import time
 from datetime import datetime, timedelta, timezone
 from typing import Dict, Iterable, List, Optional
 
@@ -145,6 +147,21 @@ def new_work(data: str) -> str:
     path = os.path.join(data, "work", f"{datetime.now():%Y%m%d-%H%M%S}-{os.getpid()}")
     os.makedirs(path, exist_ok=True)
     return path
+
+
+def remove_stale_parts(cache_dir: str, days: float = 1.0) -> int:
+    """Delete the temporary files of downloads (*.part: replacing, sources._part, orthophoto tiles)
+    not written to for `days`: left by a process killed while writing. Returns their number."""
+    limit, removed = time.time() - days * 86400, 0
+    for folder, _, names in os.walk(cache_dir):
+        for name in names:
+            if name.endswith(".part"):
+                path = os.path.join(folder, name)
+                with contextlib.suppress(OSError):  # gone meanwhile, or still open (Windows)
+                    if os.path.getmtime(path) < limit:
+                        os.remove(path)
+                        removed += 1
+    return removed
 
 
 def remove_work(path: str):

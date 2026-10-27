@@ -366,6 +366,7 @@ def test_worker_process(tmp_path, monkeypatch):
             with TestClient(web.create_app(str(tmp_path), token=TOKEN, start_scheduler=False)) as client:
                 assert client.delete(f"/api/jobs/{job}", headers={"x-findaline-token": TOKEN}).status_code == 200
             assert _wait(jobs, job, ("cancelled", "failed"), 30)["status"] == "cancelled"
+            assert not os.path.exists(jobs.folder(job))  # work/jobs/<job>/download removed
             assert not any(p.is_running() and p.status() != psutil.STATUS_ZOMBIE for p in phase)
 
             second = jobs.add(hanging, "second")
@@ -382,6 +383,19 @@ def test_worker_process(tmp_path, monkeypatch):
                 worker.kill()
             output = worker.communicate()[0]
     assert "worker" in output, output
+
+
+def test_stale_temporary_files(tmp_path):
+    """The worker's housekeeping deletes temporary files of downloads not written to for a day."""
+    folder = tmp_path / "cache" / "poland" / "nmt"
+    folder.mkdir(parents=True)
+    old, new, kept = folder / "a.tif.x1y2.part", folder / "b.tif.123-456.part", folder / "c.tif"
+    for path in (old, new, kept):
+        path.write_text("x")
+    for path in (old, kept):
+        os.utime(path, (time.time() - 2 * 86400,) * 2)
+    Scheduler(Jobs(str(tmp_path))).housekeeping()
+    assert not old.exists() and new.exists() and kept.exists()
 
 
 def _clip_run(tmp_path, monkeypatch, *extra) -> str:

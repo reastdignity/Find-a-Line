@@ -19,6 +19,7 @@ import contextlib
 import json
 import multiprocessing
 import os
+import shutil
 import signal
 import socket
 import sqlite3
@@ -35,6 +36,7 @@ import params as pm
 TICK = 0.5                # seconds between looks at the queue
 PROGRESS_INTERVAL = 0.3   # seconds between progress events of a job
 HEARTBEAT = 5.0           # seconds between renewals of a worker's lease
+HOUSEKEEPING = 6 * 3600   # seconds between clean-ups of the data folder (and at the start)
 LEASE = 30.0              # seconds a lease lasts without a renewal
 # What a job is doing; "ready" means its data is downloaded and it waits to compute
 ACTIVE = ("downloading", "computing")
@@ -308,7 +310,8 @@ def run_phase(data_dir: str, job_id: str, phase: str):
         jobs.event(job_id, kind, text)
 
     progress.subscribe(on_progress)
-    paths = search.Paths(data_dir, cache.new_work(data_dir))
+    paths = search.Paths(data_dir, os.path.join(jobs.folder(job_id), phase))  # removed with the job when killed
+    os.makedirs(paths.work, exist_ok=True)
     failed = True
     try:
         if "osm" in request:  # an OpenStreetMap extract: one phase only
@@ -401,6 +404,14 @@ class Scheduler:
         self.beat = time.time()
         self.jobs.interrupted()  # jobs of workers that are gone
 
+    def housekeeping(self):
+        """Clean the data folder up: temporary files of downloads killed while writing."""
+        cache.remove_stale_parts(os.path.join(self.jobs.data_dir, "cache"))
+
+    def _remove_folder(self, job_id: str):
+        """The work folder of a job whose processes were killed (their memory-mapped grids are closed)."""
+        shutil.rmtree(self.jobs.folder(job_id), ignore_errors=True)
+
     def stop(self):
         """Stop gracefully: kill the running phases, mark their jobs interrupted, give up the lease."""
         self.stopped.set()
@@ -413,10 +424,15 @@ class Scheduler:
             kill_tree(process.pid)
             process.join()
             del self.running[phase]
+            self._remove_folder(job_id)
         self.jobs.interrupted(self.worker_id)
 
     def _loop(self):
+        cleaned = 0.0
         while not self.stopped.wait(TICK):
+            if time.time() - cleaned >= HOUSEKEEPING:  # in a thread: it walks the whole cache
+                cleaned = time.time()
+                threading.Thread(target=self.housekeeping, daemon=True).start()
             with self.lock:
                 if self.stopped.is_set():
                     break
@@ -441,6 +457,7 @@ class Scheduler:
                     kill_tree(process.pid)
                     process.join()
                     del self.running[phase]
+            self._remove_folder(job_id)
             self.jobs.set(job_id, "cancelled", when=ACTIVE + WAITING)
         for phase, (job_id, process) in list(self.running.items()):
             if process.is_alive():
