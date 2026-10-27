@@ -38,7 +38,7 @@ Finds possible highlines in elevation data: anchors on steep pixels, every pair 
 | `update.py` | `findaline.py cache status/update` and `osm download/update`: which cached data can change, checks, runs on changed data |
 | `osmextract.py` | Geofabrik OSM extracts: download, replication diffs (pyosmium), theme features, theme tiles built from extracts |
 | `orthophoto.py` | Orthophoto tile cache (XYZ tiles requested from a WMS in EPSG:4326) |
-| `runs.py` | Saved runs (`runs/<date>_<place>/`), `runs/index.html`, `runs/runs.js`, run names |
+| `runs.py` | Saved runs (`runs/<date>_<time>_<place>_<random>/`), `runs/index.html`, `runs/runs.js`, run names |
 | `progress.py` | Two tqdm bars (Download / Compute); listeners (`progress.subscribe`) for the web worker |
 
 ## Things that must stay in sync

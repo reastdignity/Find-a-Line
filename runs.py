@@ -2,12 +2,14 @@
 Saving every run (map, results, parameters) so earlier runs can be browsed.
 
 Layout:
-    runs/<date>_<place>/map.html       interactive map (the viewer, see mapping.save_map)
-    runs/<date>_<place>/data.js        its data: lines and profiles
-    runs/<date>_<place>/lines.js       its lines without profiles, for the "Other runs" of other maps
-    runs/<date>_<place>/lines.csv      every valid line with its group
-    runs/<date>_<place>/lines.geojson  the same as GeoJSON
-    runs/<date>_<place>/run.json       parameters and summary
+    runs/<id>/map.html       interactive map (the viewer, see mapping.save_map)
+    runs/<id>/data.js        its data: lines and profiles
+    runs/<id>/lines.js       its lines without profiles, for the "Other runs" of other maps
+    runs/<id>/lines.csv      every valid line with its group
+    runs/<id>/lines.geojson  the same as GeoJSON, with the public part of run.json
+    runs/<id>/run.json       parameters and summary
+The id of a run is <date>_<time>_<place>_<random>: unique and not guessable (older runs
+have no random part and keep their ids).
     runs/runs.js                       list of all runs, loaded by every map
     runs/_viewer/                      the viewer bundle shared by every map
     runs/index.html                    table of all runs
@@ -21,6 +23,7 @@ import json
 import math
 import os
 import re
+import secrets
 import unicodedata
 from datetime import datetime
 from typing import Dict, List, Optional
@@ -84,11 +87,23 @@ def _slug(text: str) -> str:
 
 
 def new_run(runs_dir: str, name: str, created: datetime) -> Dict:
-    """Create the folder for a run and return its id and path."""
-    run_id = f"{created:%Y-%m-%d_%H%M%S}_{_slug(name)}"
+    """Create the folder for a run and return its id and path.
+
+    The random part (64 bits) makes the id unique, also between searches started in the
+    same second, and not guessable: whoever has a run's address was given it.
+    """
+    run_id = f"{created:%Y-%m-%d_%H%M%S}_{_slug(name)}_{secrets.token_hex(8)}"
     path = os.path.join(runs_dir, run_id)
-    os.makedirs(path, exist_ok=True)
+    os.makedirs(path, exist_ok=False)  # never two searches in one folder
     return {"id": run_id, "path": path}
+
+
+def public_meta(meta: Dict) -> Dict:
+    """The part of run.json that goes into lines.geojson, a file meant to be passed on:
+    without the list of cache files each data layer used."""
+    if "data" not in meta:
+        return meta
+    return {**meta, "data": [{k: v for k, v in entry.items() if k != "paths"} for entry in meta["data"]]}
 
 
 FIELDS = ["group", "representative", "group_size", "length_m", "clearance_m",
@@ -171,7 +186,7 @@ def save_results(run_path: str, groups: List[Dict], meta: Dict, on_lines=lambda 
             } for row in rows[start:start + LINES_CHUNK]]
             f.write((", " if start else "") + encoder.encode(features)[1:-1])
             on_lines(len(features), "lines.geojson")
-        f.write('], "findaline": ' + encoder.encode(meta) + "}")
+        f.write('], "findaline": ' + encoder.encode(public_meta(meta)) + "}")
 
     with open(os.path.join(run_path, "run.json"), "w", encoding="utf-8") as f:
         json.dump(meta, f, ensure_ascii=False, indent=2)

@@ -382,3 +382,21 @@ def test_errors_without_query_strings(monkeypatch):
         src._get("http://127.0.0.1:9/API/globaldem", params={"API_Key": "secret123"}, timeout=2)
     assert "secret123" not in str(error.value)
     assert cache.clean_error("404 for url: https://x.org/a?key=k&b=1 (why?)") == "404 for url: https://x.org/a?... (why?)"
+
+
+def test_run_ids_and_public_meta(tmp_path):
+    """Run ids are unique within one second and not guessable; lines.geojson lists no cache files."""
+    import json
+    import re
+    from datetime import datetime
+    import runs as rn
+    created = datetime(2026, 10, 27, 12, 0, 0)
+    first, second = (rn.new_run(str(tmp_path), "Żabi Koń", created) for _ in range(2))
+    assert first["id"] != second["id"]
+    assert re.fullmatch(r"2026-10-27_120000_Zabi-Kon_[0-9a-f]{16}", first["id"]), first["id"]
+    meta = {"name": "x", "summary": {"lines": 0},
+            "data": [{"layer": "NMT", "folder": "poland/nmt", "files": 2, "paths": ["poland/nmt/a.tif", "b.tif"]}]}
+    rn.save_results(first["path"], [], meta)
+    saved = json.loads(open(os.path.join(first["path"], "lines.geojson"), encoding="utf-8").read())["findaline"]
+    assert saved["data"] == [{"layer": "NMT", "folder": "poland/nmt", "files": 2}]
+    assert json.load(open(os.path.join(first["path"], "run.json"), encoding="utf-8")) == meta  # run.json keeps them
