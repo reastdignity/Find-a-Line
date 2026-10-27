@@ -33,6 +33,8 @@ function escape(text: string): string {
   return text.replace(/[&<>"']/g, (c) => "&#" + c.charCodeAt(0) + ";");
 }
 
+let highAbove = 20;  // m, the run's high_above (set by start)
+
 function lineInfo(l: Line): string {
   let html = "";
   if (l.run) {
@@ -45,6 +47,10 @@ function lineInfo(l: Line): string {
     "<b>Anchor 2:</b> " + l.lat2.toFixed(6) + ", " + l.lon2.toFixed(6) + " (" + l.e2.toFixed(1) + " m)<br>" +
     "<b>Min. clearance over terrain:</b> " + l.clr.toFixed(1) + " m";
   if (l.clrN !== null) html += "<br><b>Min. clearance over trees/buildings:</b> " + l.clrN.toFixed(1) + " m";
+  if (isFinite(l.hmax)) {
+    html += "<br><b>Webbing above the terrain:</b> up to " + l.hmax.toFixed(0) + " m, mean " + l.hmean.toFixed(0) +
+      " m, " + l.highPct.toFixed(0) + "% of the line " + highAbove + " m or more";
+  }
   if (l.water > 0) html += "<br><b>Over water:</b> " + l.water.toFixed(0) + " m of " + l.len.toFixed(0) + " m";
   if (l.filled > 0)
     html += "<br><b>Over filled gaps in the data:</b> " + l.filled.toFixed(0) + " m (less precise)";
@@ -63,6 +69,7 @@ function groupInfo(g: Group<Line>, by: string): string {
 
 function start(data: RunData) {
   const lines = data.lines.map((row) => toLine(row));
+  highAbove = data.high_above;
   const map = L.map("map", {center: data.center, zoom: 15, maxZoom: data.max_zoom});
   (window as any).FINDALINE_MAP = map;  // for tests and the browser console
   L.control.scale().addTo(map);
@@ -182,7 +189,8 @@ function start(data: RunData) {
           if (p.z[0] === null || p.z[n] === null) throw new Error("no terrain data at a point");
           measuredLine = {lat1: a.lat, lon1: a.lng, lat2: b.lat, lon2: b.lng, x1: 0, y1: 0, x2: 0, y2: 0,
                           len: p.d[n], clr: p.min[1], clrN: p.min_nmpt ? p.min_nmpt[1] : null,
-                          e1: p.z[0]!, e2: p.z[n]!, over: false, water: p.water_m, filled: p.filled_m, prof: p};
+                          e1: p.z[0]!, e2: p.z[n]!, over: false, water: p.water_m, filled: p.filled_m,
+                          hmax: p.max_height ? p.max_height[1] : NaN, hmean: NaN, highPct: NaN, prof: p};
           drawBox();
           showProfile(measuredLine);
         })
@@ -227,7 +235,9 @@ function start(data: RunData) {
                 shown={shown} focused={focused !== null} filters={filters}
                 ranges={{len: valueRange(all, (l) => l.len), clr: valueRange(all, (l) => l.clr),
                          clrN: valueRange(all, (l) => l.clrN), dh: valueRange(all, dh),
-                         elev: valueRange(all, lowerAnchor),
+                         elev: valueRange(all, lowerAnchor), hmax: valueRange(all, (l) => l.hmax),
+                         hmean: valueRange(all, (l) => l.hmean), highPct: valueRange(all, (l) => l.highPct),
+                         highAbove: data.high_above,
                          group: largestGroup > 1 ? {min: 1, max: largestGroup} : null,
                          water: all.some((l) => l.water > 0), filled: all.some((l) => l.filled > 0)}}
                 onChange={(next) => { state = next; drawLines(); }}

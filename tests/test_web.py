@@ -141,7 +141,7 @@ def test_profile_on_demand(tmp_path, monkeypatch):
             assert client.get(f"/api/profile?run={run_id}&line={line}").status_code == 403  # header needed
             response = client.get(f"/api/profile?run={run_id}&line={line}", headers={"x-findaline-profile": "1"})
             assert response.status_code == 200, response.text
-            assert response.json() == row[16]  # the smaller grid samples the same pixels
+            assert response.json() == row[-1]  # the smaller grid samples the same pixels
         assert client.get("/api/profile?run=..&line=1,2,3,4", headers={"x-findaline-profile": "1"}).status_code == 404
 
         # Two points measured on the map: a line shorter than --min-length gets the sag of its own span

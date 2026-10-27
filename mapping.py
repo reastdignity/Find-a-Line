@@ -13,7 +13,7 @@ import numpy as np
 from pyproj import Transformer
 
 from grid import Grid
-from helpers import LEASH_FALL, SLOPE, Line
+from helpers import HIGH_ABOVE, LEASH_FALL, SLOPE, Line
 from progress import progress
 from sag import Rigging
 
@@ -64,6 +64,9 @@ def coordify(lines: List[Line], grid: Grid, nmpt_mode: Optional[str]) -> List[Di
             "clearance": line.clearance,
             "clearance_nmpt": line.clearance_nmpt,
             "over_obstacles": over_obstacles,
+            "height_max": line.height_max,
+            "height_mean": line.height_mean,
+            "high_pct": line.high_pct,
         })
     progress.compute.finish()
     return results
@@ -228,7 +231,7 @@ def _write_js(path: str, target: str, value: Dict, on_lines=lambda n, file: None
 def save_map(results: List[Dict], area, run_path: str, runs_dir: str, run: Dict, crs: str,
              group_distance: float = 20, group_by: str = "clearance", ortho_cache: Optional[str] = None,
              ortho_service=None, model: str = "formula", rigging: Optional[Rigging] = None,
-             on_lines=lambda n, file: None) -> str:
+             on_lines=lambda n, file: None, high_above: float = HIGH_ABOVE) -> str:
     """Save the interactive map of a run: map.html, data.js and lines.js in its folder.
 
     The map is the viewer (viewer/src, TypeScript), the same bundle for every run in
@@ -252,7 +255,8 @@ def save_map(results: List[Dict], area, run_path: str, runs_dir: str, run: Dict,
                   *r["a1_xy"], *r["a2_xy"], r["length"], r["clearance"],
                   None if r["clearance_nmpt"] is None else round(r["clearance_nmpt"], 2),
                   round(r["elev_a1"], 2), round(r["elev_a2"], 2), r["over_obstacles"],
-                  round(r.get("water_m", 0.0), 1), round(r.get("filled_m", 0.0), 1)] for r in chunk]
+                  round(r.get("water_m", 0.0), 1), round(r.get("filled_m", 0.0), 1),
+                  r["height_max"], round(r["height_mean"], 2), round(r["high_pct"], 1)] for r in chunk]
         on_lines(len(chunk), "data.js")
     data = {
         "run": {"id": run["id"], "name": run["name"], "created": run["created"],
@@ -268,7 +272,7 @@ def save_map(results: List[Dict], area, run_path: str, runs_dir: str, run: Dict,
             "cache": _relative_url(ortho_cache, path) if ortho_cache else None},
         "distance": group_distance, "by": group_by, "model": model,
         "rigging": dataclasses.asdict(rigging or Rigging()),
-        "slope": SLOPE, "leash_fall": LEASH_FALL, "max_zoom": MAX_ZOOM,
+        "slope": SLOPE, "leash_fall": LEASH_FALL, "high_above": high_above, "max_zoom": MAX_ZOOM,
         "lines": [row + [r.get("profile")] for row, r in zip(rows, results)],
     }
     _write_js(os.path.join(run_path, "data.js"), "window.FINDALINE_RUN", data, on_lines)

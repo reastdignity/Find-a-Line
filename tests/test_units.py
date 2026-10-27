@@ -169,16 +169,39 @@ def test_evaluate_lines_matches_evaluate_line(model):
     anchors[:50] = rng.integers(0, 120, (50, 2))
     found = rng.integers(0, 400, (3000, 2))
     table = sag.EnvelopeTable(sag.Rigging(), 20, 200) if model == "sag" else None
-    for mode in ("mark", "reject"):
-        fast = ls.evaluate_lines(found, anchors, terrain, 1.0, surface, table, mode)
+    for mode, high_above in (("mark", sh.HIGH_ABOVE), ("reject", 35.0)):
+        fast = ls.evaluate_lines(found, anchors, terrain, 1.0, surface, table, mode, high_above)
         slow = []
         for i, j in found:
-            result = sh.evaluate_line(anchors[i], anchors[j], terrain, 1.0, surface, table)
+            result = sh.evaluate_line(anchors[i], anchors[j], terrain, 1.0, surface, table, high_above)
             if sh.is_valid(result, mode):  # as find_valid_lines always made them
-                elev_a1, elev_a2, length, clearance, clearance_nmpt = result
+                elev_a1, elev_a2, length, clearance, clearance_nmpt, *heights = result
                 slow.append(sh.Line(tuple(map(int, anchors[i])), tuple(map(int, anchors[j])),
-                                    length, elev_a1, elev_a2, clearance, clearance_nmpt))
+                                    length, elev_a1, elev_a2, clearance, clearance_nmpt, *heights))
         assert slow and fast == slow
+        assert 0 < sum(0 < line.high_pct < 100 for line in fast)  # the threshold is crossed
+
+
+def test_webbing_heights():
+    """Heights of the webbing above the terrain: margin + leash fall (formula) or fall zone (sag)."""
+    import helpers as sh
+    import sag
+    terrain = np.full((3, 21), 100.0)
+    terrain[1, 0] = terrain[1, 20] = 140.0  # two anchors 20 m apart, 40 m above the flat ground
+    _, _, length, clearance, _, height_max, height_mean, high_pct = sh.evaluate_line(
+        (1, 0), (1, 20), terrain, 1.0, high_above=39.0)
+    # the formula's webbing: 140 - 0.15 * (distance to the nearer anchor), lowest in the middle
+    assert abs(height_max - (40 - 0.15)) < 1e-9 and abs(clearance - (40 - 0.15 * 10 - sh.LEASH_FALL)) < 1e-9
+    assert abs(height_mean - (40 - 0.15 * sum(min(k, 20 - k) for k in range(1, 20)) / 19)) < 1e-9
+    assert high_pct == 100.0 * 12 / 19  # 39 m or more: within 6 m of an anchor, 2 x 6 of 19 pixels
+    profile = sh.line_profile((1, 0), (1, 20), terrain, 1.0)
+    assert profile["max_height"] == [1.0, 39.85]
+    # sag: the chord (140) minus the sag under the athlete, so the highest point is next to an anchor
+    table = sag.EnvelopeTable(sag.Rigging(fall_zone=3), 10, 40)
+    t = np.arange(1, 20) / 20
+    webbing = sh.max_safe_elevation(t, 20.0, 140.0, 140.0, table) + 3
+    result = sh.evaluate_line((1, 0), (1, 20), terrain, 1.0, sag_table=table)
+    assert result[5] == float(np.max(webbing - 100.0)) and result[6] == float(np.cumsum(webbing - 100.0)[-1]) / 19
 
 
 def test_coast_within_osm_keeps_islets_and_the_sea_side(monkeypatch):
@@ -205,7 +228,8 @@ def _fake_lines(n):
     return [{"anchor1": (50 + k / 1e4, 19.1234567), "anchor2": (50.0001, 19 + k / 1e4), "a1_xy": (k * 0.5, 1.0),
              "a2_xy": (2.0, k / 3), "length": 100 + k / 7, "clearance": k / 3, "clearance_nmpt": None if k % 2 else k / 9,
              "over_obstacles": bool(k % 3), "elev_a1": 400 + k / 11, "elev_a2": 410.0, "water_m": 0.0, "filled_m": k / 13,
-             "profile": None} for k in range(n)]
+             "height_max": 30 + k / 17, "height_mean": 20 + k / 19, "high_pct": k / 0.23, "profile": None}
+            for k in range(n)]
 
 
 def test_chunked_writes_match_one_dump(tmp_path, monkeypatch):

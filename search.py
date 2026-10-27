@@ -433,7 +433,8 @@ def _lines(plan: Plan, data: Data, core: Optional[tuple] = None) -> Tuple[List[D
         first = (left <= x) & (x < right) & (bottom <= y) & (y < top)
     valid_lines = ls.find_valid_lines(data.elevation, data.surface, anchors, plan.resolution,
                                       p.min_length, p.max_length, plan.nmpt, p.threads,
-                                      sag_table, p.max_anchor_diff / 100, p.max_anchor_diff_m, first)
+                                      sag_table, p.max_anchor_diff / 100, p.max_anchor_diff_m, first,
+                                      p.high_above)
     if not valid_lines and core is None:
         raise SearchError("No lines found matching elevation requirements.")
 
@@ -646,7 +647,7 @@ def _run_params(plan: Plan) -> Dict:
             "min_length": p.min_length, "max_length": p.max_length,
             "max_anchor_diff": p.max_anchor_diff,
             "max_anchor_diff_m": p.max_anchor_diff_m,
-            "slope_threshold": p.slope_threshold, "slope_file": p.slope_file,
+            "slope_threshold": p.slope_threshold, "slope_file": p.slope_file, "high_above": p.high_above,
             "nmpt": plan.nmpt, "water": p.water, "coastline": p.coastline,
             "shore_buffer": p.shore_buffer, "fill_gaps": p.fill_gaps,
             "group_distance": plan.group_distance,
@@ -726,7 +727,8 @@ def save_run(plan: Plan, lines: Lines, confirm: Optional[Confirm] = None, run: O
             ortho_cache = ortho_folder
         progress.compute.start("saving the map", 3 * len(results), unit="line")  # three passes, see save_map
         map_path = mp.save_map(results, plan.area, run["path"], plan.paths.runs, meta, plan.crs, plan.group_distance,
-                               p.group_by, ortho_cache, source.ortho, p.model, plan.rigging, on_lines)
+                               p.group_by, ortho_cache, source.ortho, p.model, plan.rigging, on_lines,
+                               p.high_above)
         progress.compute.finish()
     rn.write_index(plan.paths.runs)
     progress.set_step("")

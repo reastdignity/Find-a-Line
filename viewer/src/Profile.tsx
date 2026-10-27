@@ -162,6 +162,20 @@ export function ProfilePanel(props: ProfileProps) {
     </g>;
   };
 
+  // The webbing highest above the terrain, as the search saved it (helpers.webbing_height:
+  // the safety limit plus the leash fall or the fall zone)
+  const maxMarker = ([d, h]: [number, number]) => {
+    const topZ = limit(d) + (model === "sag" ? fall : props.leashFall);
+    if (!isFinite(topZ)) return null;
+    const right = d > l.len / 2;
+    return <g>
+      <line x1={X(d)} x2={X(d)} y1={Y(topZ)} y2={Y(topZ - h)} stroke={PROFILE.envelope} stroke-width={1.5}
+            stroke-dasharray="4 3" />
+      <text x={X(d) + (right ? -4 : 4)} y={Y(topZ - h / 2)} fill={PROFILE.envelope}
+            text-anchor={right ? "end" : "start"}>{"highest " + h.toFixed(0) + " m above terrain"}</text>
+    </g>;
+  };
+
   let summary = "Sag estimator did not converge for these values.";
   if (est) {
     const k = est.sag.indexOf(Math.max(...est.sag));
@@ -286,6 +300,7 @@ export function ProfilePanel(props: ProfileProps) {
         {minTerrain && minMarker(minTerrain, PROFILE.terrain, "min. clearance", true)}
         {minTerrain && minSurface && minSurface[1] < minTerrain[1] - 0.05 &&
           minMarker(minSurface, PROFILE.trees, "over trees", false)}
+        {!measured && p.max_height && maxMarker(p.max_height)}
         {([[0, l.e1, "A1", "start"], [l.len, l.e2, "A2", "end"]] as [number, number, string, string][]).map(
           ([d, z, name, anchor]) => <g>
             <circle cx={X(d)} cy={Y(z)} r={4} fill={color} />

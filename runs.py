@@ -93,6 +93,7 @@ def new_run(runs_dir: str, name: str, created: datetime) -> Dict:
 
 FIELDS = ["group", "representative", "group_size", "length_m", "clearance_m",
           "clearance_nmpt_m", "over_trees_buildings", "water_m", "filled_m",
+          "height_max_m", "height_mean_m", "high_pct",
           "anchor1_lat", "anchor1_lon", "anchor1_elev_m", "anchor1_northing", "anchor1_easting",
           "anchor2_lat", "anchor2_lon", "anchor2_elev_m", "anchor2_northing", "anchor2_easting"]
 
@@ -111,6 +112,9 @@ def _rows(groups: List[Dict]):
                 "over_trees_buildings": r["over_obstacles"],
                 "water_m": r.get("water_m", 0.0),
                 "filled_m": r.get("filled_m", 0.0),
+                "height_max_m": round(r["height_max"], 2),
+                "height_mean_m": round(r["height_mean"], 2),
+                "high_pct": round(r["high_pct"], 1),
                 "anchor1_lat": round(r["anchor1"][0], 7), "anchor1_lon": round(r["anchor1"][1], 7),
                 "anchor1_elev_m": round(r["elev_a1"], 2),
                 "anchor1_northing": round(r["a1_xy"][1], 2), "anchor1_easting": round(r["a1_xy"][0], 2),

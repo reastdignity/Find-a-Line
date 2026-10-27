@@ -141,11 +141,11 @@ def check_map(run_dir: str, found: dict) -> list:
     problems = []
     if len(rows) != found.get("lines"):
         problems.append(f"data.js has {len(rows)} lines, lines.csv {found.get('lines')}")
-    profiles = sum(1 for r in rows if r[16])
+    profiles = sum(1 for r in rows if r[-1])
     wanted = found.get("lines") if circle else found.get("spots")
     if profiles != wanted:
         problems.append(f"data.js has {profiles} profiles, expected {wanted} ({'circle' if circle else 'area'})")
-    if [r[:16] for r in rows] != others:
+    if [r[:-1] for r in rows] != others:  # lines.js: the rows without the profile
         problems.append("lines.js differs from data.js")
     return problems
 
@@ -156,7 +156,7 @@ def check_profiles(run_dir: str, work: str, count: int) -> list:
     folder = os.path.dirname(glob.glob(os.path.join(run_dir, "*", "run.json"))[0])
     with open(os.path.join(folder, "run.json"), encoding="utf-8") as f:
         meta = json.load(f)
-    rows = [r for r in _script_value(os.path.join(folder, "data.js"))["lines"] if r[16]][:count]
+    rows = [r for r in _script_value(os.path.join(folder, "data.js"))["lines"] if r[-1]][:count]
     problems = []
     for row in rows:
         paths = search.Paths(os.path.dirname(run_dir), os.path.join(work, "profile-work"))
@@ -164,8 +164,8 @@ def check_profiles(run_dir: str, work: str, count: int) -> list:
         with contextlib.redirect_stdout(io.StringIO()):  # the messages of building the grids
             again = search.profile_of_line(meta, paths, (row[0], row[1]), (row[2], row[3]))
         shutil.rmtree(paths.work, ignore_errors=True)
-        if again != row[16]:
-            keys = [k for k in row[16] if again.get(k) != row[16][k]]
+        if again != row[-1]:
+            keys = [k for k in row[-1] if again.get(k) != row[-1][k]]
             problems.append(f"profile of the line at {row[0]:.6f}, {row[1]:.6f} computed again differs in {keys}")
     return problems
 

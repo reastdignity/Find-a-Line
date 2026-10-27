@@ -10,13 +10,17 @@ export interface Filters {
   clrNMin: number | null;     // clearance over trees/buildings (lines without the surface model pass)
   dhMax: number | null;       // height difference of the anchors
   elevMin: number | null;     // height of the lower anchor
+  heightMin: number | null;   // largest height of the webbing above the terrain
+  meanMin: number | null;     // its mean along the line
+  highPctMin: number | null;  // % of the line at least high_above over the terrain
   water: "all" | "water" | "land";
   hideFilled: boolean;        // hide lines over gaps filled from another source
   groupMin: number | null;    // similar lines in a group (with grouping on)
 }
 
 export const NO_FILTERS: Filters = {lenMin: null, lenMax: null, clrMin: null, clrNMin: null, dhMax: null,
-                                    elevMin: null, water: "all", hideFilled: false, groupMin: null};
+                                    elevMin: null, heightMin: null, meanMin: null, highPctMin: null,
+                                    water: "all", hideFilled: false, groupMin: null};
 const STORAGE_KEY = "findaline.filters";
 
 export const dh = (l: Line) => Math.abs(l.e1 - l.e2);
@@ -27,6 +31,8 @@ export function passes(l: Line, f: Filters): boolean {
     (f.clrMin === null || l.clr >= f.clrMin) &&
     (f.clrNMin === null || l.clrN === null || l.clrN >= f.clrNMin) &&
     (f.dhMax === null || dh(l) <= f.dhMax) && (f.elevMin === null || lowerAnchor(l) >= f.elevMin) &&
+    (f.heightMin === null || l.hmax >= f.heightMin) && (f.meanMin === null || l.hmean >= f.meanMin) &&
+    (f.highPctMin === null || l.highPct >= f.highPctMin) &&
     (f.water === "all" || (f.water === "water" ? l.water > 0 : l.water === 0)) &&
     (!f.hideFilled || l.filled === 0);
 }

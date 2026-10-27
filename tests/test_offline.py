@@ -113,7 +113,7 @@ def test_area_in_tiles(tmp_path):
     for name, rows in (("one", one), ("tiled", tiled)):
         data = glob.glob(str(tmp_path / name / "runs" / "*" / "data.js"))[0]
         lines = json.loads(open(data, encoding="utf-8").read().partition(" = ")[2].rstrip().rstrip(";"))["lines"]
-        with_profile = {tuple(round(v, 7) for v in line[:4]) for line in lines if line[16]}
+        with_profile = {tuple(round(v, 7) for v in line[:4]) for line in lines if line[-1]}
         reps = {tuple(float(r[k]) for k in ("anchor1_lat", "anchor1_lon", "anchor2_lat", "anchor2_lon"))
                 for r in rows if r["representative"] == "True"}
         assert with_profile == reps, name

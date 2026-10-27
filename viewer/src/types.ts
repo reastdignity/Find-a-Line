@@ -20,21 +20,24 @@ export interface Profile {
   g?: number[] | null;            // 1: filled gap
   min: [number, number];          // (distance, clearance) of the smallest clearance over terrain
   min_nmpt?: [number, number] | null;
+  max_height?: [number, number];  // (distance, height) of the webbing highest above the terrain
   water_m: number;
   filled_m: number;
 }
 
 // One line as an array (compact):
 // [lat1, lon1, lat2, lon2, x1, y1, x2, y2, length, clearance, clearance_nmpt, elev1, elev2, over,
-//  metres over water, metres over filled gaps, profile] (lines.js leaves out the profile)
+//  metres over water, metres over filled gaps, largest and mean height of the webbing above the
+//  terrain, % of the line at least high_above, profile] (lines.js leaves out the profile)
 export type LineRow = [number, number, number, number, number, number, number, number, number, number,
-  number | null, number, number, boolean, number, number, (Profile | null)?];
+  number | null, number, number, boolean, number, number, number, number, number, (Profile | null)?];
 
 export interface Line {
   lat1: number; lon1: number; lat2: number; lon2: number;
   x1: number; y1: number; x2: number; y2: number;  // metres in the grid CRS, for grouping
   len: number; clr: number; clrN: number | null; e1: number; e2: number;
   over: boolean; water: number; filled: number;  // metres over water and over filled gaps
+  hmax: number; hmean: number; highPct: number;  // webbing above the terrain (NaN: not known)
   prof: Profile | null;
   run?: OtherRun;  // set for the lines of another run
 }
@@ -87,6 +90,7 @@ export interface RunData {
   rigging: Rigging;
   slope: number;                  // formula: metres of drop per metre from the nearer anchor
   leash_fall: number;
+  high_above: number;             // m: from this height above the terrain a part of a line is high
   max_zoom: number;
   lines: LineRow[];
 }
@@ -102,5 +106,5 @@ declare global {
 export function toLine(d: LineRow, run?: OtherRun): Line {
   return {lat1: d[0], lon1: d[1], lat2: d[2], lon2: d[3], x1: d[4], y1: d[5], x2: d[6], y2: d[7],
           len: d[8], clr: d[9], clrN: d[10], e1: d[11], e2: d[12], over: d[13], water: d[14], filled: d[15],
-          prof: d[16] || null, run};
+          hmax: d[16], hmean: d[17], highPct: d[18], prof: d[19] || null, run};
 }

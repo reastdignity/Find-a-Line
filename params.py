@@ -101,6 +101,8 @@ class SearchParams(BaseModel):
     nmpt: Literal["mark", "reject", "off"] = field(
         "mark", "also check clearance over trees/buildings (NMPT): 'mark' shows such lines in orange, "
                 "'reject' drops them, 'off' skips the check (and the NMPT download)", "search")
+    high_above: float = field(20, "height of the webbing above the terrain in metres from which a part of a "
+                                  "line counts as high (the share of each line saved as high_pct)", "search")
     threads: Optional[int] = field(None, "number of threads for the line search (default: CPU count - 1)",
                                    "search")
     tile_size: Optional[float] = field(None, "large areas are computed in square tiles of this size in metres "
@@ -169,6 +171,8 @@ class SearchParams(BaseModel):
             raise ValueError("--radius must be positive")
         if self.buffer <= 0:
             raise ValueError("--buffer must be positive")
+        if self.high_above < 0:
+            raise ValueError("--high-above cannot be negative")
         if self.tile_size is not None and self.tile_size < 100:
             raise ValueError("--tile-size must be at least 100 m")
         if self.within and self.area is None:

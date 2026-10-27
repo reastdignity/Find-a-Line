@@ -216,13 +216,15 @@ def _interp(x, xp, fp):
 
 @njit(parallel=True, cache=True)
 def _evaluate(z, s, has_s, anchors, found, res, use_sag, log_spans, span_index, ratios, ratio_index,
-              sag, fractions, fall_zone, out):
+              sag, fractions, fall_zone, high_above, out):
     """helpers.evaluate_line for many lines, with the same arithmetic (identical results).
 
     out[k]: elev_a1, elev_a2, length, clearance, clearance over the surface (NaN: none),
-    and 1 when the line has pixels between its anchors.
+    1 when the line has pixels between its anchors, then the largest and mean height of
+    the webbing above the terrain and the % of pixels at least high_above.
     """
     blend = np.empty(fractions.size)
+    fall = fall_zone if use_sag else sh.LEASH_FALL  # helpers.fall_allowance
     for k in prange(found.shape[0]):
         r1, c1 = anchors[found[k, 0], 0], anchors[found[k, 0], 1]
         r2, c2 = anchors[found[k, 1], 0], anchors[found[k, 1], 1]
@@ -241,6 +243,7 @@ def _evaluate(z, s, has_s, anchors, found, res, use_sag, log_spans, span_index, 
             i0, j0 = min(int(si), log_spans.size - 2), min(int(ri), ratios.size - 2)
             a, b = si - i0, ri - j0
         clearance, nmpt, seen = np.inf, np.inf, False
+        height_max, height_sum, high = -np.inf, 0.0, 0
         row = np.empty(fractions.size) if use_sag else blend
         if use_sag:
             for f in range(fractions.size):
@@ -259,6 +262,12 @@ def _evaluate(z, s, has_s, anchors, found, res, use_sag, log_spans, span_index, 
                 clearance = np.nan  # np.min: no data anywhere makes the line fail
             elif margin < clearance:
                 clearance = margin
+            height = margin + fall  # helpers.webbing_height
+            if height != height or height > height_max:  # np.max: NaN stays
+                height_max = height
+            height_sum += height
+            if height >= high_above:
+                high += 1
             if has_s:
                 over = limit - np.float64(s[r, c])
                 if over == over:  # np.nanmin
@@ -268,13 +277,16 @@ def _evaluate(z, s, has_s, anchors, found, res, use_sag, log_spans, span_index, 
         out[k, 0], out[k, 1], out[k, 2], out[k, 3] = e1, e2, length, clearance
         out[k, 4] = nmpt if seen else np.nan
         out[k, 5] = 1.0
+        out[k, 6], out[k, 7] = height_max, height_sum / (steps - 1)
+        out[k, 8] = 100.0 * high / (steps - 1)
 
 
 def evaluate_lines(found: np.ndarray, anchors: np.ndarray, elevation: np.ndarray, res: float,
-                   surface: Optional[np.ndarray], sag_table, nmpt_mode: Optional[str]) -> List[sh.Line]:
+                   surface: Optional[np.ndarray], sag_table, nmpt_mode: Optional[str],
+                   high_above: float = sh.HIGH_ABOVE) -> List[sh.Line]:
     """The lines among the pairs found (indices into anchors) that pass helpers.evaluate_line
     and helpers.is_valid: the same decision and values, computed in parallel."""
-    out = np.zeros((len(found), 6))
+    out = np.zeros((len(found), 9))
     if len(found):
         if sag_table is None:
             log_spans = span_index = ratios = ratio_index = fractions = np.zeros(2)
@@ -290,13 +302,13 @@ def evaluate_lines(found: np.ndarray, anchors: np.ndarray, elevation: np.ndarray
         s = np.asarray(surface) if surface is not None else np.zeros((1, 1), dtype=z.dtype)
         _evaluate(z, s, surface is not None, np.ascontiguousarray(anchors, dtype=np.int64),
                   np.ascontiguousarray(found, dtype=np.int64), float(res), sag_table is not None, log_spans,
-                  span_index, ratios, ratio_index, sag, fractions, fall_zone, out)
+                  span_index, ratios, ratio_index, sag, fractions, fall_zone, float(high_above), out)
     lines = []
-    for (i, j), (e1, e2, length, clearance, nmpt, ok) in zip(found.tolist(), out.tolist()):
+    for (i, j), (e1, e2, length, clearance, nmpt, ok, *heights) in zip(found.tolist(), out.tolist()):
         result = (e1, e2, length, clearance, None if nmpt != nmpt else nmpt) if ok else None
         if sh.is_valid(result, nmpt_mode):
             lines.append(sh.Line(tuple(anchors[i].tolist()), tuple(anchors[j].tolist()), length, e1, e2,
-                                 clearance, result[4]))
+                                 clearance, result[4], *heights))
     return lines
 
 
@@ -334,7 +346,8 @@ def find_valid_lines(elevation: np.ndarray, surface: Optional[np.ndarray], ancho
                      res: float, min_length: float, max_length: float,
                      nmpt_mode: Optional[str] = None, threads: Optional[int] = None,
                      sag_table=None, max_dh_ratio: float = np.inf,
-                     max_dh: float = np.inf, first: Optional[np.ndarray] = None) -> List[sh.Line]:
+                     max_dh: float = np.inf, first: Optional[np.ndarray] = None,
+                     high_above: float = sh.HIGH_ABOVE) -> List[sh.Line]:
     """Finds valid lines between anchors.
 
     Args:
@@ -350,6 +363,7 @@ def find_valid_lines(elevation: np.ndarray, surface: Optional[np.ndarray], ancho
             max_dh_ratio of the line length, and never more than max_dh
         first: Optional mask of the anchors whose lines are wanted when they are the
             first anchor (smaller x, then y): the anchors in the core of a tile
+        high_above: Height above the terrain from which a pixel of a line counts as high
 
     Returns:
         Valid lines, longest first
@@ -413,7 +427,7 @@ def find_valid_lines(elevation: np.ndarray, surface: Optional[np.ndarray], ancho
     valid_lines: List[sh.Line] = []
     progress.compute.start("checking lines", len(found), unit="line")
     for part in np.array_split(found, max(1, min(CHUNKS, len(found) // 10000))):
-        valid_lines += evaluate_lines(part, anchors, elevation, res, surface, sag_table, nmpt_mode)
+        valid_lines += evaluate_lines(part, anchors, elevation, res, surface, sag_table, nmpt_mode, high_above)
         progress.compute.update(len(part), valid=len(valid_lines))
     progress.compute.finish(f"{len(valid_lines)} valid")
     print(f"\n{'=' * 60}")

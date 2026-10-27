@@ -15,6 +15,7 @@ from progress import progress
 # Maximum elevation formula: max_elev = min_anchor_elev - SLOPE * distance - LEASH_FALL
 LEASH_FALL = 6.0  # metres below the anchors for a 0 m line
 SLOPE = 0.15      # metres of extra clearance per metre of distance from the nearest anchor
+HIGH_ABOVE = 20.0  # metres above the terrain from which a pixel of a line counts as high (--high-above)
 
 
 class Line(NamedTuple):
@@ -26,6 +27,24 @@ class Line(NamedTuple):
     elev_a2: float                 # NMT elevation of anchor 2
     clearance: float               # smallest margin below the max elevation over terrain (NMT)
     clearance_nmpt: Optional[float]  # same, over trees/buildings (NMPT); None if NMPT not used
+    height_max: float              # largest height of the webbing above the terrain (webbing_height)
+    height_mean: float             # its mean over the pixels between the anchors
+    high_pct: float                # % of those pixels where it is at least high_above
+
+
+def fall_allowance(sag_table=None) -> float:
+    """What max_safe_elevation keeps free below the webbing: the leash fall of the formula,
+    or the fall zone below the sagged webbing."""
+    return LEASH_FALL if sag_table is None else float(sag_table.rig.fall_zone)
+
+
+def webbing_height(margin, sag_table=None):
+    """Height of the webbing above the terrain from the margin below max_safe_elevation.
+
+    The webbing is the limit plus fall_allowance: with the sag estimator the chord minus the
+    sag under the athlete, with the formula min_anchor_elev - SLOPE * distance.
+    """
+    return margin + fall_allowance(sag_table)
 
 
 def find_significant_slopes(elevation: np.ndarray, res: float, slope_threshold: float,
@@ -86,8 +105,8 @@ def max_safe_elevation(t: np.ndarray, length: float, elev_a1: float, elev_a2: fl
 
 
 def evaluate_line(a1: np.ndarray, a2: np.ndarray, elevation: np.ndarray, res: float,
-                  surface: Optional[np.ndarray] = None, sag_table=None
-                  ) -> Optional[Tuple[float, float, float, float, Optional[float]]]:
+                  surface: Optional[np.ndarray] = None, sag_table=None, high_above: float = HIGH_ABOVE
+                  ) -> Optional[Tuple[float, float, float, float, Optional[float], float, float, float]]:
     """Evaluates clearance along a line between two anchor points.
 
     Draws a line between the anchors using a DDA algorithm and, for every pixel
@@ -99,10 +118,12 @@ def evaluate_line(a1: np.ndarray, a2: np.ndarray, elevation: np.ndarray, res: fl
         res: Pixel size in metres
         surface: Optional NMPT grid (trees, buildings)
         sag_table: sag.EnvelopeTable to use the sag estimator instead of the formula
+        high_above: Height above the terrain from which a pixel counts as high
 
     Returns:
-        (elev_a1, elev_a2, length, min clearance over NMT, min clearance over NMPT or None),
-        or None if the line has no pixels between the anchors.
+        (elev_a1, elev_a2, length, min clearance over NMT, min clearance over NMPT or None,
+        largest and mean height of the webbing above NMT, % of the pixels at least
+        high_above), or None if the line has no pixels between the anchors.
         Positive clearance means the terrain is below the maximum safe elevation.
     """
     r1, c1 = int(a1[0]), int(a1[1])
@@ -125,7 +146,14 @@ def evaluate_line(a1: np.ndarray, a2: np.ndarray, elevation: np.ndarray, res: fl
     max_elev = max_safe_elevation(t, length, elev_a1, elev_a2, sag_table)
 
     # NaN (no data) makes the clearance NaN, so such lines never pass
-    clearance = float(np.min(max_elev - elevation[rows, cols]))
+    margin = max_elev - elevation[rows, cols]
+    clearance = float(np.min(margin))
+    # Summed one pixel after another, as linesearch._evaluate: np.cumsum, not np.mean (pairwise)
+    # or sum() (compensated since Python 3.12)
+    heights = webbing_height(margin, sag_table)
+    height_max = float(np.max(heights))
+    height_mean = float(np.cumsum(heights)[-1]) / len(heights)
+    high_pct = 100.0 * int(np.count_nonzero(heights >= high_above)) / len(heights)
 
     clearance_nmpt = None
     if surface is not None:
@@ -133,7 +161,7 @@ def evaluate_line(a1: np.ndarray, a2: np.ndarray, elevation: np.ndarray, res: fl
         if not np.all(np.isnan(obstacles)):
             clearance_nmpt = float(np.nanmin(max_elev - obstacles))
 
-    return elev_a1, elev_a2, length, clearance, clearance_nmpt
+    return elev_a1, elev_a2, length, clearance, clearance_nmpt, height_max, height_mean, high_pct
 
 
 def line_profile(a1: Tuple[int, int], a2: Tuple[int, int], elevation: np.ndarray, res: float,
@@ -149,6 +177,7 @@ def line_profile(a1: Tuple[int, int], a2: Tuple[int, int], elevation: np.ndarray
     Returns:
         {"d": distances from anchor 1 [m], "z": NMT [m], "s": NMPT [m] or None,
          "min": [distance, clearance] over NMT, "min_nmpt": [distance, clearance] or None,
+         "max_height": [distance, height] of the webbing highest above NMT (webbing_height),
          "w": 1 where the point is water, or None, "water_m": length over water [m],
          "g": 1 where the data was filled from another source, or None, "filled_m": that length [m]}
     """
@@ -169,9 +198,12 @@ def line_profile(a1: Tuple[int, int], a2: Tuple[int, int], elevation: np.ndarray
     max_elev = max_safe_elevation(t, length, terrain[0], terrain[-1], sag_table)
     inner = slice(1, steps)
     i_min = 1 + int(np.nanargmin((max_elev - terrain)[inner]))
-    keep = {0, steps, i_min}
+    i_max = 1 + int(np.nanargmax((max_elev - terrain)[inner]))
+    keep = {0, steps, i_min, i_max}
     profile = {"min": [round(distance[i_min], 1), round(float(max_elev[i_min] - terrain[i_min]), 2)],
-               "min_nmpt": None}
+               "min_nmpt": None,
+               "max_height": [round(distance[i_max], 1),
+                              round(float(webbing_height(max_elev[i_max] - terrain[i_max], sag_table)), 2)]}
     if obstacles is not None and not np.all(np.isnan(obstacles[inner])):
         j_min = 1 + int(np.nanargmin((max_elev - obstacles)[inner]))
         keep.add(j_min)
@@ -200,7 +232,7 @@ def is_valid(result, nmpt_mode: Optional[str]) -> bool:
     """Decide whether an evaluated line is kept."""
     if result is None:
         return False
-    _, _, _, clearance, clearance_nmpt = result
+    clearance, clearance_nmpt = result[3], result[4]
     if not clearance > 0:
         return False
     if nmpt_mode == "reject" and clearance_nmpt is not None and clearance_nmpt <= 0:

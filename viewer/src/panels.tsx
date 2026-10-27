@@ -134,6 +134,10 @@ export interface FilterRanges {
   clrN: Range | null;
   dh: Range | null;
   elev: Range | null;
+  hmax: Range | null;
+  hmean: Range | null;
+  highPct: Range | null;
+  highAbove: number;  // m, the height of highPct
   group: Range | null;
   water: boolean;   // some lines are over water
   filled: boolean;  // some lines are over filled gaps
@@ -184,6 +188,9 @@ export function FiltersPanel({filters, ranges, grouping, onChange}: {
     {limit("over trees at least", "clrNMin", ranges.clrN, 0.1, "min")}
     {limit("anchor Δh at most", "dhMax", ranges.dh, 0.5, "max")}
     {limit("lower anchor at least", "elevMin", ranges.elev, 1, "min", " m a.s.l.")}
+    {limit("height above ground at least", "heightMin", ranges.hmax, 1, "min")}
+    {limit("mean height at least", "meanMin", ranges.hmean, 1, "min")}
+    {limit(`${ranges.highAbove} m above ground at least`, "highPctMin", ranges.highPct, 1, "min", " % of the line")}
     {grouping && limit("lines in group at least", "groupMin", ranges.group, 1, "min", "")}
     {ranges.water && <div class="fal-limit"><span class={filters.water === "all" ? "" : "fal-set"}>water</span>
       <select value={filters.water} onChange={(e) => set({water: e.currentTarget.value as Filters["water"]})}>

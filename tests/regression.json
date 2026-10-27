@@ -13,7 +13,7 @@
       "checked": 13929,
       "lines": 1248,
       "spots": 104,
-      "csv_sha256": "b3870ff01d7398ded9c19e6f8ab918eeba56ff47cfce206dc11d7ade9ce0644a",
+      "csv_sha256": "705d9e43ae87f5c94e280abd20943575062589186160cb012bdfa5ff7f26c83d",
       "length_km": 184.1,
       "clearance_min": 0.0,
       "clearance_mean": 1.262,
@@ -24,7 +24,7 @@
       "source": "geoportal.gov.pl"
     },
     "notes": "Spot 1: 102 m, clearance 8.0 m, 50.156507, 19.755129 → 50.155960, 19.756268; no coastline lookup (inland)",
-    "seconds": 2.8
+    "seconds": 1.9
   },
   "R2": {
     "place": "Dolina Bolechowicka, Poland: 1 m grid",
@@ -39,7 +39,7 @@
       "checked": 2340,
       "lines": 333,
       "spots": 19,
-      "csv_sha256": "71d0609e3b404a0f4f786f9c8dcdc6c4c8f99a067bf10002691a26baef5ba8b7",
+      "csv_sha256": "7d14383b4c8457d60468311e7da17eaaae6a22d909555270fb0c268352556bbb",
       "length_km": 22.582,
       "clearance_min": 0.0,
       "clearance_mean": 2.043,
@@ -49,7 +49,7 @@
       "empty_tiles": 0
     },
     "notes": "`Coastline: no sea in the area`",
-    "seconds": 2.7
+    "seconds": 1.8
   },
   "R3": {
     "place": "as R2 with the sag estimator",
@@ -65,7 +65,7 @@
       "checked": 90196,
       "lines": 11989,
       "spots": 101,
-      "csv_sha256": "41ddf4b959b8d40a041d04f8ad33b981600e27f77f82838e9947671eaa79b7c3",
+      "csv_sha256": "abc2e5100d02b15f6efdc88e311245de7ab4dc008bd8cfbe853d8d3920fe8c33",
       "length_km": 1516.203,
       "clearance_min": 0.0,
       "clearance_mean": 1.092,
@@ -75,7 +75,7 @@
       "empty_tiles": 0
     },
     "notes": "",
-    "seconds": 9.6
+    "seconds": 7.4
   },
   "R4": {
     "place": "Dolina Będkowska, Poland: 1 m grid, many anchors",
@@ -89,7 +89,7 @@
       "checked": 37361,
       "lines": 1965,
       "spots": 68,
-      "csv_sha256": "7dc16d041ab1403819063f5443500737a0d05f8f1e55f4cd79b9d456d6ffc217",
+      "csv_sha256": "84bc4d9480149b39e55e9787d50138b4c6aaad688da8be6c44616df89a2bf982",
       "length_km": 288.424,
       "clearance_min": 0.0,
       "clearance_mean": 1.286,
@@ -99,7 +99,7 @@
       "empty_tiles": 0
     },
     "notes": "no gaps (the WCS data had 0.05 km² filled from FABDEM)",
-    "seconds": 3.1
+    "seconds": 2.4
   },
   "R5": {
     "place": "as R4 with the sag estimator",
@@ -114,7 +114,7 @@
       "checked": 1322582,
       "lines": 52660,
       "spots": 456,
-      "csv_sha256": "892ef9a34cd4edcd8c0af98033dcd74c13d6617aeef60a8eacbc39f6ece6c360",
+      "csv_sha256": "41825e011883684d973340e1c03ac465170a28e098748dd4756ed378ec6fe54d",
       "length_km": 11770.839,
       "clearance_min": 0.0,
       "clearance_mean": 1.243,
@@ -124,7 +124,7 @@
       "empty_tiles": 0
     },
     "notes": "map ~150 MB",
-    "seconds": 30.4
+    "seconds": 21.9
   },
   "R6": {
     "place": "Dingli cliffs, Malta 2018: sea filling, lines over water",
@@ -138,7 +138,7 @@
       "checked": 218849,
       "lines": 10923,
       "spots": 364,
-      "csv_sha256": "1f5681fe6360483b840f3e9f7e37cea7a67fe7000810d525d940a0caedb780a6",
+      "csv_sha256": "c737742353adfe8464d62be56217ae6309384ec319f71b52eedc0f27c0d07e1a",
       "length_km": 4670.015,
       "clearance_min": 0.0,
       "clearance_mean": 4.712,
@@ -151,7 +151,7 @@
       "water_spots": 342
     },
     "notes": "",
-    "seconds": 7.9
+    "seconds": 5.3
   },
   "R7": {
     "place": "as R6 with Malta 2012: georeference correction, gap filling from 2018",
@@ -167,7 +167,7 @@
       "checked": 65564,
       "lines": 6774,
       "spots": 382,
-      "csv_sha256": "aa9fc7d491211cbadf40f0efb46db56f4ee57957f97af54e3dcc23f9ec60abb5",
+      "csv_sha256": "d1a59506c7867226223026cdb83aa4ef9ecdaefa33f7ccd52f0a937e0de640ad",
       "length_km": 2774.854,
       "clearance_min": 0.0,
       "clearance_mean": 14.974,
@@ -182,7 +182,7 @@
       "water_spots": 377
     },
     "notes": "",
-    "seconds": 6.8
+    "seconds": 4.9
   },
   "R8": {
     "place": "Dingli – zatoka (centre over the sea)",
@@ -196,7 +196,7 @@
       "checked": 262091,
       "lines": 11308,
       "spots": 416,
-      "csv_sha256": "1d327f6cfce1c5a434d13468f41de8b728281cc6d6a26feb56daf5b036b42d7e",
+      "csv_sha256": "2e3b2be56f2c7a9e06c861a693c2af24961dcefda674c846f678866213e8b075",
       "length_km": 3932.593,
       "clearance_min": 0.0,
       "clearance_mean": 4.717,
@@ -209,7 +209,7 @@
       "water_spots": 364
     },
     "notes": "",
-    "seconds": 7.9
+    "seconds": 5.4
   },
   "R9": {
     "place": "Montserrat, Spain: IGN WCS (ASCII grid)",
@@ -223,7 +223,7 @@
       "checked": 549299,
       "lines": 85671,
       "spots": 3972,
-      "csv_sha256": "b4762cb1b9fc5bf04c41a6a65013b393756053cca70be96474231f141e01a84a",
+      "csv_sha256": "54298a2340b9817aefde9031fc39d9ca5dc81ecdb8a05c3227155209ce78afa6",
       "length_km": 22952.652,
       "clearance_min": 0.0,
       "clearance_mean": 2.73,
@@ -234,7 +234,7 @@
       "source": "IGN Spain (MDT05/MDS05)"
     },
     "notes": "",
-    "seconds": 23.0
+    "seconds": 16.9
   },
   "R10": {
     "place": "Los Gigantes, Tenerife: Canary Islands source, sea at 0 m in the data",
@@ -249,7 +249,7 @@
       "checked": 196868,
       "lines": 34652,
       "spots": 2053,
-      "csv_sha256": "149fa98245674ffb23f8cfc9aeae4e0600fb7edb40264cbc0e35bea843309cd2",
+      "csv_sha256": "0209368a6399baa03c50cc2a2ef07edadd72c413da657ce08fe2ebcbe140b36b",
       "length_km": 12258.657,
       "clearance_min": 0.0,
       "clearance_mean": 6.038,
@@ -262,7 +262,7 @@
       "water_spots": 676
     },
     "notes": "",
-    "seconds": 12.2
+    "seconds": 8.8
   },
   "R11": {
     "place": "Meteora, Greece: Europe-wide FABDEM + Copernicus, 30 m",
@@ -276,7 +276,7 @@
       "checked": 887,
       "lines": 451,
       "spots": 81,
-      "csv_sha256": "220450d4ea4e8dfd4f180e65d3cbb04e82632a08f9b4b60b783b4dc770d88870",
+      "csv_sha256": "833e62ed728ef64b3200e6894637d57b8ba3026097dd6bf21de61ea4b1581f83",
       "length_km": 239.945,
       "clearance_min": 0.07,
       "clearance_mean": 12.075,
@@ -286,7 +286,7 @@
       "empty_tiles": 0
     },
     "notes": "grouping distance 60 m",
-    "seconds": 2.0
+    "seconds": 1.3
   },
   "R12": {
     "place": "Meteora with NASADEM (needs `OPENTOPOGRAPHY_API_KEY`)",
@@ -327,7 +327,7 @@
       "checked": 8628,
       "lines": 566,
       "spots": 143,
-      "csv_sha256": "af260b7c7af0f0ae68bfd0b0f819c7800d15ff5512d7e6994a653c7251f02f0d",
+      "csv_sha256": "971345c62cec53ce19c0264f28063381b7eadc4d61e54ebf83d243f93a9744dd",
       "length_km": 95.55,
       "clearance_min": 0.0,
       "clearance_mean": 1.539,
@@ -339,7 +339,7 @@
       "filled_from": "FABDEM + Copernicus DEM"
     },
     "notes": "PL-1992 input; the filled gaps are on the Slovak side; with `--cache` on an empty folder it also tests the geoportal sheet download (index WFS, ASCII grid sheets, NMPT at 0.5 m)",
-    "seconds": 2.2
+    "seconds": 1.5
   },
   "R14": {
     "place": "R1's circle as a polygon file, computed in tiles of 600 m: same lines as R1",
@@ -354,7 +354,7 @@
       "checked": 0,
       "lines": 1248,
       "spots": 104,
-      "csv_sha256": "b3870ff01d7398ded9c19e6f8ab918eeba56ff47cfce206dc11d7ade9ce0644a",
+      "csv_sha256": "705d9e43ae87f5c94e280abd20943575062589186160cb012bdfa5ff7f26c83d",
       "length_km": 184.1,
       "clearance_min": 0.0,
       "clearance_mean": 1.262,
@@ -365,7 +365,7 @@
     },
     "notes": "anchors, open anchors and checked pairs are those of the first tile; must equal R1 in lines and spots",
     "same_as": "R1",
-    "seconds": 7.9
+    "seconds": 7.8
   },
   "R15": {
     "place": "Ta' Għammar, north coast of Gozo: a tile at the northern edge of the Malta coverage",
@@ -380,7 +380,7 @@
       "checked": 5134,
       "lines": 606,
       "spots": 26,
-      "csv_sha256": "e5edc2ad80adef598d31e995cd3183d65ab581efd84a92ca37d045b1b9548b8e",
+      "csv_sha256": "8f4587f8459c0a62138b8d7c4d9e1a18ab7f9aa6fdfd94805bf3d6a88616f6f9",
       "length_km": 77.928,
       "clearance_min": 0.02,
       "clearance_mean": 3.552,
@@ -393,7 +393,7 @@
       "water_spots": 26
     },
     "notes": "the edge tile must come from Malta 2018: when it was lost (404 beyond the coverage) FABDEM filled the land, leaving 19 anchors and no lines",
-    "seconds": 2.7
+    "seconds": 2.0
   },
   "R16": {
     "place": "North coast of Gozo as a coast area in tiles, with the sag model: sea, gap filling at tile borders, profiles of the lines shown for groups (no group of this area joins two tiles, so the profiles computed after the tiles are not exercised)",
@@ -409,7 +409,7 @@
       "checked": 32577,
       "lines": 25906,
       "spots": 657,
-      "csv_sha256": "0bdc63b64aa89850594a647b2cbf5d255ee567c1ed99a9e88e7cdc9a5fa0c279",
+      "csv_sha256": "7f3cd5b79da64d939f473306a1d9be24418ae193afc2c3063f4d2fd6b2116111",
       "length_km": 6077.123,
       "clearance_min": 0.0,
       "clearance_mean": 3.121,
@@ -424,7 +424,7 @@
       "water_spots": 617
     },
     "notes": "",
-    "seconds": 47.5
+    "seconds": 48.3
   },
   "R17": {
     "place": "Gozo and Malta: coastline and cliff tiles from the Malta extract equal those from Overpass",
@@ -465,7 +465,7 @@
       "checked": 23402,
       "lines": 2226,
       "spots": 38,
-      "csv_sha256": "1191291e7e4c30d00dd4ada7440f187a26b3481819c3ee9c4a70bbcd2c3b0209",
+      "csv_sha256": "17b0740cac9fe6ff82ef51d95d9df93e39d4d04e5dc4abd4da314435062d6e9d",
       "length_km": 328.881,
       "clearance_min": 0.0,
       "clearance_mean": 4.19,
@@ -479,7 +479,7 @@
       "lines_in_region": 1583
     },
     "notes": "before 2026-10-25 within clipped the band to the land of the named area: no line reached the islet",
-    "seconds": 4.5
+    "seconds": 2.0
   },
   "R19": {
     "place": "Lauterbrunnen, Switzerland: swisstopo STAC tiles (2 m terrain, 0.5 m surface averaged to 2 m)",
@@ -494,7 +494,7 @@
       "checked": 1002,
       "lines": 222,
       "spots": 27,
-      "csv_sha256": "948123bb885175941a082db38e2af5d62ff53ed2d2b1abe10c48026d6d379a3c",
+      "csv_sha256": "e8cf32f14c6afb95ff12699aec35f002a092e04858311121ebac1519fcca4319",
       "length_km": 37.945,
       "clearance_min": 0.03,
       "clearance_mean": 11.74,
@@ -519,7 +519,7 @@
       "checked": 10090,
       "lines": 2259,
       "spots": 40,
-      "csv_sha256": "f50d5577a850f64f4b5e71406cdb620411afcd8d99cb63430b24509290dc9822",
+      "csv_sha256": "0bcdcfba4efad484998e7309570641aee7242dd28ee5d6465aeb489f15e03e7f",
       "length_km": 390.271,
       "clearance_min": 0.0,
       "clearance_mean": 7.233,
@@ -530,7 +530,7 @@
       "source": "swisstopo (swissALTI3D / swissSURFACE3D)"
     },
     "notes": "downloads the 0.5 m terrain tiles (about 80 MB) next to R19's 2 m ones",
-    "seconds": 2.5
+    "seconds": 2.2
   },
   "R21": {
     "place": "Súľovské skaly, Slovakia: our own ÚGKK SR tiles (DMR 5.0 / DMP 1.0, 1 m) from the local mirror",
@@ -546,7 +546,7 @@
       "checked": 7196,
       "lines": 1653,
       "spots": 23,
-      "csv_sha256": "62265025221de7ff8588f1cf089dab808dfcf0af17bd3d1a2bd3283478dedf9f",
+      "csv_sha256": "701f35dd0fbf6dcbf08e8dbb0250493aa3c22a6748750cf40830548e3a0400af",
       "length_km": 154.004,
       "clearance_min": 0.0,
       "clearance_mean": 1.565,
@@ -557,6 +557,6 @@
       "source": "ÚGKK SR (DMR 5.0 / DMP 1.0)"
     },
     "notes": "skipped without FINDALINE_MIRROR; --source auto picks Slovakia (the centre is in SK); first run on an empty cache: 9 s, 2 DTM tiles 12 MB and 2 DSM tiles 14 MB copied from the mirror; forest everywhere: all lines over trees",
-    "seconds": 8.8
+    "seconds": 1.6
   }
 }
