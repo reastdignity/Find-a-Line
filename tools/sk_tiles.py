@@ -57,8 +57,8 @@ PRODUCTS = {
     "dmp1": {"zip": f"{BASE}/DMP1/DMP1_0_sjtsk03_bpv.zip", "member": "dmp1_0/dmp1_jtsk03.tif",
              "title": "DMP 1.0 digital surface model (with vegetation and buildings)"},
 }
-# The national TIFFs name their CRS only (a LOCAL_CS "S-JTSK [JTSK03] / Krovak East North",
-# no projection): the tiles get the EPSG code, or nothing could reproject them
+# The national TIFFs name their CRS only (a LOCAL_CS, no projection): the tiles get the
+# EPSG code, or nothing could reproject them
 CRS = "EPSG:8353"
 TILE_M = 2000
 BLOCK = 10          # tiles per folder side
@@ -164,12 +164,13 @@ def cut(product: str, zips: str, root: str, rows_limit: Optional[int] = None):
     start = time.time()
     with rio.Env(GDAL_CACHEMAX=CACHE_MB, GDAL_NUM_THREADS="ALL_CPUS"), rio.open(source) as src, \
             ThreadPoolExecutor(max_workers=WRITE_THREADS) as pool:
-        res = src.res[0]
-        assert abs(res - 1.0) < 1e-9, f"expected 1 m, got {res}"
+        assert abs(src.res[0] - 1.0) < 1e-9, f"expected 1 m, got {src.res[0]}"
+        res = 1.0  # DMR 5.0 says 0.999999999998 m, its edges 0.1 mm off whole metres: the tiles get the exact grid
         left, bottom, right, top = src.bounds
         # The tile grid must fall on pixel edges (whole metres here)
         assert abs(left - round(left)) < 1e-3 and abs(top - round(top)) < 1e-3, src.bounds
-        assert "JTSK03" in src.crs.to_wkt() and "Krovak East North" in src.crs.to_wkt(), src.crs
+        # DMP 1.0: "S-JTSK [JTSK03] / Krovak East North", DMR 5.0: "S_JTSK_JTSK03_Krovak_East_North"
+        assert "SJTSKJTSK03KrovakEastNorth" in "".join(filter(str.isalnum, src.crs.to_wkt())), src.crs
         nodata = src.nodata
         rows = range(math.ceil(top / TILE_M) - 1, math.floor(bottom / TILE_M) - 1, -1)  # from the top
         cols = range(math.floor(left / TILE_M), math.ceil(right / TILE_M))
