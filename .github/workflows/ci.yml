@@ -1,0 +1,77 @@
+# Offline tests on Linux and Windows, and audits of the locked dependencies.
+# macOS is left out until it is needed (docs/roadmap.md, "Deferred"); the docker job comes with the Dockerfile.
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  tests:
+    name: tests (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+
+      # setup-uv publishes no floating major tags: pinned to the commit of v10.3.2
+      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e  # v10.3.2
+        with:
+          python-version: "3.13"
+
+      - name: Python dependencies
+        run: uv sync --frozen
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: viewer/package-lock.json
+
+      # test_viewer.py needs node_modules (esbuild) and checks that viewer/dist is built from viewer/src
+      - name: Viewer dependencies and type check
+        working-directory: viewer
+        run: |
+          npm ci
+          npm run check
+
+      # Headless Edge tests run where Edge is installed (windows-latest) and are skipped elsewhere
+      - name: Tests
+        run: uv run --frozen pytest -q
+
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e  # v10.3.2
+        with:
+          python-version: "3.13"
+
+      # The locked runtime dependencies with hashes: pip-audit checks exactly these pins, without pip resolving anything
+      - name: pip-audit
+        run: |
+          uv export --frozen --no-dev --no-emit-project --format requirements.txt -o requirements-audit.txt
+          uv tool run pip-audit --strict --disable-pip --require-hashes --progress-spinner off -r requirements-audit.txt
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+
+      # Only what goes into the bundle (the dev tools never reach users)
+      - name: npm audit
+        working-directory: viewer
+        run: npm audit --omit=dev

@@ -285,7 +285,7 @@ The goal is Windows, Linux and macOS (Intel and Apple Silicon), installable by p
   - The worker is a separate process and uses the `spawn` start method on every OS, so Linux behaves like Windows/macOS. (Python 3.14 changes the Linux default to `forkserver`.)
   - Each job gets its own work folder, and memmapped files are closed before they are deleted: Windows cannot delete or overwrite an open file.
   - `pathlib` for paths; `webbrowser` to open the browser.
-- **CI**: GitHub Actions on `ubuntu-latest` and `windows-latest` (`macos-latest` too if it passes without changes; else deferred) runs `pytest` (fixture rasters, no network, the web app) and the viewer checks, plus a Docker build and `pip-audit` / `npm audit`.
+- **CI**: GitHub Actions on `ubuntu-latest` and `windows-latest` (`macos-latest` too if it passes without changes; else deferred) runs `pytest` (fixture rasters, no network, the web app) and the viewer checks, plus a Docker build and `pip-audit` / `npm audit`. Done 2026-10-27 (`.github/workflows/ci.yml`, not run yet: nothing is pushed): Linux and Windows with Python 3.13 and Node 24, the audits in their own job; macOS left out (deferred); the Docker build job comes with the `docker` branch.
 - **macOS:** a downloaded `start.command` may need right-click → Open the first time (Gatekeeper) and can lose its executable bit when unzipped; the guide covers both.
 - **Resources** are shown before a search: the cache needs several GB (the OSM water polygons alone are 1.2 GB), large areas need a lot of RAM.
 - Not planned: signed installers (PyInstaller/Briefcase), which mean 300–500 MB packages, SmartScreen/Gatekeeper warnings without paid signing, and antivirus false positives. The public website (stage 4) is the no-install option.
