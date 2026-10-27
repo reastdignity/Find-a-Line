@@ -74,6 +74,13 @@ class Jobs:
                               "ORDER BY created DESC LIMIT 200").fetchall()
         return [dict(r) for r in rows]
 
+    def waiting_or_running(self) -> List[Dict]:
+        """The jobs not finished yet, with their requests."""
+        with self._db() as db:
+            rows = db.execute("SELECT * FROM jobs WHERE status IN ('queued', 'ready', 'downloading', "
+                              "'computing')").fetchall()
+        return [dict(r) for r in rows]
+
     def next(self, status: str) -> Optional[Dict]:
         with self._db() as db:
             row = db.execute("SELECT * FROM jobs WHERE status = ? ORDER BY created LIMIT 1", (status,)).fetchone()

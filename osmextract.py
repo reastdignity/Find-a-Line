@@ -216,6 +216,12 @@ def _rebuild_tiles(cache_dir: str) -> int:
     return built
 
 
+def offered(feature: Dict) -> bool:
+    """Whether a Geofabrik region is offered in the app: countries and smaller regions,
+    not continents (no parent or no outline; their extracts are tens of GB)."""
+    return "parent" in feature["properties"] and bool(feature["geometry"])
+
+
 def regions_at(cache_dir: str, lat: float, lon: float) -> List[Dict]:
     """The Geofabrik regions containing a point (a country, then its smaller regions)."""
     import re
@@ -224,7 +230,7 @@ def regions_at(cache_dir: str, lat: float, lon: float) -> List[Dict]:
     downloaded = {rid for rid, _ in extracts(cache_dir)}
     point, found = Point(lon, lat), []
     for rid, feature in regions.items():
-        if "parent" not in feature["properties"] or not feature["geometry"]:
+        if not offered(feature):
             continue  # continents
         if shape(feature["geometry"]).contains(point):
             depth, parent = 0, rid

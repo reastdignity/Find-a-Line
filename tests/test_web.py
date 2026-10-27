@@ -260,15 +260,26 @@ def test_profile_on_demand(tmp_path, monkeypatch):
 def test_osm_jobs(client, tmp_path):
     import json
     (tmp_path / "cache" / "osm").mkdir(parents=True, exist_ok=True)
+    box = {"type": "Polygon", "coordinates": [[[14, 35.7], [14.7, 35.7], [14.7, 36.1], [14, 36.1], [14, 35.7]]]}
     (tmp_path / "cache" / "osm" / "geofabrik-index.json").write_text(json.dumps({"features": [
-        {"properties": {"id": "malta", "name": "Malta", "parent": "europe"}, "geometry": None}]}))
+        {"properties": {"id": "europe", "name": "Europe"}, "geometry": box},
+        {"properties": {"id": "malta", "name": "Malta", "parent": "europe"}, "geometry": box}]}))
     headers = {"x-findaline-token": TOKEN}
+    response = client.post("/api/osm", json={"action": "download", "region": "europe"}, headers=headers)
+    assert response.status_code == 400 and "continent" in response.text
     assert client.post("/api/osm", json={"action": "download", "region": "atlantis"}, headers=headers).status_code == 400
     assert client.post("/api/osm", json={"action": "update", "region": "malta"}, headers=headers).status_code == 400
     assert client.post("/api/osm", json={"action": "delete", "region": "malta"}, headers=headers).status_code == 400
     response = client.post("/api/osm", json={"action": "download", "region": "malta"}, headers=headers)
     assert response.status_code == 200
-    assert Jobs(str(tmp_path)).get(response.json()["id"])["title"] == "OSM download: malta"
+    jobs = Jobs(str(tmp_path))
+    assert jobs.get(response.json()["id"])["title"] == "OSM download: malta"
+    again = client.post("/api/osm", json={"action": "download", "region": "malta"}, headers=headers)
+    assert again.status_code == 409  # already waiting
+    jobs.set(response.json()["id"], "downloading")
+    assert client.post("/api/osm", json={"action": "download", "region": "malta"}, headers=headers).status_code == 409
+    jobs.set(response.json()["id"], "done")
+    assert client.post("/api/osm", json={"action": "download", "region": "malta"}, headers=headers).status_code == 200
 
 
 def test_run_again_and_edit(client, tmp_path):

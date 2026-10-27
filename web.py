@@ -272,13 +272,18 @@ def create_app(data_dir: str, token: Optional[str] = None, port: int = PORT, sta
         import osmextract
         action, region = body.get("action"), str(body.get("region", ""))
         if action == "download":
-            if region not in await run_in_threadpool(osmextract._index, cache_dir):
+            regions = await run_in_threadpool(osmextract._index, cache_dir)
+            if region not in regions:
                 raise HTTPException(400, "unknown Geofabrik region")
+            if not osmextract.offered(regions[region]):
+                raise HTTPException(400, "a continent: choose a country or a smaller region")
         elif action == "update":
             if region not in dict(osmextract.extracts(cache_dir)):
                 raise HTTPException(400, "no such extract downloaded")
         else:
             raise HTTPException(400, "action: download or update")
+        if any(json.loads(j["request"]).get("osm", {}).get("region") == region for j in jobs.waiting_or_running()):
+            raise HTTPException(409, f"{region} is already waiting or being downloaded in the queue")
         request = {"osm": {"action": action, "region": region}}
         return {"id": jobs.add(request, f"OSM {action}: {region}")}
 
