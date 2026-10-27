@@ -84,5 +84,6 @@ Finds possible highlines in elevation data: anchors on steep pixels, every pair 
 ## Conventions
 - Code, comments, docs and commit messages in English; conversation with the user in Polish.
 - Match the existing style (docstrings, comment density). Commit messages end with the `Co-Authored-By` line.
-- Work happens on the `rework-webui-websources` branch (local, ahead of `main`); nothing is pushed unless the user asks.
+- One branch per task, started from the current `main` and named after it (e.g. `cliff-angles`, `source-austria`); never commit to `main` directly. Parallel agents each work in their own worktree (`.claude/worktrees/<task>`, `git worktree add`), so they never share a checkout. A finished task is merged into `main` (rebase onto `main` first if it moved), then its branch and worktree are deleted. Nothing is pushed unless the user asks.
+- Parallel tasks share the data folder and the cores: downloads may overlap, but `pytest` and `tests/regression.py` of two tasks must not run at the same time (the regression numbers assume one search at a time). Two tasks touching the same "Things that must stay in sync" pair will conflict: split such work differently.
 - Generated data (`cache/`, `runs/`, `work/`, `jobs.sqlite`, `findaline_map.html`) is git-ignored. The user is the only user: no migration or backward-compatibility code for old caches or runs.

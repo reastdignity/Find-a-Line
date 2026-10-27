@@ -218,3 +218,6 @@ jobs.sqlite*
 # Viewer build tools (viewer/dist is committed)
 viewer/node_modules/
 !viewer/dist/
+
+# Agent worktrees (one per task)
+.claude/worktrees/
