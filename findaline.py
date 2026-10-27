@@ -73,7 +73,7 @@ def print_lines(lines: search.Lines, group_distance: float, group_by: str, all_l
         print(f"\nFound {len(results)} valid lines")
     else:
         groups = lines.spot_groups
-        shown = "largest clearance" if group_by == "clearance" else "longest"
+        shown = {"clearance": "largest clearance", "longest": "longest", "height": "highest"}[group_by]
         print(f"\nFound {len(results)} valid lines in {len(groups)} spots "
               f"(lines with both anchors within {group_distance:g}m are grouped, "
               f"showing the one with the {shown}; use --all-lines to list every line)")

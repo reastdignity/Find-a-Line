@@ -68,11 +68,12 @@ def test_grouping_matches_python(tmp_path):
         x1, y1 = x + random.uniform(-25, 25), y + random.uniform(-25, 25)
         results.append({"a1_xy": (x1, y1), "a2_xy": (x1 + 100 + random.uniform(-25, 25), y1 + random.uniform(-25, 25)),
                         "length": round(random.uniform(80, 130), 1), "clearance": round(random.uniform(0, 20), 2),
-                        "over_obstacles": random.random() < 0.3})
+                        "over_obstacles": random.random() < 0.3,
+                        "height_max": random.choice([10.0, 20.0, round(random.uniform(5, 60), 2)])})
     lines = [{"x1": r["a1_xy"][0], "y1": r["a1_xy"][1], "x2": r["a2_xy"][0], "y2": r["a2_xy"][1],
-              "len": r["length"], "clr": r["clearance"], "over": r["over_obstacles"], "k": k}
+              "len": r["length"], "clr": r["clearance"], "over": r["over_obstacles"], "hmax": r["height_max"], "k": k}
              for k, r in enumerate(results)]
-    for distance, by in ((20, "clearance"), (7, "longest")):
+    for distance, by in ((20, "clearance"), (7, "longest"), (15, "height")):
         groups = mapping.group_lines(results, distance, by)
         python = [[results.index(g["rep"])] + [results.index(m) for m in g["members"]] for g in groups]
         ts = run_ts(tmp_path, "grouping", f"""

@@ -192,7 +192,7 @@ Several places at once: give `--point LAT,LON` (WGS84) once per place, optionall
 | `--data-dir` | `FINDALINE_DATA`, else the folder of the script | Folder holding `cache/` (downloaded data), `runs/` (saved runs) and `work/` (working grids of a search, deleted when it ends) |
 | `--update` | | `stale` or `all`: check the cached data of the search area before the search (see *Keeping the cache up to date*) |
 | `--group-distance` | 20 (2 × resolution if more) | Group similar lines: both anchors within this many metres |
-| `--group-by` | `clearance` | Line shown for each group: `clearance` (largest) or `longest` |
+| `--group-by` | `clearance` | Line shown for each group: `clearance` (largest), `longest` or `height` (highest above the terrain) |
 | `--all-lines` | | List every line instead of one line per group |
 | `--name` | place name from OpenStreetMap | Name of the run |
 | `--html` | `findaline_map.html` in the data folder | Page that opens the map of the latest run |
@@ -203,7 +203,7 @@ Several places at once: give `--point LAT,LON` (WGS84) once per place, optionall
 Run `python findaline.py --help` for the full list.
 
 ### Results
-A steep rock face produces many near-identical lines (anchors shifted by a metre or two). Such lines are grouped into one spot: two lines belong to the same group when both of their anchors are within `--group-distance` metres of each other. Each group is shown as one line, the one with the largest clearance (or the longest one, `--group-by longest`). Lines over trees/buildings are grouped separately from clear lines.
+A steep rock face produces many near-identical lines (anchors shifted by a metre or two). Such lines are grouped into one spot: two lines belong to the same group when both of their anchors are within `--group-distance` metres of each other. Each group is shown as one line, the one with the largest clearance (or the longest one, `--group-by longest`, or the one highest above the terrain, `--group-by height`). Lines over trees/buildings are grouped separately from clear lines.
 
 - The coordinates are printed in the terminal (WGS84, latitude and longitude), one line per group with the number of similar lines. Use `--all-lines` to list every line.
 - Every run is saved in its own folder, `runs/<date>_<place>/`: the interactive map (`map.html` with its data in `data.js`; the viewer itself is shared by all runs in `runs/_viewer/`), all lines with their group number (`lines.csv` for spreadsheets, `lines.geojson` for QGIS and other GIS tools) and the parameters (`run.json`). Runs are named after the nearest rock, peak or valley in OpenStreetMap and the locality (for example "Żabi Koń, Gaj Kobylański"); use `--name` to choose your own. `runs/index.html` lists all runs.

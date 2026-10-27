@@ -146,8 +146,9 @@ class SearchParams(BaseModel):
     group_distance: Optional[float] = field(None, "group similar lines: both anchors within this many metres "
                                                   "(also the initial setting of the interactive map); default: "
                                                   "20, or twice the resolution if that is more", "output")
-    group_by: Literal["clearance", "longest"] = field("clearance", "line shown for each group: largest "
-                                                                   "clearance or longest", "output")
+    group_by: Literal["clearance", "longest", "height"] = field(
+        "clearance", "line shown for each group: largest clearance, longest, or highest above the terrain "
+                     "(height_max)", "output")
     name: Optional[str] = field(None, "name of the run (default: place name from OpenStreetMap)", "output")
     no_html: bool = field(False, "do not save the interactive map", "output")
     ortho: Literal["auto", "always", "never"] = field(

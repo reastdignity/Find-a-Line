@@ -40,7 +40,7 @@ Finds possible highlines in elevation data: anchors on steep pixels, every pair 
 | `progress.py` | Two tqdm bars (Download / Compute); listeners (`progress.subscribe`) for the web worker |
 
 ## Things that must stay in sync
-- `mapping.group_lines` (Python) and `groupLines` (`viewer/src/grouping.ts`): the same greedy algorithm with the same cell index; the browser must produce the same groups. Values used for grouping are passed to the viewer unrounded.
+- `mapping.group_lines` (Python) and `groupLines` (`viewer/src/grouping.ts`): the same greedy algorithm with the same cell index and the same order of the lines (`_rank` / `compare`: clearance, longest, height); the browser must produce the same groups. Values used for grouping are passed to the viewer unrounded.
 - `sag.py` and `viewer/src/sag.ts`: the same solver; results match to 1e-6 m. `tests/test_viewer.py` checks both pairs with Node, and that `viewer/dist` is built from `viewer/src`.
 - `linesearch.covered_metres` (metres over water/filled gaps of every line, numba) and `helpers.line_profile` (`water_m`, `filled_m`): the same pixels and formula; `tests/test_units.py` compares them. Areas compute profiles only for the lines shown for groups (`search._lines`), circles for all.
 - The run data written by `mapping.save_map` (`data.js`, `lines.js`), the list in `runs.write_index` (`runs.js`) and their types in `viewer/src/types.ts`.

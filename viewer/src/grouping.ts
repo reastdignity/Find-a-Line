@@ -4,6 +4,7 @@
 export interface Groupable {
   x1: number; y1: number; x2: number; y2: number;
   len: number; clr: number; over: boolean;
+  hmax: number;  // largest height above the terrain (by "height")
 }
 
 export interface Group<T> {
@@ -12,9 +13,9 @@ export interface Group<T> {
 }
 
 function compare(by: string) {
-  return by === "longest"
-    ? (a: Groupable, b: Groupable) => (b.len - a.len) || (b.clr - a.clr)
-    : (a: Groupable, b: Groupable) => (b.clr - a.clr) || (b.len - a.len);
+  if (by === "longest") return (a: Groupable, b: Groupable) => (b.len - a.len) || (b.clr - a.clr);
+  if (by === "height") return (a: Groupable, b: Groupable) => (b.hmax - a.hmax) || (b.clr - a.clr);
+  return (a: Groupable, b: Groupable) => (b.clr - a.clr) || (b.len - a.len);
 }
 
 function sq(ax: number, ay: number, bx: number, by: number): number {

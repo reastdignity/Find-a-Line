@@ -55,7 +55,9 @@ export function LinesPanel(props: LinesPanelProps) {
       Show per group: <label><input type="radio" name="fal-by" value="clearance" checked={state.by === "clearance"}
                                     onChange={() => set({by: "clearance"})} /> largest clearance</label>{" "}
       <label><input type="radio" name="fal-by" value="longest" checked={state.by === "longest"}
-                    onChange={() => set({by: "longest"})} /> longest</label>
+                    onChange={() => set({by: "longest"})} /> longest</label>{" "}
+      <label><input type="radio" name="fal-by" value="height" checked={state.by === "height"}
+                    onChange={() => set({by: "height"})} /> highest</label>
     </div>
     {nOver > 0 && <div>
       <label><input type="checkbox" class="fal-clean" checked={state.showClean}

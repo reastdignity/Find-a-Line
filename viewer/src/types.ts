@@ -91,7 +91,7 @@ export interface RunData {
   crs: string;                    // of x1, y1, x2, y2
   ortho: Ortho | null;
   distance: number;               // grouping distance, m
-  by: "clearance" | "longest";
+  by: "clearance" | "longest" | "height";
   model: "formula" | "sag";
   rigging: Rigging;
   slope: number;                  // formula: metres of drop per metre from the nearer anchor

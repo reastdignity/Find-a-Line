@@ -81,6 +81,8 @@ def _rank(by: str):
     """Sort key: best representative first (with reverse=True)."""
     if by == "longest":
         return lambda r: (r["length"], r["clearance"])
+    if by == "height":
+        return lambda r: (r["height_max"], r["clearance"])
     return lambda r: (r["clearance"], r["length"])
 
 

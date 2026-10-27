@@ -75,7 +75,8 @@ function groupInfo(g: Group<Line>, by: string): string {
   return "<b>" + g.members.length + " similar lines</b> (shown thin)<br>" +
     "<b>Lengths:</b> " + range(g.members.map((m) => m.len), 0, " m") + "<br>" +
     "<b>Clearances:</b> " + range(g.members.map((m) => m.clr), 1, " m") + "<br>" +
-    "<hr style='margin:4px 0'><i>Shown line (" + (by === "longest" ? "longest" : "largest clearance") +
+    "<hr style='margin:4px 0'><i>Shown line (" + (by === "longest" ? "longest" : by === "height"
+      ? "highest above the terrain" : "largest clearance") +
     "):</i><br>" + lineInfo(g.rep);
 }
 
