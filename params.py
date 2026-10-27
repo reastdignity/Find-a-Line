@@ -103,6 +103,13 @@ class SearchParams(BaseModel):
                 "'reject' drops them, 'off' skips the check (and the NMPT download)", "search")
     high_above: float = field(20, "height of the webbing above the terrain in metres from which a part of a "
                                   "line counts as high (the share of each line saved as high_pct)", "search")
+    min_height: Optional[float] = field(None, "keep only lines whose webbing gets at least this many metres "
+                                              "above the terrain somewhere (webbing of --model: with the sag "
+                                              "estimator under the athlete)", "search")
+    min_mean_height: Optional[float] = field(None, "keep only lines whose webbing is on average at least this "
+                                                   "many metres above the terrain", "search")
+    min_high_share: Optional[float] = field(None, "keep only lines that are at least --high-above metres above "
+                                                  "the terrain over at least this % of their length", "search")
     threads: Optional[int] = field(None, "number of threads for the line search (default: CPU count - 1)",
                                    "search")
     tile_size: Optional[float] = field(None, "large areas are computed in square tiles of this size in metres "
@@ -173,6 +180,8 @@ class SearchParams(BaseModel):
             raise ValueError("--buffer must be positive")
         if self.high_above < 0:
             raise ValueError("--high-above cannot be negative")
+        if self.min_high_share is not None and not 0 <= self.min_high_share <= 100:
+            raise ValueError("--min-high-share is a share of the length: 0 to 100")
         if self.tile_size is not None and self.tile_size < 100:
             raise ValueError("--tile-size must be at least 100 m")
         if self.within and self.area is None:

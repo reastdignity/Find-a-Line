@@ -197,6 +197,11 @@ def params_summary(meta: Dict) -> str:
         text = f"{meta['source']['name']}, {text}"
     if "max_anchor_diff" in p:
         text += f", Δh ≤{p['max_anchor_diff']:g}% / {p['max_anchor_diff_m']:g} m"
+    limits = [f"{text}{p[key]:g}{unit}" for key, text, unit in (
+        ("min_height", "height ≥", " m"), ("min_mean_height", "mean height ≥", " m"),
+        ("min_high_share", f"≥{p.get('high_above', 20):g} m high over ≥", "%")) if p.get(key) is not None]
+    if limits:
+        text += ", " + ", ".join(limits)
     if p.get("model") == "sag":
         r = p["rigging"]
         text += (f", sag model ({r['pretension']:g} kN, {r['stretch']:g}%, {r['webbing_weight']:g} g/m, "

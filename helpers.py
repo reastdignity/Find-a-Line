@@ -6,6 +6,7 @@ All rasters share one working grid (see geoportal.Grid). Pixel coordinates are
 [row, col]; distances and elevations are in metres.
 """
 
+from dataclasses import dataclass
 from typing import NamedTuple, Optional, Tuple
 
 import numpy as np
@@ -30,6 +31,33 @@ class Line(NamedTuple):
     height_max: float              # largest height of the webbing above the terrain (webbing_height)
     height_mean: float             # its mean over the pixels between the anchors
     high_pct: float                # % of those pixels where it is at least high_above
+
+
+@dataclass
+class HeightLimits:
+    """Search limits of the webbing heights above the terrain (None: no limit):
+    --min-height, --min-mean-height and --min-high-share (% of high_above)."""
+    min_height: Optional[float] = None
+    min_mean_height: Optional[float] = None
+    min_high_share: Optional[float] = None
+    left_out: int = 0  # valid lines that were not high enough
+
+    @property
+    def active(self) -> bool:
+        return any(v is not None for v in (self.min_height, self.min_mean_height, self.min_high_share))
+
+    def passes(self, height_max: float, height_mean: float, high_pct: float) -> bool:
+        ok = ((self.min_height is None or height_max >= self.min_height)
+              and (self.min_mean_height is None or height_mean >= self.min_mean_height)
+              and (self.min_high_share is None or high_pct >= self.min_high_share))
+        if not ok:
+            self.left_out += 1
+        return ok
+
+    def describe(self) -> str:
+        parts = [f"{text} {v:g}" for text, v in (("height ≥", self.min_height), ("mean ≥", self.min_mean_height),
+                                                  ("high % ≥", self.min_high_share)) if v is not None]
+        return ", ".join(parts)
 
 
 def fall_allowance(sag_table=None) -> float:

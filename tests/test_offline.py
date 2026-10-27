@@ -95,6 +95,24 @@ def _lines(rows):
             for r in rows}
 
 
+def test_height_limits_filter_the_lines(tmp_path):
+    """--min-height/--min-mean-height/--min-high-share keep exactly the lines of the search
+    without them that reach the limits, with the same values (groups may differ)."""
+    common = ["--elevation-file", os.path.join(DATA, "zabi_kon_nmt.tif"), "--northing", "254608",
+              "--easting", "553966", "--radius", "290", "--high-above", "15"]
+    _, everything = run_search(tmp_path / "all", *common)
+    output, high = run_search(tmp_path / "high", *common, "--min-height", "30.3", "--min-mean-height", "20.3",
+                              "--min-high-share", "60.3")
+    line_values = lambda r: {k: v for k, v in r.items() if k not in ("group", "representative", "group_size")}
+    expected = [line_values(r) for r in everything if float(r["height_max_m"]) >= 30.3
+                and float(r["height_mean_m"]) >= 20.3 and float(r["high_pct"]) >= 60.3]
+    assert 0 < len(expected) < len(everything) / 2
+    key = lambda r: (r["anchor1_easting"], r["anchor1_northing"], r["anchor2_easting"], r["anchor2_northing"])
+    assert sorted(map(line_values, high), key=key) == sorted(expected, key=key)
+    left_out = int(re.search(r"Left out as not high enough above the terrain \(.*\): (\d+)", output).group(1))
+    assert left_out == len(everything) - len(high)
+
+
 def test_area_in_tiles(tmp_path):
     """An area computed in tiles gives exactly the lines of one grid."""
     square = {"type": "Polygon", "coordinates": [[[19.7522, 50.1546], [19.7590, 50.1546], [19.7590, 50.1580],
