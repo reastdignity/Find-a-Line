@@ -21,6 +21,7 @@ A search that cannot go on raises SearchError with the message for the user.
 """
 
 import dataclasses
+import functools
 import gc
 import glob
 import gzip
@@ -869,7 +870,10 @@ def save_run(plan: Plan, lines: Lines, confirm: Optional[Confirm] = None, run: O
     return Result(results, spot_groups, meta, run, map_path)
 
 
-_sag_tables: Dict[str, "sg.EnvelopeTable"] = {}
+@functools.lru_cache(16)
+def _sag_table(rigging: Tuple[float, ...], min_length: float, max_length: float) -> "sg.EnvelopeTable":
+    """The envelope table of profile_of_line, kept for the next profiles of the same run (at most 16)."""
+    return sg.EnvelopeTable(sg.Rigging(*rigging), min_length, max_length)
 
 
 def profile_of_line(meta: Dict, paths: Paths, anchor1: Tuple[float, float], anchor2: Tuple[float, float]) -> Dict:
@@ -912,10 +916,7 @@ def profile_of_line(meta: Dict, paths: Paths, anchor1: Tuple[float, float], anch
         spans = (min(p["min_length"], 0.99 * length), max(p["max_length"], 1.01 * length))
         if p["min_length"] <= length <= p["max_length"]:
             spans = (p["min_length"], p["max_length"])
-        key = json.dumps([rig, *spans], sort_keys=True)
-        if key not in _sag_tables:
-            _sag_tables[key] = sg.EnvelopeTable(plan.rigging, *spans)
-        sag_table = _sag_tables[key]
+        sag_table = _sag_table(dataclasses.astuple(plan.rigging), *spans)
     profile = sh.line_profile(pixel(x1, y1), pixel(x2, y2), data.elevation, res, data.surface,
                               sag_table=sag_table, water=data.water, filled=data.filled)
     del data

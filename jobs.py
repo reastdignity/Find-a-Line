@@ -13,6 +13,11 @@ The job queue of the web application and its worker.
   process tree (psutil) and marks it cancelled. A waiting job is cancelled at once.
 - run_phase: a phase in its own process; its stdout becomes "info" events
   (_EventWriter), the progress goes as "progress" events.
+- The quick lane: estimates and profiles of the page (short, but they may call Nominatim
+  or Overpass, read sheet indexes and build grids) are rows of the table `quick`, which
+  one long-lived process of the worker (run_quick) serves one after another; the web
+  server only adds a row and waits for its answer. A task that takes longer than the
+  time limit gets its process killed and a new one started.
 """
 
 import contextlib
@@ -37,6 +42,7 @@ TICK = 0.5                # seconds between looks at the queue
 PROGRESS_INTERVAL = 0.3   # seconds between progress events of a job
 HEARTBEAT = 5.0           # seconds between renewals of a worker's lease
 HOUSEKEEPING = 6 * 3600   # seconds between clean-ups of the data folder (and at the start)
+QUICK_POLL = 0.05         # seconds between looks of the quick lane at its table
 LEASE = 30.0              # seconds a lease lasts without a renewal
 # What a job is doing; "ready" means its data is downloaded and it waits to compute
 ACTIVE = ("downloading", "computing")
@@ -61,6 +67,10 @@ MIGRATIONS = [
     """ALTER TABLE jobs ADD COLUMN worker_id TEXT;
        ALTER TABLE jobs ADD COLUMN cancel_requested INTEGER NOT NULL DEFAULT 0;
        CREATE TABLE workers (id TEXT PRIMARY KEY, pid INTEGER, host TEXT, started TEXT, expires REAL);""",
+    # 4: the tasks of the quick lane (estimates and profiles); `answer` is {"code": HTTP status, "body": ...}
+    """CREATE TABLE quick (id INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT, request TEXT, status TEXT,
+                           answer TEXT, worker_id TEXT, created REAL, started REAL);
+       CREATE INDEX quick_status ON quick (status, id);""",
 ]
 
 
@@ -218,8 +228,53 @@ class Jobs:
                 rows = db.execute(f"SELECT id FROM jobs WHERE status IN {_in(ACTIVE)} AND (worker_id IS NULL "
                                   "OR worker_id NOT IN (SELECT id FROM workers WHERE expires > ?))", (*ACTIVE, now))
             ids = [r[0] for r in rows.fetchall()]
+            gone = json.dumps({"code": 503, "body": "the worker stopped"})
+            if worker_id:
+                db.execute("UPDATE quick SET status = 'done', answer = ? WHERE status = 'running' AND worker_id = ?",
+                           (gone, worker_id))
+            else:
+                db.execute("UPDATE quick SET status = 'done', answer = ? WHERE status = 'running' AND worker_id NOT IN "
+                           "(SELECT id FROM workers WHERE expires > ?)", (gone, now))
             db.execute("DELETE FROM workers WHERE expires <= ?", (now - LEASE,))  # long gone
         return [job_id for job_id in ids if self.set(job_id, "failed", when=ACTIVE, error=INTERRUPTED)]
+
+    # --- The quick lane ---
+
+    def quick_add(self, kind: str, request: Dict) -> int:
+        """A task for the quick lane ("estimate" or "profile"); its id."""
+        with self._db() as db:
+            return db.execute("INSERT INTO quick (kind, request, status, created) VALUES (?, ?, 'waiting', ?)",
+                              (kind, json.dumps(request), time.time())).lastrowid
+
+    def quick_take(self, task_id: int) -> Optional[Dict]:
+        """The answer of a task once it is there ({"code", "body"}), removing the task; else None."""
+        with self._write() as db:
+            row = db.execute("SELECT answer FROM quick WHERE id = ? AND status = 'done'", (task_id,)).fetchone()
+            if row:
+                db.execute("DELETE FROM quick WHERE id = ?", (task_id,))
+        return json.loads(row["answer"]) if row else None
+
+    def quick_forget(self, task_id: int):
+        with self._db() as db:
+            db.execute("DELETE FROM quick WHERE id = ?", (task_id,))
+
+    def quick_claim(self, worker_id: str) -> Optional[Dict]:
+        with self._write() as db:
+            rows = db.execute("UPDATE quick SET status = 'running', worker_id = ?, started = ? WHERE id = "
+                              "(SELECT id FROM quick WHERE status = 'waiting' ORDER BY id LIMIT 1) "
+                              "AND status = 'waiting' RETURNING *", (worker_id, time.time())).fetchall()
+        return dict(rows[0]) if rows else None
+
+    def quick_running(self, worker_id: str) -> Optional[Dict]:
+        with self._db() as db:
+            row = db.execute("SELECT * FROM quick WHERE status = 'running' AND worker_id = ?", (worker_id,)).fetchone()
+        return dict(row) if row else None
+
+    def quick_answer(self, task_id: int, code: int, body):
+        """The answer of a running task."""
+        with self._db() as db:
+            db.execute("UPDATE quick SET status = 'done', answer = ? WHERE id = ? AND status = 'running'",
+                       (json.dumps({"code": code, "body": body}), task_id))
 
     # --- Cancelling ---
 
@@ -360,6 +415,72 @@ def run_phase(data_dir: str, job_id: str, phase: str):
             cache.remove_work(paths.work)
 
 
+def quick_estimate(data_dir: str, request: Dict) -> Dict:
+    """The estimate of a search request (/api/estimate)."""
+    import search
+    from area import Polygon, size_km2
+    messages = []
+    params = search_params(request)
+    folder = os.path.join(data_dir, "work", "estimates", uuid.uuid4().hex)  # one per request
+    try:
+        paths = search.Paths(data_dir, folder)
+        plan = search.plan_search(params, paths, lambda kind, text: messages.append([kind, text]))
+        result = search.estimate_search(plan)
+    finally:
+        shutil.rmtree(folder, ignore_errors=True)
+    return {"messages": messages, "reasons": result.reasons, "download_mb": round(result.download_mb),
+            "work_gb": round(result.work_gb, 2), "source": plan.source.name,
+            "tiles": len(plan.tiles) if plan.tiles else 1, "resolution": plan.resolution,
+            "km2": size_km2(plan.area.geometry) if isinstance(plan.area, Polygon) else None,
+            "area": plan.area.shape_wgs84().__geo_interface__}  # drawn on the map before the start
+
+
+def quick_profile(data_dir: str, request: Dict) -> Dict:
+    """The profile of a line of a saved run (/api/profile): {"run": id, "line": [lat1, lon1, lat2, lon2]}."""
+    import search
+    with open(os.path.join(data_dir, "runs", request["run"], "run.json"), encoding="utf-8") as f:
+        meta = json.load(f)
+    lat1, lon1, lat2, lon2 = request["line"]
+    paths = search.Paths(data_dir, cache.new_work(data_dir))
+    try:
+        return search.profile_of_line(meta, paths, (lat1, lon1), (lat2, lon2))
+    finally:
+        cache.remove_work(paths.work)
+
+
+QUICK = {"estimate": quick_estimate, "profile": quick_profile}
+
+
+def run_quick(data_dir: str, worker_id: str, parent: int):
+    """The process of the quick lane: serves the tasks of the table `quick` one after another, until
+    its worker (`parent`) is gone. One process and one thread, so the state of search and sources
+    (caches of sheet indexes, sag tables) is never shared between threads."""
+    import traceback
+
+    import psutil
+    import requests
+
+    import search
+    jobs = Jobs(data_dir)
+    looked = time.time()
+    while True:
+        task = jobs.quick_claim(worker_id)
+        if task is None:
+            if time.time() - looked > 2:
+                looked = time.time()
+                if not psutil.pid_exists(parent):
+                    return
+            time.sleep(QUICK_POLL)
+            continue
+        try:
+            jobs.quick_answer(task["id"], 200, QUICK[task["kind"]](data_dir, json.loads(task["request"])))
+        except (ValueError, search.SearchError, requests.RequestException) as e:  # ValueError: parameters
+            jobs.quick_answer(task["id"], 400, cache.clean_error(e))
+        except Exception as e:
+            traceback.print_exc()
+            jobs.quick_answer(task["id"], 500, f"internal error: {type(e).__name__}: {cache.clean_error(e)}")
+
+
 def kill_tree(pid: int):
     """Kill a process and every process it started (download pools, numba, GDAL helpers)."""
     import psutil
@@ -377,8 +498,10 @@ def kill_tree(pid: int):
 class Scheduler:
     """The worker: starts the processes of the jobs, one downloading and one computing job at a time."""
 
-    def __init__(self, jobs: Jobs, worker_id: Optional[str] = None):
+    def __init__(self, jobs: Jobs, worker_id: Optional[str] = None, quick_timeout: Optional[float] = None):
         self.jobs = jobs
+        self.quick = None  # the process of the quick lane
+        self.quick_timeout = quick_timeout  # seconds a quick task may take (None: no limit)
         self.worker_id = worker_id or f"{socket.gethostname()}-{os.getpid()}-{uuid.uuid4().hex[:6]}"
         self.running: Dict[str, tuple] = {}  # phase -> (job id, process)
         self.lock = threading.Lock()
@@ -425,6 +548,10 @@ class Scheduler:
             process.join()
             del self.running[phase]
             self._remove_folder(job_id)
+        if self.quick is not None:
+            kill_tree(self.quick.pid)
+            self.quick.join()
+            self.quick = None
         self.jobs.interrupted(self.worker_id)
 
     def _loop(self):
@@ -437,6 +564,7 @@ class Scheduler:
                 if self.stopped.is_set():
                     break
                 self._heartbeat()
+                self._check_quick()
                 self._check()
 
     def _heartbeat(self):
@@ -449,6 +577,25 @@ class Scheduler:
             self.jobs.register(self.worker_id)
         self.beat = time.time()
         self.jobs.interrupted()  # jobs of other workers that are gone
+
+    def _check_quick(self):
+        """Keep the quick lane running: a new process after a crash or a task over the time limit."""
+        if self.quick is not None:
+            task = self.jobs.quick_running(self.worker_id)
+            if not self.quick.is_alive():
+                self.quick.join()
+                self.quick = None
+                if task:
+                    self.jobs.quick_answer(task["id"], 500, "the worker of estimates and profiles stopped")
+            elif task and self.quick_timeout is not None and time.time() - task["started"] > self.quick_timeout:
+                kill_tree(self.quick.pid)
+                self.quick.join()
+                self.quick = None
+                self.jobs.quick_answer(task["id"], 504, f"time limit: stopped after {self.quick_timeout:g} s")
+        if self.quick is None:
+            self.quick = self.context.Process(target=run_quick, args=(self.jobs.data_dir, self.worker_id, os.getpid()),
+                                              daemon=True)
+            self.quick.start()
 
     def _check(self):
         for job_id in self.jobs.cancel_requested(job_id for job_id, _ in self.running.values()):

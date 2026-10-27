@@ -322,15 +322,16 @@ def _wait(jobs, job_id, statuses, seconds=60):
     return jobs.get(job_id)
 
 
-def _phases(pid: int) -> list:
-    """The phase processes (multiprocessing spawn) below a worker process."""
+def _lanes(pid: int) -> list:
+    """The processes a worker process started (multiprocessing spawn: phases and the quick lane),
+    without the processes these started."""
     import psutil
-    found = []
+    spawned = {}
     for process in psutil.Process(pid).children(recursive=True):
         with contextlib.suppress(psutil.Error):
             if "spawn_main" in " ".join(process.cmdline()):
-                found.append(process)
-    return found
+                spawned[process.pid] = process
+    return [p for p in spawned.values() if p.ppid() not in spawned]
 
 
 def test_worker_process(tmp_path, monkeypatch):
@@ -358,16 +359,18 @@ def test_worker_process(tmp_path, monkeypatch):
                     assert client.get("/api/jobs").json()["worker"]
             assert jobs.get(job)["status"] == "downloading" and jobs.get(job)["worker_id"] == external
             deadline = time.time() + 60
-            while not _phases(worker.pid) and time.time() < deadline:
+            while len(_lanes(worker.pid)) < 2 and time.time() < deadline:  # the download and the quick lane
                 time.sleep(0.2)
-            phase = _phases(worker.pid)
-            assert phase
+            before = _lanes(worker.pid)
+            assert len(before) == 2
 
             with TestClient(web.create_app(str(tmp_path), token=TOKEN, start_scheduler=False)) as client:
                 assert client.delete(f"/api/jobs/{job}", headers={"x-findaline-token": TOKEN}).status_code == 200
             assert _wait(jobs, job, ("cancelled", "failed"), 30)["status"] == "cancelled"
             assert not os.path.exists(jobs.folder(job))  # work/jobs/<job>/download removed
-            assert not any(p.is_running() and p.status() != psutil.STATUS_ZOMBIE for p in phase)
+            after = {p.pid for p in _lanes(worker.pid)}
+            gone = [p for p in before if p.pid not in after]
+            assert len(gone) == 1 and not (gone[0].is_running() and gone[0].status() != psutil.STATUS_ZOMBIE)
 
             second = jobs.add(hanging, "second")
             assert _wait(jobs, second, ("downloading",))["status"] == "downloading"
@@ -398,6 +401,37 @@ def test_stale_temporary_files(tmp_path):
     assert not old.exists() and new.exists() and kept.exists()
 
 
+def test_quick_lane(tmp_path, monkeypatch):
+    """Estimates are answered by the worker's quick lane: without a worker the server says so; a
+    task over the time limit gets its process killed, and a new one answers the next task."""
+    headers = {"x-findaline-token": TOKEN}
+    hanging = {"params": {"area": "coast", "within": "osm:Nowhere at all"}}  # Nominatim never answers
+    with TestClient(web.create_app(str(tmp_path), token=TOKEN, start_scheduler=False)) as client:
+        response = client.post("/api/estimate", json=hanging, headers=headers)
+        assert response.status_code == 503 and "worker is not running" in response.text
+    with _black_hole() as proxy:
+        for key in ("HTTP_PROXY", "HTTPS_PROXY"):
+            monkeypatch.setenv(key, proxy)  # the processes of the worker inherit it
+        monkeypatch.setenv("NO_PROXY", "")
+        scheduler = Scheduler(Jobs(str(tmp_path)), quick_timeout=3)
+        scheduler.start()
+        try:
+            with TestClient(web.create_app(str(tmp_path), token=TOKEN, start_scheduler=False)) as client:
+                while scheduler.quick is None:
+                    time.sleep(0.1)
+                first = scheduler.quick.pid
+                started = time.time()
+                response = client.post("/api/estimate", json=hanging, headers=headers)
+                assert response.status_code == 504 and "time limit" in response.text, response.text
+                assert time.time() - started < 25  # the requests would wait 30 s for Nominatim
+                response = client.post("/api/estimate", json={"params": {"lat": 95, "lon": 19.7}}, headers=headers)
+                assert response.status_code == 400 and "lat" in response.text, response.text
+                assert scheduler.quick.pid != first
+        finally:
+            scheduler.stop()
+    assert Jobs(str(tmp_path))._db().execute("SELECT COUNT(*) FROM quick").fetchone()[0] == 0
+
+
 def _clip_run(tmp_path, monkeypatch, *extra) -> str:
     """A run of the Żabi Koń clip (sag model) in the data folder tmp_path; its id."""
     import subprocess
@@ -423,7 +457,7 @@ def test_profile_on_demand(tmp_path, monkeypatch):
     """A profile computed again from the cache equals the one the search saved."""
     run_id = _clip_run(tmp_path, monkeypatch)
     rows = _lines_of(tmp_path, run_id)
-    app = web.create_app(str(tmp_path), token=TOKEN, start_scheduler=False)
+    app = web.create_app(str(tmp_path), token=TOKEN)  # profiles come from the worker's quick lane
     with TestClient(app) as client:
         for row in rows[:3]:
             line = ",".join(str(v) for v in row[:4])
@@ -601,7 +635,7 @@ def test_measure_in_the_map(tmp_path, monkeypatch):
     page = (folder / "map.html").read_text(encoding="utf-8")
     (folder / "measure_test.html").write_text(
         page.replace("</body>", '<script src="measure_test.js"></script></body>'), encoding="utf-8")
-    dom = _edge_page(tmp_path, f"runs/{run_id}/measure_test.html")
+    dom = _edge_page(tmp_path, f"runs/{run_id}/measure_test.html", start_scheduler=True)
     text = re.search(r'<pre id="result">(.*?)</pre>', dom, re.S).group(1)
     first, _, raised = text.partition(" | ")
     assert first.startswith(f"Measured: {row[8]:.0f} m, A1 {row[11]:.1f} m"), text

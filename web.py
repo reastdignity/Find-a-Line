@@ -26,12 +26,12 @@ written to a file.
 import asyncio
 import contextlib
 import json
+import math
 import os
 import re
 import secrets
-import shutil
 import threading
-import uuid
+import time
 import webbrowser
 from typing import Dict, List, Optional
 
@@ -42,6 +42,8 @@ from jobs import TICK, Jobs, Scheduler, search_params
 PORT = 8765
 PING = 15           # seconds between the keep-alive comments of the event stream
 SEND_TIMEOUT = 30   # seconds a client may take to accept a message of the event stream
+QUICK_POLL = 0.1    # seconds between looks for the answer of an estimate or a profile
+NO_WORKER = "the worker is not running (findaline.py worker, or findaline.py web without --no-worker)"
 APP_DIST = os.path.join(os.path.dirname(os.path.abspath(__file__)), "viewer", "dist")
 
 
@@ -116,7 +118,6 @@ def create_app(data_dir: str, token: Optional[str] = None, port: int = PORT, sta
     from sse_starlette import EventSourceResponse
 
     import runs as rn
-    import search
 
     token = token or secrets.token_urlsafe(24)
     jobs = Jobs(data_dir)
@@ -168,30 +169,27 @@ def create_app(data_dir: str, token: Optional[str] = None, port: int = PORT, sta
         except ValueError as e:
             raise HTTPException(400, str(e))
 
+    async def quick(kind: str, request: Dict):
+        """The answer of the worker's quick lane (jobs.QUICK) to a task: added to the table `quick`
+        and awaited without holding a thread, so the server does no search work itself."""
+        if not await run_in_threadpool(jobs.worker_alive):
+            raise HTTPException(503, NO_WORKER)
+        task = await run_in_threadpool(jobs.quick_add, kind, request)
+        looked = time.monotonic()
+        while (answer := await run_in_threadpool(jobs.quick_take, task)) is None:
+            await asyncio.sleep(QUICK_POLL)
+            if time.monotonic() - looked > 5:
+                looked = time.monotonic()
+                if not await run_in_threadpool(jobs.worker_alive):
+                    await run_in_threadpool(jobs.quick_forget, task)
+                    raise HTTPException(503, NO_WORKER)
+        if answer["code"] != 200:
+            raise HTTPException(answer["code"], answer["body"])
+        return answer["body"]
+
     @app.post("/api/estimate")
     async def estimate(body: Dict):
-        request = parse(body)
-
-        def work():
-            messages = []
-            params = search_params(request)
-            folder = os.path.join(data_dir, "work", "estimates", uuid.uuid4().hex)  # one per request
-            try:
-                paths = search.Paths(data_dir, folder)
-                plan = search.plan_search(params, paths, lambda kind, text: messages.append([kind, text]))
-                result = search.estimate_search(plan)
-            finally:
-                shutil.rmtree(folder, ignore_errors=True)
-            from area import Polygon, size_km2
-            return {"messages": messages, "reasons": result.reasons, "download_mb": round(result.download_mb),
-                    "work_gb": round(result.work_gb, 2), "source": plan.source.name,
-                    "tiles": len(plan.tiles) if plan.tiles else 1, "resolution": plan.resolution,
-                    "km2": size_km2(plan.area.geometry) if isinstance(plan.area, Polygon) else None,
-                    "area": plan.area.shape_wgs84().__geo_interface__}  # drawn on the map before the start
-        try:
-            return await run_in_threadpool(work)
-        except (ValueError, search.SearchError) as e:
-            raise HTTPException(400, str(e))
+        return await quick("estimate", parse(body))
 
     @app.post("/api/jobs")
     async def add_job(body: Dict):
@@ -302,11 +300,10 @@ def create_app(data_dir: str, token: Optional[str] = None, port: int = PORT, sta
         request = {"osm": {"action": action, "region": region}}
         return {"id": jobs.add(request, f"OSM {action}: {region}")}
 
-    profile_lock = threading.Lock()
-
     @app.get("/api/profile")
     async def line_profile(request: Request, run: str, line: str):
-        """The profile of a line of a saved run, computed from the cached data (search.profile_of_line).
+        """The profile of a line of a saved run, computed from the cached data (search.profile_of_line,
+        in the worker's quick lane).
 
         A GET that costs computing time: it needs the X-Findaline-Profile header, which a
         foreign website cannot send without a CORS preflight this server does not allow.
@@ -317,23 +314,12 @@ def create_app(data_dir: str, token: Optional[str] = None, port: int = PORT, sta
         if os.path.basename(run) != run or run in ("", ".", "..") or not os.path.isfile(meta_path):
             raise HTTPException(404, "no such run")
         try:
-            lat1, lon1, lat2, lon2 = (float(v) for v in line.split(","))
+            points = [float(v) for v in line.split(",")]
         except ValueError:
+            points = []
+        if len(points) != 4 or not all(math.isfinite(v) for v in points):
             raise HTTPException(400, "line: lat1,lon1,lat2,lon2")
-        with open(meta_path, encoding="utf-8") as f:
-            meta = json.load(f)
-
-        def work():
-            with profile_lock:  # one at a time: each builds grids around the line
-                paths = search.Paths(data_dir, cache.new_work(data_dir))
-                try:
-                    return search.profile_of_line(meta, paths, (lat1, lon1), (lat2, lon2))
-                finally:
-                    cache.remove_work(paths.work)
-        try:
-            return await run_in_threadpool(work)
-        except (ValueError, search.SearchError) as e:
-            raise HTTPException(400, str(e))
+        return await quick("profile", {"run": run, "line": points})  # one at a time in the quick lane
 
     app.mount("/app", StaticFiles(directory=APP_DIST), name="app")
     app.mount("/runs", StaticFiles(directory=runs_dir), name="runs")
