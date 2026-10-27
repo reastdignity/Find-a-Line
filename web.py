@@ -4,7 +4,8 @@ opens the browser.
 
 - The page (viewer/src/app) picks a point or draws an area, fills in the parameters
   (the form comes from params.SearchParams), shows the estimate and queues the search.
-- Jobs wait in a queue (jobs.py; jobs.sqlite in the data folder). Each job runs in its own
+- Jobs wait in a queue (jobs.py; jobs.sqlite in the data folder). The worker (jobs.Scheduler,
+  in this process unless --no-worker, else `findaline.py worker`) runs each job in its own
   process, in two phases: downloading its data (search.download_data) and computing
   (the search itself). One job computes at a time, as it uses all cores and much
   memory; the next job may download its data meanwhile. Jobs can be cancelled.
@@ -203,7 +204,7 @@ def create_app(data_dir: str, token: Optional[str] = None, port: int = PORT, sta
 
     @app.get("/api/jobs")
     def list_jobs():
-        return {"jobs": jobs.all(), "seq": jobs.last_seq()}
+        return {"jobs": jobs.all(), "seq": jobs.last_seq(), "worker": jobs.worker_alive()}
 
     @app.get("/api/jobs/{job_id}")
     def get_job(job_id: str):
@@ -231,7 +232,8 @@ def create_app(data_dir: str, token: Optional[str] = None, port: int = PORT, sta
 
     @app.delete("/api/jobs/{job_id}")
     def cancel(job_id: str):
-        if not scheduler.cancel(job_id):
+        """A waiting job is cancelled at once, a running one by its worker (which kills its processes)."""
+        if not jobs.request_cancel(job_id):
             raise HTTPException(409, "the job is not waiting or running")
         return {"ok": True}
 
@@ -242,13 +244,20 @@ def create_app(data_dir: str, token: Optional[str] = None, port: int = PORT, sta
         last = request.headers.get("last-event-id", "")
         start = max(since, int(last) if last.isdigit() else 0)
 
+        def look(seq: int):
+            return jobs.events(seq), jobs.worker_alive()
+
         async def stream():
             # sse-starlette ends the generator when the client goes away (or the server stops)
-            seq = start
+            seq, worker = start, None
             while True:
-                for event in await run_in_threadpool(jobs.events, seq):
+                found, alive = await run_in_threadpool(look, seq)
+                for event in found:
                     seq = event["seq"]
                     yield {"id": str(seq), "data": json.dumps(event)}
+                if alive != worker:  # whether a worker runs: no id, it is not a stored event
+                    worker = alive
+                    yield {"data": json.dumps({"kind": "worker", "data": {"alive": alive}})}
                 await asyncio.sleep(TICK)
         # A comment every PING seconds keeps proxies from closing a quiet stream and finds dead
         # connections; a client that takes no data for SEND_TIMEOUT seconds is dropped
@@ -360,11 +369,13 @@ def main(argv: List[str]) -> int:
     parser.add_argument("--port", type=int, default=PORT, help=f"port on 127.0.0.1 (default {PORT})")
     parser.add_argument("--no-browser", action="store_true", help="do not open the browser")
     parser.add_argument("--data-dir", help="data folder (default: FINDALINE_DATA or the folder of the scripts)")
+    parser.add_argument("--no-worker", action="store_true",
+                        help="do not run the worker in this process; `findaline.py worker` runs the searches")
     args = parser.parse_args(argv)
     import uvicorn
     data = cache.data_dir(args.data_dir)
     cache.check_layout(os.path.join(data, "cache"))
-    app = create_app(data, port=args.port)
+    app = create_app(data, port=args.port, start_scheduler=not args.no_worker)
     url = f"http://127.0.0.1:{args.port}/"
     print(f"Find-a-Line is running at {url} (close this window or press Ctrl+C to stop it)")
     if not args.no_browser:

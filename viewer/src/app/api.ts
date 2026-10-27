@@ -81,7 +81,7 @@ export const api = {
   schema: () => call<{fields: Field[]; groups: Record<string, string>}>("GET", "/api/schema"),
   estimate: (request: SearchRequest) => call<Estimate>("POST", "/api/estimate", request),
   start: (request: SearchRequest) => call<{id: string}>("POST", "/api/jobs", request),
-  jobs: () => call<{jobs: Job[]; seq: number}>("GET", "/api/jobs"),
+  jobs: () => call<{jobs: Job[]; seq: number; worker: boolean}>("GET", "/api/jobs"),
   jobEvents: (id: string) => call<{events: JobEvent[]}>("GET", `/api/jobs/${encodeURIComponent(id)}/events`),
   cancel: (id: string) => call<{ok: boolean}>("DELETE", `/api/jobs/${encodeURIComponent(id)}`),
   job: (id: string) => call<Job & {request: SearchRequest & {osm?: unknown}}>("GET", `/api/jobs/${encodeURIComponent(id)}`),
@@ -92,9 +92,15 @@ export const api = {
     call<{id: string}>("POST", "/api/osm", {action, region}),
 };
 
-/** Events of all jobs after `since` (Server-Sent Events, reconnected by the browser). */
-export function subscribe(since: number, onEvent: (event: JobEvent) => void): () => void {
+/** Events of all jobs after `since` (Server-Sent Events, reconnected by the browser), and whether
+ *  a worker runs (sent when the stream starts and when it changes). */
+export function subscribe(since: number, onEvent: (event: JobEvent) => void,
+                          onWorker: (alive: boolean) => void): () => void {
   const source = new EventSource(`/api/events?since=${since}`);
-  source.onmessage = (message) => onEvent(JSON.parse(message.data));
+  source.onmessage = (message) => {
+    const event = JSON.parse(message.data);
+    if (event.kind === "worker") onWorker(event.data.alive);
+    else onEvent(event);
+  };
   return () => source.close();
 }

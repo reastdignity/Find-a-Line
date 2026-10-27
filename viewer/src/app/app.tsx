@@ -40,6 +40,7 @@ function App() {
   const [tab, setTab] = useState<Tab>("search");
   const [jobs, setJobs] = useState<JobView[]>([]);
   const [error, setError] = useState("");
+  const [worker, setWorker] = useState(true);  // whether a worker runs the searches
   const [editing, setEditing] = useState<{request: SearchRequest | null; key: number}>({request: null, key: 0});
   const edit = (id: string) => api.job(id).then((job) => {
     setEditing((e) => ({request: job.request, key: e.key + 1}));  // a new form with the job's values
@@ -52,9 +53,10 @@ function App() {
     setPlace(placeMap);
     api.schema().then(setSchema, (e) => setError(e.message));
     let stop = () => {};
-    api.jobs().then(({jobs: listed, seq}) => {
+    api.jobs().then(({jobs: listed, seq, worker: alive}) => {
       setJobs(listed.map((j) => ({...j, bars: {}, log: [], step: ""})));
-      stop = subscribe(seq, (event) => setJobs((current) => apply(current, event)));
+      setWorker(alive);
+      stop = subscribe(seq, (event) => setJobs((current) => apply(current, event)), setWorker);
     }, (e) => setError(e.message));
     return () => stop();
   }, []);
@@ -71,6 +73,9 @@ function App() {
         <button class={tab === "osm" ? "fa-on" : ""} onClick={() => setTab("osm")}>OSM</button>
       </div>
       {error && <p class="fa-error">{error}</p>}
+      {!worker && <p class="fa-error fa-no-worker">The worker is not running: searches wait in the queue
+        until it starts (<code>findaline.py worker</code>, or <code>findaline.py web</code> without
+        --no-worker).</p>}
       <div class="fa-panel-body">
         <div hidden={tab !== "search"}>
           {place && schema && <SearchForm key={editing.key} initial={editing.request} place={place}

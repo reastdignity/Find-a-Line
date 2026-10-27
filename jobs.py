@@ -1,33 +1,48 @@
 """
-The job queue of the web application and its worker processes.
+The job queue of the web application and its worker.
 
-- Jobs: the queue and the events of the jobs (jobs.sqlite in the data folder).
-- Scheduler: starts one process per job and phase (run_phase): one downloading and one
-  computing job at a time.
-- run_phase: a worker process; its stdout becomes "info" events (_EventWriter), the
-  progress goes as "progress" events.
+- Jobs: the queue and the events of the jobs (jobs.sqlite in the data folder), and the
+  leases of the workers.
+- Scheduler: the worker. `findaline.py worker` runs it as its own process, `findaline.py
+  web` in a thread of its own unless it gets --no-worker. It starts one process per job
+  and phase (run_phase): one downloading and one computing job at a time. It holds a
+  lease in the table `workers` and renews it every HEARTBEAT seconds; the running jobs
+  of a worker whose lease expired are failed by the next worker that looks (so a
+  restart of the web server does not touch the jobs of a separate worker).
+- Cancelling sets jobs.cancel_requested; the worker running the job kills its whole
+  process tree (psutil) and marks it cancelled. A waiting job is cancelled at once.
+- run_phase: a phase in its own process; its stdout becomes "info" events
+  (_EventWriter), the progress goes as "progress" events.
 """
 
 import contextlib
 import json
 import multiprocessing
 import os
+import signal
+import socket
 import sqlite3
 import sys
 import threading
 import time
 import uuid
 from datetime import datetime
-from typing import Dict, List, Optional
+from typing import Dict, Iterable, List, Optional, Set
 
 import cache
 import params as pm
 
 TICK = 0.5                # seconds between looks at the queue
 PROGRESS_INTERVAL = 0.3   # seconds between progress events of a job
+HEARTBEAT = 5.0           # seconds between renewals of a worker's lease
+LEASE = 30.0              # seconds a lease lasts without a renewal
 # What a job is doing; "ready" means its data is downloaded and it waits to compute
 ACTIVE = ("downloading", "computing")
+WAITING = ("queued", "ready")
+FINISHED = ("done", "failed", "cancelled")
 PHASE_STATUS = {"download": "downloading", "compute": "computing"}  # the status each phase works in
+INTERRUPTED = ("interrupted: the app was closed (a tiled area resumes where it stopped when it is "
+               "started again)")
 # The schema of jobs.sqlite, one step per version (cache.migrate; never change a released step).
 # Version 1 is the schema from before the versions: such a database (user_version 0)
 # already has these tables, so the step only marks it, and its jobs stay.
@@ -40,7 +55,16 @@ MIGRATIONS = [
     # 2: the events of one job (the log of the page) and the next job of a status (claim)
     """CREATE INDEX IF NOT EXISTS events_job ON events (job, seq);
        CREATE INDEX IF NOT EXISTS jobs_status ON jobs (status, created);""",
+    # 3: the worker running a job, cancelling through the database, the leases of the workers
+    """ALTER TABLE jobs ADD COLUMN worker_id TEXT;
+       ALTER TABLE jobs ADD COLUMN cancel_requested INTEGER NOT NULL DEFAULT 0;
+       CREATE TABLE workers (id TEXT PRIMARY KEY, pid INTEGER, host TEXT, started TEXT, expires REAL);""",
 ]
+
+
+def _in(values: Iterable) -> str:
+    """Placeholders for an SQL IN (...) of these values."""
+    return "(" + ", ".join("?" * len(tuple(values))) + ")"
 
 
 class Jobs:
@@ -87,8 +111,8 @@ class Jobs:
     def waiting_or_running(self) -> List[Dict]:
         """The jobs not finished yet, with their requests."""
         with self._db() as db:
-            rows = db.execute("SELECT * FROM jobs WHERE status IN ('queued', 'ready', 'downloading', "
-                              "'computing')").fetchall()
+            rows = db.execute(f"SELECT * FROM jobs WHERE status IN {_in(WAITING + ACTIVE)}",
+                              WAITING + ACTIVE).fetchall()
         return [dict(r) for r in rows]
 
     @contextlib.contextmanager
@@ -107,28 +131,36 @@ class Jobs:
         finally:
             db.close()
 
-    def claim(self, waiting: str, status: str) -> Optional[Dict]:
+    def claim(self, waiting: str, status: str, worker_id: Optional[str] = None) -> Optional[Dict]:
         """Take the oldest job of the status `waiting` and set it to `status` (None if there is none).
 
         One statement in one write transaction, so two workers never take the same job.
         """
         with self._write() as db:
-            rows = db.execute("UPDATE jobs SET status = ? WHERE id = (SELECT id FROM jobs WHERE status = ? "
-                              "ORDER BY created, rowid LIMIT 1) AND status = ? RETURNING *",
-                              (status, waiting, waiting)).fetchall()
+            rows = db.execute("UPDATE jobs SET status = ?, worker_id = ? WHERE id = (SELECT id FROM jobs "
+                              "WHERE status = ? AND cancel_requested = 0 ORDER BY created, rowid LIMIT 1) "
+                              "AND status = ? RETURNING *", (status, worker_id, waiting, waiting)).fetchall()
         if not rows:
             return None
         self.event(rows[0]["id"], "status", {"status": status})
         return dict(rows[0])
 
-    def set(self, job_id: str, status: str, **fields):
-        if status in ("done", "failed", "cancelled"):
+    def set(self, job_id: str, status: str, when: Optional[Iterable[str]] = None, **fields) -> bool:
+        """Set the status (and other columns) of a job; with `when` only if its status is one of
+        those (e.g. a phase that ends must not overwrite a job cancelled meanwhile). Whether it changed."""
+        if status in FINISHED:
             fields["finished"] = datetime.now().isoformat(timespec="seconds")
-        names = ", ".join(f"{k} = ?" for k in fields)
+        names = "".join(f", {k} = ?" for k in fields)
+        condition, values = "", ()
+        if when is not None:
+            values = tuple(when)
+            condition = f" AND status IN {_in(values)}"
         with self._db() as db:
-            db.execute(f"UPDATE jobs SET status = ?{', ' + names if names else ''} WHERE id = ?",
-                       (status, *fields.values(), job_id))
-        self.event(job_id, "status", {"status": status, **fields})
+            changed = db.execute(f"UPDATE jobs SET status = ?{names} WHERE id = ?{condition}",
+                                 (status, *fields.values(), job_id, *values)).rowcount
+        if changed:
+            self.event(job_id, "status", {"status": status, **fields})
+        return bool(changed)
 
     def event(self, job_id: str, kind: str, data):
         with self._db() as db:
@@ -147,13 +179,79 @@ class Jobs:
         with self._db() as db:
             return db.execute("SELECT COALESCE(MAX(seq), 0) FROM events").fetchone()[0]
 
-    def interrupted(self):
-        """Jobs that were running when the app was closed."""
+    # --- Workers and their leases ---
+
+    def register(self, worker_id: str):
+        """A worker starts: its lease."""
         with self._db() as db:
-            ids = [r[0] for r in db.execute(f"SELECT id FROM jobs WHERE status IN {ACTIVE}")]
-        for job_id in ids:
-            self.set(job_id, "failed", error="interrupted: the app was closed (a tiled area resumes "
-                                             "where it stopped when it is started again)")
+            db.execute("INSERT OR REPLACE INTO workers (id, pid, host, started, expires) VALUES (?, ?, ?, ?, ?)",
+                       (worker_id, os.getpid(), socket.gethostname(), datetime.now().isoformat(timespec="seconds"),
+                        time.time() + LEASE))
+
+    def heartbeat(self, worker_id: str) -> bool:
+        """Renew a worker's lease; False if it had expired already (its jobs may have been failed)."""
+        now = time.time()
+        with self._db() as db:
+            return bool(db.execute("UPDATE workers SET expires = ? WHERE id = ? AND expires > ?",
+                                   (now + LEASE, worker_id, now)).rowcount)
+
+    def unregister(self, worker_id: str):
+        with self._db() as db:
+            db.execute("DELETE FROM workers WHERE id = ?", (worker_id,))
+
+    def worker_alive(self) -> bool:
+        """Whether any worker holds a lease (the page says so when none does)."""
+        with self._db() as db:
+            return db.execute("SELECT 1 FROM workers WHERE expires > ? LIMIT 1", (time.time(),)).fetchone() is not None
+
+    def interrupted(self, worker_id: Optional[str] = None) -> List[str]:
+        """Fail the running jobs of workers that are gone: whose lease expired (or of no worker,
+        from before the leases), or those of `worker_id` when it stops. Returns their ids."""
+        now = time.time()
+        with self._write() as db:
+            if worker_id:
+                rows = db.execute(f"SELECT id FROM jobs WHERE status IN {_in(ACTIVE)} AND worker_id = ?",
+                                  (*ACTIVE, worker_id))
+            else:
+                rows = db.execute(f"SELECT id FROM jobs WHERE status IN {_in(ACTIVE)} AND (worker_id IS NULL "
+                                  "OR worker_id NOT IN (SELECT id FROM workers WHERE expires > ?))", (*ACTIVE, now))
+            ids = [r[0] for r in rows.fetchall()]
+            db.execute("DELETE FROM workers WHERE expires <= ?", (now - LEASE,))  # long gone
+        return [job_id for job_id in ids if self.set(job_id, "failed", when=ACTIVE, error=INTERRUPTED)]
+
+    # --- Cancelling ---
+
+    def request_cancel(self, job_id: str) -> bool:
+        """Cancel a job: a waiting one (or one whose worker is gone) at once, a running one through
+        its worker (cancel_requested). False if it is not waiting or running."""
+        with self._write() as db:
+            row = db.execute("SELECT status, worker_id FROM jobs WHERE id = ?", (job_id,)).fetchone()
+            if not row or row["status"] not in WAITING + ACTIVE:
+                return False
+            alive = db.execute("SELECT 1 FROM workers WHERE id = ? AND expires > ?",
+                               (row["worker_id"], time.time())).fetchone()
+            now = row["status"] in WAITING or not alive
+            finished = datetime.now().isoformat(timespec="seconds")
+            if now:
+                db.execute("UPDATE jobs SET status = 'cancelled', finished = ? WHERE id = ?", (finished, job_id))
+            else:
+                db.execute("UPDATE jobs SET cancel_requested = 1 WHERE id = ?", (job_id,))
+        if now:
+            self.event(job_id, "status", {"status": "cancelled", "finished": finished})
+        return True
+
+    def cancel_requested(self, job_ids: Iterable[str]) -> Set[str]:
+        """Which of these jobs are to be cancelled; jobs that wait with the request are cancelled
+        here (a download that ended just after it)."""
+        job_ids = tuple(job_ids)
+        with self._db() as db:
+            waiting = [r[0] for r in db.execute(f"SELECT id FROM jobs WHERE cancel_requested = 1 AND status IN "
+                                                f"{_in(WAITING)}", WAITING)]
+            found = {r[0] for r in db.execute(f"SELECT id FROM jobs WHERE cancel_requested = 1 AND id IN "
+                                              f"{_in(job_ids)}", job_ids)} if job_ids else set()
+        for job_id in waiting:
+            self.set(job_id, "cancelled", when=WAITING)
+        return found
 
 
 # --- The worker: one process per job and phase ------------------------------------------
@@ -185,7 +283,8 @@ def search_params(request: Dict) -> pm.SearchParams:
 
 
 def run_phase(data_dir: str, job_id: str, phase: str):
-    """A worker process: download the data of a job, or compute it."""
+    """A worker process: download the data of a job, or compute it. It ends the phase only if the
+    job is still in it (not cancelled or failed by the worker meanwhile)."""
     import requests
 
     import progress as pg
@@ -198,6 +297,7 @@ def run_phase(data_dir: str, job_id: str, phase: str):
     sys.stdout = _EventWriter(jobs, job_id)
     pg.TEXT_INTERVAL = float("inf")  # the progress goes to the page as events, not as text
     last = [0.0]
+    working = (PHASE_STATUS[phase],)
 
     def on_progress(state: Dict):
         if state["done"] or time.time() - last[0] >= PROGRESS_INTERVAL:
@@ -218,7 +318,7 @@ def run_phase(data_dir: str, job_id: str, phase: str):
                 osmextract.download(paths.cache, region)
             else:
                 osmextract.update(paths.cache, region, dict(osmextract.extracts(paths.cache))[region])
-            jobs.set(job_id, "done", error=None)
+            jobs.set(job_id, "done", when=working, error=None)
             failed = False
             return
         params = search_params(request)
@@ -237,17 +337,18 @@ def run_phase(data_dir: str, job_id: str, phase: str):
                 os.makedirs(jobs.folder(job_id), exist_ok=True)
                 with open(tile_file, "w", encoding="utf-8") as f:
                     json.dump(plan.tile_core, f)
-            jobs.set(job_id, "ready")
+            jobs.set(job_id, "ready", when=working)
         else:
             lines, run = search.search_lines(plan)
             result = search.save_run(plan, lines, lambda kind, text: True, run)
-            jobs.set(job_id, "done", run_id=result.run["id"], error=None)
+            jobs.set(job_id, "done", when=working, run_id=result.run["id"], error=None)
         failed = False
     except (search.SearchError, ValueError, RuntimeError, requests.RequestException) as e:  # ValueError: parameters
-        jobs.set(job_id, "failed", error=cache.clean_error(e))
+        jobs.set(job_id, "failed", when=working, error=cache.clean_error(e))
         failed = False
     except Exception as e:  # anything else: keep the work folder to look at
-        jobs.set(job_id, "failed", error=f"{type(e).__name__}: {cache.clean_error(e)} (working grids kept in {paths.work})")
+        jobs.set(job_id, "failed", when=working,
+                 error=f"{type(e).__name__}: {cache.clean_error(e)} (working grids kept in {paths.work})")
         raise
     finally:
         if not failed:
@@ -256,60 +357,130 @@ def run_phase(data_dir: str, job_id: str, phase: str):
             cache.remove_work(paths.work)
 
 
-class Scheduler:
-    """Starts the worker processes: one downloading and one computing job at a time."""
+def kill_tree(pid: int):
+    """Kill a process and every process it started (download pools, numba, GDAL helpers)."""
+    import psutil
+    try:
+        parent = psutil.Process(pid)
+        processes = parent.children(recursive=True) + [parent]
+    except psutil.NoSuchProcess:
+        return
+    for process in processes:
+        with contextlib.suppress(psutil.NoSuchProcess):
+            process.kill()
+    psutil.wait_procs(processes, timeout=30)
 
-    def __init__(self, jobs: Jobs):
+
+class Scheduler:
+    """The worker: starts the processes of the jobs, one downloading and one computing job at a time."""
+
+    def __init__(self, jobs: Jobs, worker_id: Optional[str] = None):
         self.jobs = jobs
+        self.worker_id = worker_id or f"{socket.gethostname()}-{os.getpid()}-{uuid.uuid4().hex[:6]}"
         self.running: Dict[str, tuple] = {}  # phase -> (job id, process)
         self.lock = threading.Lock()
         self.context = multiprocessing.get_context("spawn")  # the same on every OS
         self.stopped = threading.Event()
+        self.beat = 0.0  # time of the last heartbeat
 
     def start(self):
-        self.jobs.interrupted()
+        """Run the worker in a thread of this process (findaline.py web)."""
+        self._begin()
         threading.Thread(target=self._loop, daemon=True).start()
 
+    def run(self):
+        """Run the worker in this thread until stop() (findaline.py worker)."""
+        self._begin()
+        try:
+            self._loop()
+        finally:
+            self.stop()
+
+    def _begin(self):
+        self.jobs.register(self.worker_id)
+        self.beat = time.time()
+        self.jobs.interrupted()  # jobs of workers that are gone
+
     def stop(self):
+        """Stop gracefully: kill the running phases, mark their jobs interrupted, give up the lease."""
         self.stopped.set()
         with self.lock:
-            for _, process in self.running.values():
-                process.kill()
+            self._kill_all()
+            self.jobs.unregister(self.worker_id)
+
+    def _kill_all(self):
+        for phase, (job_id, process) in list(self.running.items()):
+            kill_tree(process.pid)
+            process.join()
+            del self.running[phase]
+        self.jobs.interrupted(self.worker_id)
 
     def _loop(self):
         while not self.stopped.wait(TICK):
             with self.lock:
+                if self.stopped.is_set():
+                    break
+                self._heartbeat()
                 self._check()
 
+    def _heartbeat(self):
+        if time.time() - self.beat < HEARTBEAT:
+            return
+        if not self.jobs.heartbeat(self.worker_id):
+            # The lease expired (the computer slept, the database was locked): another worker may
+            # have failed our jobs already; stop them and start over
+            self._kill_all()
+            self.jobs.register(self.worker_id)
+        self.beat = time.time()
+        self.jobs.interrupted()  # jobs of other workers that are gone
+
     def _check(self):
+        for job_id in self.jobs.cancel_requested(job_id for job_id, _ in self.running.values()):
+            for phase, (running_id, process) in list(self.running.items()):
+                if running_id == job_id:
+                    kill_tree(process.pid)
+                    process.join()
+                    del self.running[phase]
+            self.jobs.set(job_id, "cancelled", when=ACTIVE + WAITING)
         for phase, (job_id, process) in list(self.running.items()):
             if process.is_alive():
                 continue
             process.join()
             del self.running[phase]
-            job = self.jobs.get(job_id)
             # Ended without a word. Only the job's status of this phase tells that: a download
             # process sets "ready" and may take a moment to exit, while the job already computes
-            if job and job["status"] == PHASE_STATUS[phase]:
-                self.jobs.set(job_id, "failed", error=f"the worker stopped (exit code {process.exitcode})")
+            self.jobs.set(job_id, "failed", when=(PHASE_STATUS[phase],),
+                          error=f"the worker stopped (exit code {process.exitcode})")
         for phase, waiting, status in (("download", "queued", "downloading"), ("compute", "ready", "computing")):
             if phase not in self.running:
-                job = self.jobs.claim(waiting, status)
+                job = self.jobs.claim(waiting, status, self.worker_id)
                 if job:
                     process = self.context.Process(target=run_phase, args=(self.jobs.data_dir, job["id"], phase),
                                                    daemon=True)
                     process.start()
                     self.running[phase] = (job["id"], process)
 
-    def cancel(self, job_id: str) -> bool:
-        with self.lock:
-            job = self.jobs.get(job_id)
-            if not job or job["status"] in ("done", "failed", "cancelled"):
-                return False
-            for phase, (running_id, process) in list(self.running.items()):
-                if running_id == job_id:
-                    process.kill()
-                    process.join()
-                    del self.running[phase]
-            self.jobs.set(job_id, "cancelled")
-            return True
+
+def main(argv: List[str]) -> int:
+    """findaline.py worker: the worker of the web app as its own process."""
+    import argparse
+    parser = argparse.ArgumentParser(
+        prog="findaline.py worker",
+        description="The worker of the web app: runs the queued searches (start the server with "
+                    "`findaline.py web --no-worker`).")
+    parser.add_argument("--data-dir", help="data folder (default: FINDALINE_DATA or the folder of the scripts)")
+    args = parser.parse_args(argv)
+    data = cache.data_dir(args.data_dir)
+    cache.check_layout(os.path.join(data, "cache"))
+    scheduler = Scheduler(Jobs(data))
+    # SIGTERM (docker stop, systemd) stops it like Ctrl+C: the running phases are killed and
+    # their jobs marked interrupted (a tiled area resumes when it is started again)
+    for name in ("SIGTERM", "SIGBREAK"):  # SIGBREAK: Ctrl+Break, or a service stopped on Windows
+        if hasattr(signal, name):
+            signal.signal(getattr(signal, name), lambda *_: scheduler.stopped.set())
+    print(f"Find-a-Line worker {scheduler.worker_id} is running on {data} (Ctrl+C to stop it)", flush=True)
+    try:
+        scheduler.run()
+    except KeyboardInterrupt:
+        pass
+    return 0

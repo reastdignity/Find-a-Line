@@ -1,6 +1,7 @@
 """The web application (web.py): what it refuses, and a job through the queue with
 real worker processes (offline: local files, any request goes to a closed port)."""
 
+import contextlib
 import json
 import os
 import sys
@@ -209,7 +210,7 @@ def test_job_through_the_queue(tmp_path, monkeypatch):
     job = jobs.add({"params": params, "geometry": None}, "clip")
     other = jobs.add({"params": params, "geometry": None}, "clip again")
     scheduler = Scheduler(jobs)
-    assert scheduler.cancel(other)
+    assert jobs.request_cancel(other)
     scheduler.start()
     try:
         deadline = time.time() + 300
@@ -256,6 +257,131 @@ def test_download_process_ending_late(tmp_path):
     scheduler.running["compute"] = (job, _Ended())
     scheduler._check()
     assert jobs.get(job)["status"] == "failed"
+
+
+def test_worker_leases(tmp_path):
+    """Only jobs of workers whose lease expired (or of no worker) count as interrupted; a web
+    server starting and stopping its own worker leaves the jobs of another worker alone;
+    cancelling a running job goes through its worker, unless that worker is gone."""
+    import jobs as jb
+    jobs = Jobs(str(tmp_path))
+    ids = {name: jobs.add({"params": {}, "geometry": None}, name) for name in ("alive", "expired", "old")}
+    jobs.register("w-alive")
+    jobs.register("w-expired")
+    with jobs._db() as db:
+        db.execute("UPDATE workers SET expires = ? WHERE id = 'w-expired'", (time.time() - 1,))
+        for name, worker in (("alive", "w-alive"), ("expired", "w-expired"), ("old", None)):
+            db.execute("UPDATE jobs SET status = 'computing', worker_id = ? WHERE id = ?", (worker, ids[name]))
+    assert not jobs.heartbeat("w-expired") and jobs.heartbeat("w-alive")
+    assert sorted(jobs.interrupted()) == sorted([ids["expired"], ids["old"]])
+    assert jobs.get(ids["expired"])["error"] == jb.INTERRUPTED and jobs.get(ids["old"])["status"] == "failed"
+    assert jobs.get(ids["alive"])["status"] == "computing"
+
+    app = web.create_app(str(tmp_path), token=TOKEN)  # its own worker in a thread
+    with TestClient(app) as client:
+        assert client.get("/api/jobs").json()["worker"]
+        assert app.state.scheduler.worker_id in {r["id"] for r in jobs._db().execute("SELECT id FROM workers")}
+        assert client.delete(f"/api/jobs/{ids['alive']}", headers={"x-findaline-token": TOKEN}).status_code == 200
+    assert jobs.get(ids["alive"])["status"] == "computing" and jobs.get(ids["alive"])["cancel_requested"] == 1
+    assert app.state.scheduler.worker_id not in {r["id"] for r in jobs._db().execute("SELECT id FROM workers")}
+    jobs.unregister("w-alive")
+    assert not jobs.worker_alive()
+    other = jobs.add({"params": {}, "geometry": None}, "other")
+    jobs.claim("queued", "downloading", "w-alive")
+    assert jobs.request_cancel(other) and jobs.get(other)["status"] == "cancelled"  # its worker is gone
+    assert not jobs.request_cancel(other)
+
+
+@contextlib.contextmanager
+def _black_hole():
+    """A proxy that accepts connections and never answers (a request through it hangs until its timeout)."""
+    import socket
+    import threading
+    server = socket.socket()
+    server.bind(("127.0.0.1", 0))
+    server.listen(16)
+    held = []
+
+    def accept():
+        with contextlib.suppress(OSError):
+            while True:
+                held.append(server.accept()[0])
+    threading.Thread(target=accept, daemon=True).start()
+    try:
+        yield f"http://127.0.0.1:{server.getsockname()[1]}"
+    finally:
+        server.close()
+        for connection in held:
+            connection.close()
+
+
+def _wait(jobs, job_id, statuses, seconds=60):
+    deadline = time.time() + seconds
+    while jobs.get(job_id)["status"] not in statuses and time.time() < deadline:
+        time.sleep(0.2)
+    return jobs.get(job_id)
+
+
+def _phases(pid: int) -> list:
+    """The phase processes (multiprocessing spawn) below a worker process."""
+    import psutil
+    found = []
+    for process in psutil.Process(pid).children(recursive=True):
+        with contextlib.suppress(psutil.Error):
+            if "spawn_main" in " ".join(process.cmdline()):
+                found.append(process)
+    return found
+
+
+def test_worker_process(tmp_path, monkeypatch):
+    """`findaline.py worker` as its own process: a restart of the web server (with its own worker)
+    leaves its running job alone, cancelling kills the job's processes, and stopping the worker
+    (Ctrl+Break here, SIGTERM on Linux) kills them too and marks the job interrupted."""
+    import signal
+    import subprocess
+
+    import psutil
+    with _black_hole() as proxy:
+        env = dict(os.environ, HTTP_PROXY=proxy, HTTPS_PROXY=proxy, NO_PROXY="", PYTHONIOENCODING="utf-8")
+        jobs = Jobs(str(tmp_path))
+        hanging = {"params": {"area": "osm:Nowhere at all"}, "geometry": None}  # Nominatim never answers
+        job = jobs.add(hanging, "hanging")
+        flags = subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0
+        worker = subprocess.Popen([sys.executable, "findaline.py", "worker", "--data-dir", str(tmp_path)], cwd=REPO,
+                                  env=env, creationflags=flags, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                  text=True, encoding="utf-8")
+        try:
+            assert _wait(jobs, job, ("downloading",))["status"] == "downloading"
+            external = jobs.get(job)["worker_id"]
+            for _ in range(2):  # the web server restarted, with its own worker
+                with TestClient(web.create_app(str(tmp_path), token=TOKEN)) as client:
+                    assert client.get("/api/jobs").json()["worker"]
+            assert jobs.get(job)["status"] == "downloading" and jobs.get(job)["worker_id"] == external
+            deadline = time.time() + 60
+            while not _phases(worker.pid) and time.time() < deadline:
+                time.sleep(0.2)
+            phase = _phases(worker.pid)
+            assert phase
+
+            with TestClient(web.create_app(str(tmp_path), token=TOKEN, start_scheduler=False)) as client:
+                assert client.delete(f"/api/jobs/{job}", headers={"x-findaline-token": TOKEN}).status_code == 200
+            assert _wait(jobs, job, ("cancelled", "failed"), 30)["status"] == "cancelled"
+            assert not any(p.is_running() and p.status() != psutil.STATUS_ZOMBIE for p in phase)
+
+            second = jobs.add(hanging, "second")
+            assert _wait(jobs, second, ("downloading",))["status"] == "downloading"
+            if os.name == "nt":
+                worker.send_signal(signal.CTRL_BREAK_EVENT)
+            else:
+                worker.terminate()
+            worker.wait(60)
+            assert jobs.get(second)["status"] == "failed", jobs.get(second)
+            assert not jobs.worker_alive()
+        finally:
+            if worker.poll() is None:
+                worker.kill()
+            output = worker.communicate()[0]
+    assert "worker" in output, output
 
 
 def _clip_run(tmp_path, monkeypatch, *extra) -> str:
@@ -386,7 +512,6 @@ MEASURE_SCRIPT = """
 """
 
 
-import contextlib  # noqa: E402
 
 
 @contextlib.contextmanager
@@ -433,6 +558,8 @@ def test_event_stream(tmp_path, monkeypatch):
                 lines.append(response.fp.readline().decode("utf-8").rstrip("\r\n"))
             connection.close()
             data = [json.loads(line[5:]) for line in lines if line.startswith("data:")]
+            assert {"kind": "worker", "data": {"alive": False}} in data, lines  # sent without an id
+            data = [e for e in data if "seq" in e]
             assert [(e["job"], e["data"]["title"]) for e in data] == [(second, "second")], lines
             assert f"id: {data[0]['seq']}" in lines and data[0]["seq"] > seen
             assert any(line.startswith(":") for line in lines), lines  # the keep-alive
@@ -563,6 +690,7 @@ def test_app_counts_and_clears_areas(tmp_path):
     assert drawn.startswith("2 separate areas (3 shapes"), text
     assert cleared == "none, drawn no", text
     assert started == "after start: none", text
+    assert "The worker is not running" in dom  # no worker in this test
     assert _violations(dom) == []  # style-src 'self': no inline styles in the app
     jobs = Jobs(str(tmp_path))
     queued = jobs.all()
