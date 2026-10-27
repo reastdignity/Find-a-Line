@@ -89,6 +89,8 @@ Add options to the command to change what is searched. Some useful ones:
 | `--resolution 2` | Detail of the terrain in metres; 1 is the most detailed, 2 is about four times faster | 1 with detailed national data (5 in Spain, 30 elsewhere) |
 | `--nmpt reject` | Leave out lines that pass too close to trees or buildings; `--nmpt off` doesn't check trees at all (faster, less to download) | lines are marked in orange |
 | `--model sag` | Check the clearance with the webbing sag calculation instead of the simple formula; set your setup with `--pretension 3` (kN), `--stretch 4` (% at 10 kN), `--webbing-weight 60` (g/m), `--athlete-mass 75` (kg), `--fall-zone 4` (m) | simple formula |
+| `--min-height 40` | Only lines that get at least this many metres above the ground; in big mountains it keeps the outstanding lines out of thousands | all lines |
+| `--min-prominence 10` | Only lines with one anchor on a rock that stands at least this many metres out of its surroundings (a tower); the strongest way to get fewer, better lines | all lines |
 | `--name "My crag"` | Name of the search in the list | name of the place from OpenStreetMap |
 
 For example, only longer lines over cliffs, within 2 km:

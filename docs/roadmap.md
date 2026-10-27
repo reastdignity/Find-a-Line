@@ -319,6 +319,29 @@ These apply from stage 3 on, the local version included.
   - (b) **Only the representatives saved** above a number of lines, each with its group size and the ranges of length and clearance. Lost in the map: grouping again with another distance or order, filters applied before grouping, the thin variants, the view without groups; at tile borders the greedy grouping needs a band of all lines, or groups there may differ a little from one grid (R14 would need a new definition).
   - (c) **A viewer served by the app for large runs**: all lines stay in a compact file on disk; the page asks for the lines in view, variants, profiles (`/api/profile` exists) and exports when needed. Grouping of the visible part only is quick but may differ at the edges of the view from grouping the whole run; groups for the run's own distance would be computed once when saving. This reverses, for large runs only, the decision that the viewer works from `file://` for the command line too (small runs keep the static `data.js`), and frees such runs from keeping `grouping.ts` in step with Python.
 - **Proposed order**: (a) first, as the base of both; then (c); (b) only if (c) is dropped.
+- **Done meanwhile (2026-10-27)**: limits in the search that keep only prominent lines (next section), so a mountain area need not produce millions of lines; (a)-(c) stay open for searches without them.
+
+## Prominent lines (done 2026-10-27)
+In steep mountains a user wants the outstanding lines, not every line. New values per line, all saved (`lines.csv`, `data.js`), shown in the popup and filtered in the map, and the same as search limits (all off by default):
+- **Heights of the webbing above the terrain** (`height_max`, `height_mean`, `high_pct` of `--high-above` 20 m): the webbing of the clearance model (decided: with `--model sag` the chord minus the sag under the athlete, so the values follow the rigging; with the formula `min anchor − 0.15 × distance`); computed in the same pass as the clearance, so free. `--min-height`, `--min-mean-height`, `--min-high-share` drop lines right after the final check, before they become Python objects. `--group-by height` shows the highest line of a group.
+- **Angle to the wall** at both anchors (Horn gradient): `--max-wall-angle`, applied to pairs before their pixels are checked.
+- **Prominence and drop of the anchors** (`terrain.py`): prominence is the height above the level at which the anchor's rock joins terrain wider than `--prominence-span` (300 m; bounded, so tiles give one grid's values: grids and tile overlaps grow by that margin); drop is the height above the lowest terrain within `--drop-radius` (50 m). `--min-prominence` (one anchor), `--min-prominence-both`, `--min-drop` act on the anchors before the pairs, which saves the most. Union-find over all pixels: under 1 s at 2601 × 2601 px, about 20 s on a random 8000 × 8000 grid (worst case).
+- **Measured** at Montserrat (R9, 5 m, cached data, whole search with the map):
+
+  | Limit | Lines | Spots | Pairs checked | Time | data.js |
+  | --- | --- | --- | --- | --- | --- |
+  | none | 85 671 | 3 972 | 549 299 | 15.2 s | 107 MB |
+  | `--min-height 50` | 72 739 | 3 006 | 549 299 | 13.2 s | 97 MB |
+  | `--min-mean-height 30` | 73 638 | 3 054 | 549 299 | 13.4 s | 97 MB |
+  | `--min-high-share 80` | 68 500 | 2 900 | 549 299 | 12.5 s | 92 MB |
+  | `--max-wall-angle 45` | 58 778 | 3 034 | 286 739 | 10.5 s | 73 MB |
+  | `--min-prominence 10` | 1 963 | 215 | 19 945 | 1.8 s | 3 MB |
+  | `--min-prominence-both 10` | 7 | 2 | 218 | 1.3 s | 0 MB |
+  | `--min-drop 50` | 73 403 | 3 245 | 408 375 | 13.0 s | 93 MB |
+  | `--min-height 50 --min-prominence 10` | 1 581 | 169 | 19 945 | 1.8 s | 3 MB |
+
+  Montserrat's lines are high anyway (85% reach 50 m), so the height limits remove little there; the prominence of an anchor (towers) cuts the lines 40-fold. At Żabi Koń, a tower joined to the hillside by a high saddle, the prominence is mostly 0–6 m (17 m at most) and the drop (25–50 m) shows its exposure better: neither measure alone describes every "prominent" rock.
+- **Later**: `--max-spots N` (the N best spots instead of thresholds), access (distance of the anchors from an OSM path or road, a new `highway` theme), skipping low pairs already in `_line_ok` if pairs ever become the cost.
 
 ## Open pits and other terraced walls (looked at 2026-10-25, Bełchatów)
 - The Bełchatów and Szczerców pits (200–250 m deep, walls of benches, about 20° overall) gave lines of 1.1 km at most, all near the bottom: the rims have no pixels of 45° or more, and with 5.5 kN and 70 g/m the sag is about 45 m at 1 km, 114 m at 2 km, 207 m at 3 km and 475 m at 5 km, deeper than the pits for lines from rim to rim. With 10 kN and 45° lines of up to 1.9 km appear across the Bełchatów pit.
