@@ -17,6 +17,12 @@ Planned features and the decisions already made for them. Nothing here is implem
 | Large areas | One run and one map per area, computed tile by tile inside; an interrupted run resumes from the last finished tile. |
 | Web application | FastAPI + job queue + separate worker (option A below). |
 | Result viewer | A static viewer (JS/CSS + per-run JSON data) replaces the folium-generated `map.html` in stage 3. |
+| Public hosting (stage 4, 2026-10-27) | The user's home Linux server with a public IP, behind the existing SWAG reverse proxy (nginx, Certbot, fail2ban); a Caddyfile for deployments without SWAG later. The local mode (`start.bat`, no sign-in, 127.0.0.1) stays as it is. |
+| Accounts (stage 4) | OAuth with GitHub and Google through Authlib; a new account is `pending` until an admin approves it. An admin can lift the limits of a user (`users.unlimited`) without making them admin. |
+| Storage (stage 4) | SQLite (WAL) and the local disk on one machine; no Postgres, Redis or object storage (only with a second machine). Schema versions with `PRAGMA user_version`; whether a change gets an automatic migration is decided per change. |
+| Runs in public (stage 4) | Private to their owner, shared by an unguessable link (renewable, revocable); an admin can mark a run as a public demo. |
+| Orthophoto in public (stage 4) | Ordinary users get a cache limited per job; above the limit the map loads the orthophoto online. |
+| Own code or library (stage 4) | Popular, maintained libraries first (table under "Stage 4"); the job queue and the Nominatim cache stay our own. |
 
 ## Order
 Chosen to keep the cost and the risk of errors low: a safety net first, foundations before what builds on them, nothing built twice.
@@ -36,8 +42,8 @@ Chosen to keep the cost and the risk of errors low: a safety net first, foundati
    **3b done 2026-10-25**: every run also writes `lines.js` (all its lines without profiles, its CRS and area: `window.FINDALINE_LINES[id]`); `runs.js` lists runs without their data paths and outlines but with a box (`bbox`). The "Other runs" panel lists the runs with `lines.js`, those within 20 km first (box distance), the rest folded; a checked run adds its lines in its own colour (dashed over trees/buildings) and its area, loaded with a `<script>` tag. Decided: all lines of the other runs, grouped together with the current run's; when a shown run has another CRS, all lines are grouped in a local plane around the current run (otherwise in the grid CRS, exactly like Python); the choice is kept in `localStorage`. A line of another run has no profile; its popup links to its own map. Checked: the Żabi Koń clip as one run in EPSG:2180 and one reprojected to UTM 34N merges into the same spots (43 → 43), a third run nearby adds 4.
 
    **3c done 2026-10-25** (`web.py`, `viewer/src/app`): `findaline.py web` (plus `start.bat`, `start.command`, `start.sh`) serves the app on 127.0.0.1:8765. The page: the map (click a centre, draw polygons/rectangles with Leaflet-Geoman, an uploaded GeoJSON/KML/GPX shown on the map, or coast/cliffs/osm:name with buffer and within), the form generated from `SearchParams` (cli_only fields left out), *Estimate* (`estimate_search`), *Start*; a queue with live progress (SSE) and cancelling; the list of runs. Jobs are rows of `jobs.sqlite` in the data folder with their events; each phase runs in its own `spawn` process: `search.download_data` (new: the layers, the water mask and the coastline of the area, no grids) and then the search, one computing and one downloading at a time; a drawn area is saved in the job folder and named after the place. Guards: Host must be 127.0.0.1/localhost, changing requests need the session token of the page, CSP without inline scripts, no file paths from the web, `/cache/` serves orthophoto tiles only. Maps are served from `/runs/` and link back to the app. Added later: the *OSM* tab (regions at the map centre from the Geofabrik index, download and update as queue jobs); theme tiles count as covered when what the extracts leave out is open sea. Not done: a page of its own for the results (the run maps are used), stopping a running job other than by killing its process, limits on area and time per job (the user confirms the estimate; limits come with the public version), KML/GPX are read by GDAL (no defusedxml).
-8. **Docker and CI** (taken out of stage 3, later): the `Dockerfile` and GitHub Actions on three platforms (see "Installation and platforms").
-9. **Stage 4** (public website): last, after the licences (FABDEM non-commercial, Malta) are checked and Overpass/Nominatim have own instances or caching.
+8. **Docker and CI** (taken out of stage 3; planned 2026-10-27 as part of stage 4, section 4 below): three branches, `cgroup-limits` (memory and cores from the cgroup), `ci` (GitHub Actions on Linux and Windows, macOS if it passes without changes; `pip-audit`, `npm audit`, `docker build`) and `docker` (multi-stage image, `compose.yaml` with `web` and `worker` from one image, hardened containers).
+9. **Stage 4** (public website, decided 2026-10-27): the sections below, one branch each, in this order (see "Stage 4: public website"). The licences (FABDEM, Malta) are settled in section 6; Overpass is replaced by the Geofabrik extracts and Nominatim/Overpass get shared rate limits instead of own instances (see "Deferred").
 
 Rules for every step:
 - A commit is either a refactoring or a behaviour change, never both; only then do the regression tests tell something.
@@ -78,9 +84,55 @@ Rules for every step:
 - Static viewer: one JS/CSS bundle shared by all runs. Data per run comes as JSON (lines, groups, profiles), plus `lines.js` for `file://`. Grouping and the `Sag` port move from the Jinja templates in `mapping.py` into this bundle, and stay in sync with Python as today.
 - One job computes at a time (it uses all cores and much RAM); the next job may already download its data meanwhile. The others wait in the queue and can be cancelled. Each job has its own `work/<job-id>/`; concurrent downloads need WAL mode in `index.sqlite` and a lock so the same tile is not fetched twice.
 
-## Stage 4: public website (later)
-- Docker Compose: reverse proxy with TLS (Caddy), API, worker(s), Postgres, Redis, object storage for results.
-- Accounts (to be decided: invitations, OAuth, or anonymous with a quota), per-user quotas, admin view of jobs.
+## Stage 4: public website
+Decided 2026-10-27 (decisions in the table at the top). Supersedes the earlier sketch (Caddy, Postgres, Redis, object storage for results): one machine with SQLite and the local disk behind the existing SWAG; Postgres/Redis only with a second machine.
+
+Why it is much work: today the security rests on listening on 127.0.0.1 and on one user. The page token stops CSRF but authenticates nobody; jobs, events and runs are shared (`/runs` serves the whole folder, `run.json` and pickles included); the estimate only advises and the worker answers "yes" to every question; circles are never tiled; NaN/Inf pass validation; `osm:<name>` and `within` call Nominatim/Overpass in the server process before any estimate; uploads are read by GDAL with any driver (an OGR VRT can read server files); server paths, exception texts and possibly the OpenTopography key leak into events and errors; run ids can collide between users.
+
+Threat model: anonymous scanners; a malicious signed-in user (CPU, RAM and disk exhaustion, other users' data, abuse of Nominatim, Overpass and the data services); XSS and CSRF through foreign content, login CSRF included; after a possible RCE in a container, reaching the home LAN.
+
+**Sections** (one branch each, merged into `main` in order; the lines of `lines.csv` and their checksums must not change: new limits in `search.py` are off by default and only the web app turns them on):
+1. `web-hardening` (both modes, no accounts): queue and worker moved to `jobs.py`; finite values and sane ranges in `SearchParams`; drawn areas as a validated geometry field (no GDAL, no files in `work/`); KML/GPX/GeoJSON read in the browser (`/api/area-file` and `python-multipart` gone); URLs in errors without query strings; unique run ids; viewer without inline styles (`style-src 'self'`); OSM extracts of countries and smaller only; temporary files from `tempfile`.
+2. `web-worker`: `PRAGMA user_version` helper; SSE through `sse-starlette`; atomic job claim; `findaline.py worker` as its own process with a lease, cancelling by a column, killing the process tree; a work folder per job; estimates and profiles in a worker process ("quick" lane); time limits per phase (`limits.py`); housekeeping.
+3. `web-public-mode` (public mode without accounts: everything but the page answers 401): `--public` with `PublicSettings`, `TrustedHostMiddleware`, `Origin` check, trusted proxy, security headers; `Limits` on request values; optional limits in `plan_search`/`_lines` before costly work (pixels, tiles, anchors, lines, the estimate in MB and km²); no server paths in public events.
+4. Docker and CI: `cgroup-limits`, `ci`, `docker` (item 8 above).
+5. `web-accounts`: sign-in with GitHub and Google (Authlib), own revocable sessions; jobs belong to their user (FastAPI dependencies, a test that every non-public route has one); run files behind access control (a `StaticFiles` subclass with a whitelist); share links `/s/<token>/`; demo runs and the anonymous page; quotas and rate limits with three account levels (user, user without limits, admin); admin tab; audit log, privacy and about pages.
+6. `public-licences` (licence and attribution per source, in the run panel, the map and `ATTRIBUTION.txt`) and `public-osm-limits` (Nominatim 1 request/s and Overpass one at a time across processes; Nominatim cache with expiry of failed answers).
+7. `deploy-home`: SWAG proxy config (`client_max_body_size`, `limit_req`, SSE without buffering, gzip, masked `/s/<token>` in the log), a fail2ban jail, separate Docker networks for `web` and `worker`; `docs/deployment.md` (SWAG, firewall incl. `DOCKER-USER` rules against the LAN, OAuth registration, backups with `sqlite3 .backup` + `restic`); README "Public site".
+8. `security-review` before opening the ports: `/security-review`, `pip-audit`, `npm audit`, OWASP ZAP baseline, a second account trying to reach other users' data; then SSL Labs and the headers.
+
+**Libraries of this stage**
+| For | Library | Section |
+| --- | --- | --- |
+| KML/GPX/GeoJSON in the browser | `@tmcw/togeojson` (bundled) | 1 |
+| structure of a drawn geometry (RFC 7946) | `geojson-pydantic`, plus own vertex and depth limits | 1 |
+| event stream | `sse-starlette` (keepalive, disconnects, `send_timeout`) | 2 |
+| settings and `Limits` from env and Docker secrets | `pydantic-settings` | 2 |
+| Host check | `TrustedHostMiddleware` (Starlette) | 3 |
+| direct imports from Starlette | `starlette` as an explicit dependency, ≥ 1.3.1 (CVE fixes) | 3 |
+| OAuth GitHub and Google | `authlib` (≥ 1.8, client on `httpx2`), `itsdangerous` | 5 |
+| run files with access control | `StaticFiles` subclass (Starlette) | 5 |
+| rate limits in the web process | `limits` (memory) | 5 |
+| Nominatim 1/s, Overpass one at a time, across processes | `pyrate-limiter` (`SQLiteBucket`) and `filelock` | 6 |
+| off-site backups | `restic` (tool) | 7 |
+
+FastAPI and Starlette stay pinned in `uv.lock` and are raised deliberately (FastAPI is 0.x and releases often). Own code stays where libraries fit worse: sessions (must be revocable, which a signed cookie is not; FastAPI-Users is in maintenance mode and needs SQLAlchemy), CSRF (`starlette-csrf` has no release since 2023), the job queue, the Nominatim cache, migrations (`user_version`), the admin tab, the audit log, reading the cgroup.
+
+**Migrations of this stage** (each in its own commit):
+| Data | Change | Migration |
+| --- | --- | --- |
+| `jobs.sqlite` | new columns (`worker_id`, `cancel_requested`, `user_id`), tables, indexes | automatic on opening; job history kept |
+| `nominatim.sqlite` | time of each answer (failed searches expire) | automatic; existing rows count as successful |
+| existing runs | new id format (suffix), `lines.geojson` without paths | none: old ids keep working, old files stay |
+| existing runs in public mode | owner table `runs` | automatic: at start runs without a row belong to the first admin, private; nothing is deleted |
+| `cache/` | no layout change (`LAYOUT` stays 1) | not needed |
+
+**Deferred**
+- An audit log viewer in the UI (the admin reads the log with `sqlite3`), a round-robin queue between users, overriding single limits per user, `--max-spots`.
+- CI on macOS, if Linux and Windows suffice.
+- A Caddyfile (a self-contained compose with its proxy) for deployments without SWAG.
+- Very large runs (numpy columns, a viewer served by the app; see "Very large areas"); this stage only limits the lines and compresses.
+- **Own Nominatim and Overpass instances.** Used for: Nominatim for `osm:<name>`, run names and `country_code`; Overpass for the `coastline`/`cliff` theme tiles, which the Geofabrik extracts already replace. Needed when the traffic exceeds the public instances' policies despite the cache, quotas and limiters, or for areas without extracts. Cost (estimates): Nominatim is PostgreSQL+PostGIS, for the planet ≥ 64 GB RAM and about 900 GB NVMe, a country much less; Overpass for a region tens of GB of disk and a few GB of RAM; both need updating with diffs. A cheaper step first: `country_code` from the outlines of the Geofabrik index (to check at borders where the outlines overlap).
 
 ## New data sources
 Researched 2026-10-25 (how: docs/data-sources.md). Order: Slovakia (DSM needs a hosted copy, see below), then Switzerland (done first, 2026-10-26: it needed no hosting); Greece has no usable national source. The USA was researched on 2026-10-26 (below); nothing is planned for it yet.
@@ -228,12 +280,12 @@ The goal is Windows, Linux and macOS (Intel and Apple Silicon), installable by p
 
 - **One lock file, two ways to run it.** `pyproject.toml` + `uv.lock` (uv) replace `requirements.txt`; both ways below install exactly the same versions.
   - **Users, R&D, Windows:** install uv with one command, then double-click `start.bat` / `start.command` (macOS) / `start.sh` (Linux). uv downloads the right Python by itself, so there is no system Python, PATH, venv or PEP 668 trouble (Debian 12 ships Python 3.11, the project needs 3.12+). setup-for-regular-folk.md shrinks to two steps.
-  - **Docker (maintainer, server):** multi-stage `Dockerfile`. The build stage uses the official uv image and `uv sync --frozen`; the runtime stage is slim, has no uv and runs as non-root. `docker compose up` runs the local version (one container, SQLite); stage 4 adds Postgres/Redis to the same image. Keep the data folder (`cache/`, `runs/`, `work/`) in a Docker volume, not a bind-mounted Windows folder (memmap is much slower there), and give Docker Desktop enough RAM and cores.
+  - **Docker (maintainer, server):** multi-stage `Dockerfile`. The build stage uses the official uv image and `uv sync --frozen`; the runtime stage is slim, has no uv and runs as non-root. `docker compose up` runs the public version: `web` and `worker` from the same image, SQLite in one data volume (stage 4; no Postgres/Redis on one machine). Keep the data folder (`cache/`, `runs/`, `work/`) in a Docker volume, not a bind-mounted Windows folder (memmap is much slower there), and give Docker Desktop enough RAM and cores.
 - **Platform rules for the code:**
   - The worker is a separate process and uses the `spawn` start method on every OS, so Linux behaves like Windows/macOS. (Python 3.14 changes the Linux default to `forkserver`.)
   - Each job gets its own work folder, and memmapped files are closed before they are deleted: Windows cannot delete or overwrite an open file.
   - `pathlib` for paths; `webbrowser` to open the browser.
-- **CI**: GitHub Actions on `windows-latest`, `macos-latest` and `ubuntu-latest` runs a small search on a fixture raster (no network) and starts the web server, plus a Docker build.
+- **CI**: GitHub Actions on `ubuntu-latest` and `windows-latest` (`macos-latest` too if it passes without changes; else deferred) runs `pytest` (fixture rasters, no network, the web app) and the viewer checks, plus a Docker build and `pip-audit` / `npm audit`.
 - **macOS:** a downloaded `start.command` may need right-click → Open the first time (Gatekeeper) and can lose its executable bit when unzipped; the guide covers both.
 - **Resources** are shown before a search: the cache needs several GB (the OSM water polygons alone are 1.2 GB), large areas need a lot of RAM.
 - Not planned: signed installers (PyInstaller/Briefcase), which mean 300–500 MB packages, SmartScreen/Gatekeeper warnings without paid signing, and antivirus false positives. The public website (stage 4) is the no-install option.
@@ -255,21 +307,21 @@ The static viewer (stage 3) is written in **TypeScript**.
 ## Web architecture: options considered
 | | Pros | Cons |
 | --- | --- | --- |
-| **A. FastAPI + queue + worker (chosen)** | Typed validation with limits (pydantic); OpenAPI docs; heavy computing never blocks the server; the same code runs locally (SQLite queue) and publicly (Postgres/Redis); easy to add endpoints. | Accounts, CSRF and rate limiting come from extra libraries; more dependencies. |
+| **A. FastAPI + queue + worker (chosen)** | Typed validation with limits (pydantic); OpenAPI docs; heavy computing never blocks the server; the same code runs locally and publicly (SQLite queue on one machine; Postgres/Redis only with a second one); easy to add endpoints. | Accounts, CSRF and rate limiting come from extra libraries; more dependencies. |
 | B. Django + Celery / Django-Q | Best security defaults (accounts, CSRF, sessions, headers), admin panel, migrations. | Heavy for a single-purpose tool; live progress needs Channels or polling; most work up front. |
 | C. Flask + HTMX | Least code at the start. | Security assembled from extensions, easy to miss something; long jobs still need a queue; grows messy. |
 | D. Computing in the browser (Pyodide/WASM) | No server cost, nothing to trust. | Large rewrite (Web Workers instead of multiprocessing), slower; WCS services may block CORS (a proxy is needed anyway); large areas impossible. |
 
 ## Security
-These apply from stage 3 on, the local version included.
-- **Abuse of computing power is the main risk.** Every request goes through `estimate_search` with limits on area, pairs, minimum resolution and time. Jobs have a timeout and can be killed; the queue has per-user limits; the public version adds rate limiting.
-- **No file paths over the web.** `--elevation-file`, `--surface-file` and `--data-dir` are CLI only. Results are addressed by UUID, with no directory listing.
+These apply from stage 3 on, the local version included. *Not yet* marks what stage 3 does not do (checked 2026-10-27) and names the stage-4 section that implements it.
+- **Abuse of computing power is the main risk.** Every request goes through `estimate_search` with limits on area, pairs, minimum resolution and time. Jobs have a timeout and can be killed; the queue has per-user limits; the public version adds rate limiting. *Not yet*: the estimate only advises and the worker confirms everything (limits enforced: section 3); no job timeouts, killing only by ending the process (section 2); per-user limits and rate limiting (section 5).
+- **No file paths over the web.** `--elevation-file`, `--surface-file` and `--data-dir` are CLI only. Results are addressed by UUID, with no directory listing. *Not yet*: run ids are a date and a name, guessable and able to collide (section 1: random suffix; section 5: share tokens); `/runs` serves the whole folder (section 5); server paths appear in events, `run.json` and `lines.geojson` (sections 1 and 3).
 - **No user-supplied URLs.** The server talks to a fixed list of services only (SSRF).
-- **Uploads**: size limit, vertex limit, KML/GPX parsed with `defusedxml` (XXE).
-- **XSS / CSP**: names from Nominatim and user input are escaped. The static viewer allows a strict Content-Security-Policy without inline scripts.
-- **The local server is reachable by any website the user visits** (CSRF, DNS rebinding). The server checks the `Host` and `Origin` headers and requires a session token.
-- **Secrets** (OpenTopography key) stay in server environment variables and never reach results or logs.
-- **Public deployment**: HTTPS only, security headers, non-root read-only containers, pinned dependencies checked with `pip-audit`, audit log.
+- **Uploads**: size limit, vertex limit, KML/GPX parsed with `defusedxml` (XXE). *Not yet*: uploads are read by GDAL with any driver, without a vertex limit. Replaced in section 1: KML/GPX/GeoJSON are parsed in the browser (`@tmcw/togeojson`), the server takes a geometry checked by `geojson-pydantic` with vertex and depth limits, so `defusedxml` is not needed; the body size is limited by SWAG (section 7).
+- **XSS / CSP**: names from Nominatim and user input are escaped. The static viewer allows a strict Content-Security-Policy without inline scripts. *Not yet*: inline styles in popups and `runs/index.html`, run ids not escaped in links (section 1: `style-src 'self'`).
+- **The local server is reachable by any website the user visits** (CSRF, DNS rebinding). The server checks the `Host` and `Origin` headers and requires a session token. *Not yet*: the `Origin` check (section 3).
+- **Secrets** (OpenTopography key) stay in server environment variables and never reach results or logs. *Not yet*: a `requests` error can carry the key in its URL (section 1: URLs without query strings).
+- **Public deployment**: HTTPS only, security headers, non-root read-only containers, pinned dependencies checked with `pip-audit`, audit log. *Not yet*: all of it (sections 3, 4, 5, 7).
 - **No shell anywhere**: the worker calls `run_search()` directly.
 
 ## To check
@@ -287,8 +339,10 @@ These apply from stage 3 on, the local version included.
   - ÚGKK SR (Slovakia, ALS models and ZBGIS orthophoto): CC BY 4.0, author ÚGKK SR (the licence PDF in the ZIPs; the WMS capabilities say the same).
   - OSM: ODbL, attribution.
   - Esri World Imagery: Esri Master License Agreement; the layer is not meant for offline tile export (there is a separate "for Export" layer), so it stays online only.
-- **Public services:** the public Nominatim and Overpass instances forbid heavy use. A public site needs caching or its own instances.
-- **Accounts** (stage 4): a decision, not a check; to be made when stage 4 starts.
+- **FABDEM licence, to check (stage 4, section 6)**: the two places disagree. `sources.py` (source `europe`, `note`) says "FABDEM is free for non-commercial use only (Non-Commercial Government Licence)"; the licence list above says "CC BY-NC-SA 4.0 (non-commercial only; stated for V1-0 ...)". Check which applies to V1-2 and what NC-SA requires of a public site and its results, then fix the source's description.
+- **Tile policies for a public site, to check**: Esri World Imagery (terms of use for a public, non-commercial web app, attribution, request volume) and the OSM tile servers (tile usage policy: valid `Referer`/User-Agent, no heavy use, attribution; possibly another tile provider).
+- **Public services:** the public Nominatim and Overpass instances forbid heavy use. Decided for stage 4: the Nominatim cache, shared rate limiters (section 6), Geofabrik extracts instead of Overpass on the server; own instances deferred (see "Stage 4", Deferred).
+- **Accounts** (stage 4): decided 2026-10-27 (OAuth with admin approval, see Decisions).
 
 ## Resampling to the working resolution (measured 2026-10-26)
 - **What is cached**: only the data as the services deliver it (Polish sheets at 1 m, Malta tiles at `fetch_res` 1 m, Spain at 5 m, swisstopo files at 0.5 and 2 m); the same files serve every working resolution. The two fixed conversions on download (MDS05's 5.0045 m grid to 5 m, Malta 2018 served at 1 m by the WCS) do not depend on the chosen resolution. Bringing the data onto the working grid happens in every search, into `work/<id>/` (`nmt.npy`, `nmpt.npy`, masks), deleted when the search ends.
