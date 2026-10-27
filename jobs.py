@@ -8,6 +8,7 @@ The job queue of the web application and its worker processes.
   progress goes as "progress" events.
 """
 
+import contextlib
 import json
 import multiprocessing
 import os
@@ -36,6 +37,9 @@ MIGRATIONS = [
            run_id TEXT, error TEXT, finished TEXT);
        CREATE TABLE IF NOT EXISTS events (
            seq INTEGER PRIMARY KEY AUTOINCREMENT, job TEXT, kind TEXT, data TEXT);""",
+    # 2: the events of one job (the log of the page) and the next job of a status (claim)
+    """CREATE INDEX IF NOT EXISTS events_job ON events (job, seq);
+       CREATE INDEX IF NOT EXISTS jobs_status ON jobs (status, created);""",
 ]
 
 
@@ -87,10 +91,35 @@ class Jobs:
                               "'computing')").fetchall()
         return [dict(r) for r in rows]
 
-    def next(self, status: str) -> Optional[Dict]:
-        with self._db() as db:
-            row = db.execute("SELECT * FROM jobs WHERE status = ? ORDER BY created LIMIT 1", (status,)).fetchone()
-        return dict(row) if row else None
+    @contextlib.contextmanager
+    def _write(self):
+        """A connection in one BEGIN IMMEDIATE transaction: committed at the end, rolled back on an error."""
+        db = self._db()
+        db.isolation_level = None  # our own BEGIN / COMMIT
+        try:
+            db.execute("BEGIN IMMEDIATE")
+            try:
+                yield db
+                db.execute("COMMIT")
+            except BaseException:
+                db.execute("ROLLBACK")
+                raise
+        finally:
+            db.close()
+
+    def claim(self, waiting: str, status: str) -> Optional[Dict]:
+        """Take the oldest job of the status `waiting` and set it to `status` (None if there is none).
+
+        One statement in one write transaction, so two workers never take the same job.
+        """
+        with self._write() as db:
+            rows = db.execute("UPDATE jobs SET status = ? WHERE id = (SELECT id FROM jobs WHERE status = ? "
+                              "ORDER BY created, rowid LIMIT 1) AND status = ? RETURNING *",
+                              (status, waiting, waiting)).fetchall()
+        if not rows:
+            return None
+        self.event(rows[0]["id"], "status", {"status": status})
+        return dict(rows[0])
 
     def set(self, job_id: str, status: str, **fields):
         if status in ("done", "failed", "cancelled"):
@@ -265,9 +294,8 @@ class Scheduler:
                 self.jobs.set(job_id, "failed", error=f"the worker stopped (exit code {process.exitcode})")
         for phase, waiting, status in (("download", "queued", "downloading"), ("compute", "ready", "computing")):
             if phase not in self.running:
-                job = self.jobs.next(waiting)
+                job = self.jobs.claim(waiting, status)
                 if job:
-                    self.jobs.set(job["id"], status)
                     process = self.context.Process(target=run_phase, args=(self.jobs.data_dir, job["id"], phase),
                                                    daemon=True)
                     process.start()

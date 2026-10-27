@@ -165,6 +165,28 @@ def test_jobs_database_migrated(tmp_path):
     db.close()
 
 
+def test_claim_is_atomic(tmp_path):
+    """Workers taking jobs at the same time (each with its own connection) never take one twice,
+    and take them oldest first."""
+    from concurrent.futures import ThreadPoolExecutor
+    jobs = Jobs(str(tmp_path))
+    added = [jobs.add({"params": {}, "geometry": None}, f"job {i}") for i in range(30)]
+
+    def take(_):
+        mine = []
+        while (job := Jobs(str(tmp_path)).claim("queued", "downloading")) is not None:
+            mine.append(job["id"])
+        return mine
+    with ThreadPoolExecutor(6) as pool:
+        taken = [job for mine in pool.map(take, range(6)) for job in mine]
+    assert sorted(taken) == sorted(added) and len(set(taken)) == len(added)
+    assert all(jobs.get(j)["status"] == "downloading" for j in added)
+    first = jobs.add({"params": {}, "geometry": None}, "first")
+    jobs.add({"params": {}, "geometry": None}, "second")
+    assert jobs.claim("queued", "downloading")["id"] == first
+    assert jobs.claim("ready", "computing") is None
+
+
 def test_schema_has_no_file_fields(client):
     names = {f["name"] for f in client.get("/api/schema").json()["fields"]}
     assert {"lat", "radius", "model", "ortho"} <= names
