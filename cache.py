@@ -30,12 +30,14 @@ A file downloaded again with the same content keeps its fetch time (only the che
 time changes), so the fetch time says when the data last changed.
 """
 
+import contextlib
 import hashlib
 import os
 import re
 import shutil
 import sqlite3
 import sys
+import tempfile
 from datetime import datetime, timedelta, timezone
 from typing import Dict, Iterable, List, Optional
 
@@ -54,6 +56,24 @@ SCHEMA = """CREATE TABLE IF NOT EXISTS files (
     status TEXT NOT NULL,       -- ok | missing
     url TEXT, fetched_at TEXT, checked_at TEXT, last_used_at TEXT,
     etag TEXT, last_modified TEXT, sha256 TEXT, source_date TEXT, processing INTEGER)"""
+
+
+@contextlib.contextmanager
+def replacing(path: str, mode: str = "wb", **kwargs):
+    """A file that replaces `path` once it is written completely: written under a unique
+    temporary name next to it (tempfile, so searches, downloads and the web worker never
+    share one) and moved over `path` at the end; removed if writing fails."""
+    tmp = tempfile.NamedTemporaryFile(mode, dir=os.path.dirname(path) or ".", prefix=os.path.basename(path) + ".",
+                                      suffix=".part", delete=False, **kwargs)
+    try:
+        with tmp as f:
+            yield f
+        os.chmod(tmp.name, 0o644)  # tempfile creates it readable by its owner only (POSIX)
+        os.replace(tmp.name, path)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.remove(tmp.name)
+        raise
 
 
 def data_dir(arg: Optional[str] = None) -> str:

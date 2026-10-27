@@ -131,12 +131,11 @@ def world_polygons(cache_dir: str, update: Optional[str] = None) -> str:
         archive = os.path.join(folder, "water-polygons-split-4326.zip")
         total = int(response.headers.get("content-length", 0))
         progress.download.start("OSM water polygons (world)", total / 1e6, unit="MB")
-        with open(archive + ".part", "wb") as f:
+        with cache.replacing(archive) as f:
             for chunk in response.iter_content(chunk_size=1 << 20):
                 f.write(chunk)
                 progress.download.update(len(chunk) / 1e6)
         progress.download.finish()
-    os.replace(archive + ".part", archive)
     with zipfile.ZipFile(archive) as z:
         z.extractall(folder)
     os.remove(archive)

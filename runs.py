@@ -31,6 +31,7 @@ from urllib.parse import quote
 
 import requests
 
+import cache
 import osm
 
 MAX_FEATURE_DEG = 0.2  # about 20 km; larger natural features are not used in run names
@@ -262,7 +263,8 @@ def _listed(run: Dict) -> Dict:
 def write_index(runs_dir: str):
     """Rewrite runs.js (used by the maps) and index.html from the saved runs."""
     runs = list_runs(runs_dir)
-    with open(os.path.join(runs_dir, "runs.js"), "w", encoding="utf-8") as f:
+    # Written whole, then moved over the old files: a map or the app never reads half a list
+    with cache.replacing(os.path.join(runs_dir, "runs.js"), "w", encoding="utf-8") as f:
         f.write("window.FINDALINE_RUNS = ")
         json.dump([_listed(r) for r in runs], f, ensure_ascii=False)
         f.write(";\n")
@@ -285,7 +287,7 @@ def write_index(runs_dir: str):
 
     import mapping
     mapping.install_viewer(runs_dir)  # its index.css styles the page (no inline styles: the CSP)
-    with open(os.path.join(runs_dir, "index.html"), "w", encoding="utf-8") as f:
+    with cache.replacing(os.path.join(runs_dir, "index.html"), "w", encoding="utf-8") as f:
         f.write(f"""<!doctype html>
 <html><head><meta charset="utf-8"><title>Find-a-Line runs</title>
 <link rel="stylesheet" href="{mapping.VIEWER_FOLDER}/index.css">

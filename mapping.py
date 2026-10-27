@@ -12,6 +12,7 @@ from typing import Dict, List, Optional, Tuple
 import numpy as np
 from pyproj import Transformer
 
+import cache
 from grid import Grid
 from helpers import HIGH_ABOVE, LEASH_FALL, SLOPE, Line
 from progress import progress
@@ -196,9 +197,8 @@ def install_viewer(runs_dir: str):
         with open(source, "rb") as f:
             content = f.read()
         if not os.path.exists(copy) or open(copy, "rb").read() != content:
-            with open(copy + ".part", "wb") as f:
+            with cache.replacing(copy) as f:
                 f.write(content)
-            os.replace(copy + ".part", copy)
 
 
 MAP_HTML = """<!doctype html>

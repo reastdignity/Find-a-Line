@@ -400,3 +400,19 @@ def test_run_ids_and_public_meta(tmp_path):
     saved = json.loads(open(os.path.join(first["path"], "lines.geojson"), encoding="utf-8").read())["findaline"]
     assert saved["data"] == [{"layer": "NMT", "folder": "poland/nmt", "files": 2}]
     assert json.load(open(os.path.join(first["path"], "run.json"), encoding="utf-8")) == meta  # run.json keeps them
+
+
+def test_replacing(tmp_path):
+    """A file written under a unique temporary name replaces the old one only when complete."""
+    path = tmp_path / "runs.js"
+    path.write_text("old", encoding="utf-8")
+    with cache.replacing(str(path), "w", encoding="utf-8") as a, cache.replacing(str(path), "w", encoding="utf-8") as b:
+        assert a.name != b.name and path.read_text(encoding="utf-8") == "old"  # two writers, two files
+        a.write("first")
+        b.write("second")
+    assert path.read_text(encoding="utf-8") == "first"  # the writer that finished last (b closes first)
+    with pytest.raises(ValueError):
+        with cache.replacing(str(path)) as f:
+            f.write(b"half")
+            raise ValueError("failed")
+    assert path.read_text(encoding="utf-8") == "first" and os.listdir(tmp_path) == ["runs.js"]

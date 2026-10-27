@@ -72,10 +72,8 @@ def theme_path(cache_dir: str, theme: str, lat: float, lon: float) -> str:
 
 def write_tile(path: str, features: List[Dict]):
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    tmp = f"{path}.{os.getpid()}.part"
-    with open(tmp, "w", encoding="utf-8") as f:
+    with cache.replacing(path, "w", encoding="utf-8") as f:
         json.dump({"type": "FeatureCollection", "features": features}, f)
-    os.replace(tmp, path)
 
 
 def fetch_tile(theme: str, lat: float, lon: float, cache_dir: str):

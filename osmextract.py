@@ -43,9 +43,8 @@ def _index(cache_dir: str, refresh: bool = False) -> Dict[str, Dict]:
         response = requests.get(INDEX_URL, headers=HEADERS, timeout=120)
         response.raise_for_status()
         os.makedirs(os.path.dirname(path), exist_ok=True)
-        with open(path + ".part", "wb") as f:
+        with cache.replacing(path) as f:
             f.write(response.content)
-        os.replace(path + ".part", path)
         cache.record(cache_dir, path, url=INDEX_URL, last_modified=response.headers.get("Last-Modified"))
     with open(path, encoding="utf-8") as f:
         return {feature["properties"]["id"]: feature for feature in json.load(f)["features"]}
@@ -200,9 +199,8 @@ def _take_features(pbf: str, out: str, timestamp: str):
         for name in item["themes"]:
             themes[name].append(feature)
     progress.compute.finish(", ".join(f"{name} {len(found)}" for name, found in themes.items()))
-    with open(out + ".part", "w", encoding="utf-8") as f:
+    with cache.replacing(out, "w", encoding="utf-8") as f:
         json.dump({"timestamp": timestamp, "themes": themes}, f)
-    os.replace(out + ".part", out)
 
 
 def _rebuild_tiles(cache_dir: str) -> int:
@@ -281,12 +279,11 @@ def download(cache_dir: str, name: str):
         response.raise_for_status()
         total = int(response.headers.get("content-length", 0))
         progress.download.start(f"OSM extract {rid}", total / 1e6, unit="MB")
-        with open(pbf + ".part", "wb") as f:
+        with cache.replacing(pbf) as f:
             for chunk in response.iter_content(chunk_size=1 << 20):
                 f.write(chunk)
                 progress.download.update(len(chunk) / 1e6)
         progress.download.finish()
-    os.replace(pbf + ".part", pbf)
     with open(outline, "w", encoding="utf-8") as f:
         json.dump(feature["geometry"], f)
     cache.record(cache_dir, outline, url=INDEX_URL)
