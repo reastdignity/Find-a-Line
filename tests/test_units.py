@@ -329,3 +329,43 @@ def test_chunked_writes_match_one_dump(tmp_path, monkeypatch):
     assert search._load_tile(path) == lines
     search._save_tile(path, [])
     assert search._load_tile(path) == []
+
+
+def _cgroup(folder, **files):
+    folder.mkdir(exist_ok=True)
+    for name, text in files.items():
+        (folder / name.replace("_", ".", 1)).write_text(text + "\n")
+    return str(folder)
+
+
+def test_cgroup_limits(tmp_path, monkeypatch):
+    import search
+    gib = 1 << 30
+    # Docker: mem_limit 4g with 1 GiB used, a third of it droppable page cache; cpus 1.5
+    root = _cgroup(tmp_path / "limited", memory_max=str(4 * gib), memory_current=str(gib),
+                   memory_stat=f"anon {gib // 2}\ninactive_file {gib // 3}\nactive_file 1",
+                   cpu_max="150000 100000")
+    limits = search.cgroup_limits(root)
+    assert limits.memory == 4 * gib - (gib - gib // 3)
+    cpus = len(os.sched_getaffinity(0)) if hasattr(os, "sched_getaffinity") else 2
+    assert limits.cpus == min(2, cpus)
+    # No limits set, or no cgroup v2 files at all (Windows, macOS, cgroup v1)
+    unlimited = _cgroup(tmp_path / "max", memory_max="max", memory_current=str(gib), cpu_max="max 100000")
+    assert search.cgroup_limits(unlimited) == search.CgroupLimits()
+    assert search.cgroup_limits(str(tmp_path / "missing")) == search.CgroupLimits()
+
+    # The tiles follow the container's memory, the threads its quota, unless set explicitly
+    params = pm.SearchParams(lat=50, lon=19, max_length=100)
+    monkeypatch.setattr(search.psutil, "virtual_memory", lambda: type("M", (), {"available": 64 * gib})())
+    small = _cgroup(tmp_path / "small", memory_max=str(4 * gib), memory_current="0", cpu_max="100000 100000")
+    monkeypatch.setattr(search, "CGROUP_ROOT", small)
+    assert search.tile_core_size(params, 1.0) == 2000  # sqrt(4 GiB / 4 / 100 B) px less the overlaps
+    monkeypatch.delenv("NUMBA_NUM_THREADS", raising=False)
+    assert search.line_threads(params) == 1
+    assert search.line_threads(params.model_copy(update={"threads": 3})) == 3
+    monkeypatch.setenv("NUMBA_NUM_THREADS", "4")
+    assert search.line_threads(params) is None
+    monkeypatch.setattr(search, "CGROUP_ROOT", unlimited)
+    monkeypatch.delenv("NUMBA_NUM_THREADS")
+    assert search.line_threads(params) is None
+    assert search.tile_core_size(params, 1.0) == 12000

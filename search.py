@@ -66,6 +66,7 @@ TILE_MEMORY_SHARE = 0.25
 TILE_BYTES_PER_PIXEL = 100  # 64 of them, and the union-find of the anchor prominence (terrain.py)
 DOWNLOAD_MB_PER_S = 5  # for the time estimate of area searches
 MAX_MEASURED_PX = 6000  # the longest line measured on the map, in pixels (profile_of_line builds a square grid around it)
+CGROUP_ROOT = "/sys/fs/cgroup"  # cgroup v2 of this process inside a container (its own namespace)
 
 OnEvent = Callable[[str, str], None]
 Confirm = Callable[[str, str], bool]
@@ -263,13 +264,78 @@ def _overlap(params: SearchParams, res: float) -> float:
     return math.ceil(params.max_length / res) * res + _margin(params, res) + 2 * res
 
 
+@dataclass
+class CgroupLimits:
+    """What a container (cgroup v2) lets this process use; None: no limit."""
+    memory: Optional[int] = None  # bytes still free below memory.max
+    cpus: Optional[int] = None  # CPUs the quota of cpu.max and the affinity allow
+
+
+def _read(path: str) -> Optional[str]:
+    try:
+        with open(path, encoding="ascii") as f:
+            return f.read().strip()
+    except (OSError, ValueError):
+        return None
+
+
+def cgroup_limits(root: Optional[str] = None) -> CgroupLimits:
+    """Memory and CPU limits of a container (Docker's mem_limit and cpus), from the
+    cgroup v2 files under root. Missing files (Windows, macOS, cgroup v1, no
+    container) or "max" mean no limit; nothing changes outside a container then."""
+    root = root or CGROUP_ROOT
+    limits = CgroupLimits()
+    limit, used = _read(os.path.join(root, "memory.max")), _read(os.path.join(root, "memory.current"))
+    if limit and limit != "max" and used:
+        try:
+            used_bytes = int(used)
+            # The page cache that may be dropped counts as free, as in docker stats
+            for line in (_read(os.path.join(root, "memory.stat")) or "").splitlines():
+                key, _, value = line.partition(" ")
+                if key == "inactive_file":
+                    used_bytes -= int(value)
+            limits.memory = max(0, int(limit) - max(0, used_bytes))
+        except ValueError:
+            pass
+    quota = (_read(os.path.join(root, "cpu.max")) or "max").split()
+    if quota[0] != "max":
+        try:
+            period = int(quota[1]) if len(quota) > 1 else 100000
+            limits.cpus = max(1, math.ceil(int(quota[0]) / period))
+        except ValueError:
+            pass
+    if hasattr(os, "sched_getaffinity") and limits.cpus is not None:
+        limits.cpus = min(limits.cpus, len(os.sched_getaffinity(0)))
+    return limits
+
+
+def available_memory() -> int:
+    """Free memory in bytes: the machine's, or less when a container limits it."""
+    free = psutil.virtual_memory().available
+    limit = cgroup_limits().memory
+    return free if limit is None else min(free, limit)
+
+
+def line_threads(params: SearchParams) -> Optional[int]:
+    """Threads of the line search: --threads, or at most the CPUs of a container's
+    quota (numba itself takes the affinity, and NUMBA_NUM_THREADS when it is set);
+    None leaves the default of find_valid_lines (CPU count - 1)."""
+    if params.threads or "NUMBA_NUM_THREADS" in os.environ:
+        return params.threads
+    cpus = cgroup_limits().cpus
+    if cpus is None:
+        return None
+    import numba
+    return max(1, min(cpus, numba.config.NUMBA_NUM_THREADS - 1))
+
+
 def tile_core_size(params: SearchParams, res: float) -> float:
     """Side of a tile core in metres: --tile-size, or what the free memory allows
     (in steps of 500 m, so the tiles stay the same when the free memory changes a little)."""
     if params.tile_size:
         core = params.tile_size
     else:
-        side_px = math.sqrt(psutil.virtual_memory().available * TILE_MEMORY_SHARE / TILE_BYTES_PER_PIXEL)
+        side_px = math.sqrt(available_memory() * TILE_MEMORY_SHARE / TILE_BYTES_PER_PIXEL)
         core = max(500.0, math.floor((side_px * res - 2 * _overlap(params, res)) / 500) * 500)
     return max(res, math.floor(max(core, 10 * res) / res) * res)
 
@@ -470,7 +536,7 @@ def _lines(plan: Plan, data: Data, core: Optional[tuple] = None) -> Tuple[List[D
         x, y = grid.pixel_to_xy(anchors[:, 0], anchors[:, 1])
         first = (left <= x) & (x < right) & (bottom <= y) & (y < top)
     valid_lines = ls.find_valid_lines(data.elevation, data.surface, anchors, plan.resolution,
-                                      p.min_length, p.max_length, plan.nmpt, p.threads,
+                                      p.min_length, p.max_length, plan.nmpt, line_threads(p),
                                       sag_table, p.max_anchor_diff / 100, p.max_anchor_diff_m, first,
                                       p.high_above, sh.LineLimits(p.min_height, p.min_mean_height,
                                                                   p.min_high_share, p.max_wall_angle),

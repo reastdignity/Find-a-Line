@@ -184,7 +184,7 @@ Several places at once: give `--point LAT,LON` (WGS84) once per place, optionall
 | `--min-prominence` / `--min-prominence-both` | | Keep only lines with one anchor / both anchors at least this many metres prominent (see *Prominence and drop*) |
 | `--prominence-span` | 300 | Width in metres from which terrain no longer counts as the anchor's own rock |
 | `--min-drop` / `--drop-radius` | / 50 | Keep only lines whose anchors are both at least this many metres above the lowest terrain within `--drop-radius` metres |
-| `--threads` | CPU count - 1 | Number of threads for the line search |
+| `--threads` | CPU count - 1 | Number of threads for the line search (at most a container's CPU quota by default) |
 | `--model` | `formula` | Clearance model for the search: `formula` or `sag` (see *Sag Estimator*) |
 | `--pretension` / `--stretch` | 2.5 / 5 | Pretension in kN / webbing stretch at 10 kN in % |
 | `--webbing-weight` / `--athlete-mass` | 70 / 80 | Webbing weight in g/m / athlete mass in kg |
