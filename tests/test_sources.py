@@ -88,15 +88,23 @@ def test_tile_outside_the_coverage(layer, tmp_path):
     assert not os.path.exists(path)
 
 
+UGKK_CRS = ('COMPD_CS["S-JTSK [JTSK03] / Krovak East North + Baltic 1957 height",'
+            'LOCAL_CS["S-JTSK [JTSK03] / Krovak East North",UNIT["metre",1,AUTHORITY["EPSG","9001"]],'
+            'AXIS["Easting",EAST],AXIS["Northing",NORTH],AUTHORITY["EPSG","8353"]],'
+            'VERT_CS["Baltic 1957 height",VERT_DATUM["Baltic 1957",2005,AUTHORITY["EPSG","1202"]],'
+            'UNIT["metre",1,AUTHORITY["EPSG","9001"]],AXIS["Gravity-related height",UP],AUTHORITY["EPSG","8357"]]]')
+
+
 def _synthetic_zip(tmp_path):
-    """A 1 m raster in S-JTSK (EPSG:8353) with centimetre heights and a hole, zipped like ÚGKK's."""
+    """A 1 m raster in S-JTSK with centimetre heights and a hole, zipped like ÚGKK's: its CRS is
+    named only, as in the national TIFFs (no projection, so the tiles must get EPSG:8353)."""
     import zipfile
     rng = np.random.default_rng(3)
     left, top, width, height = -594413.0, -1132310.0, 5000, 3000   # pixel edges on whole metres
     band = (300 + rng.random((height, width)) * 50).round(2).astype(np.float32)
     band[:, :700] = -9999.0                                       # no data on the west
     tif = tmp_path / "t.tif"
-    with rio.open(tif, "w", driver="GTiff", width=width, height=height, count=1, dtype="float32", crs="EPSG:8353",
+    with rio.open(tif, "w", driver="GTiff", width=width, height=height, count=1, dtype="float32", crs=UGKK_CRS,
                   transform=from_origin(left, top, 1, 1), nodata=-9999.0, tiled=True, blockxsize=128,
                   blockysize=128, compress="lzw") as dst:
         dst.write(band, 1)

@@ -57,6 +57,9 @@ PRODUCTS = {
     "dmp1": {"zip": f"{BASE}/DMP1/DMP1_0_sjtsk03_bpv.zip", "member": "dmp1_0/dmp1_jtsk03.tif",
              "title": "DMP 1.0 digital surface model (with vegetation and buildings)"},
 }
+# The national TIFFs name their CRS only (a LOCAL_CS "S-JTSK [JTSK03] / Krovak East North",
+# no projection): the tiles get the EPSG code, or nothing could reproject them
+CRS = "EPSG:8353"
 TILE_M = 2000
 BLOCK = 10          # tiles per folder side
 MAX_Z_ERROR = 0.005  # metres
@@ -166,6 +169,7 @@ def cut(product: str, zips: str, root: str, rows_limit: Optional[int] = None):
         left, bottom, right, top = src.bounds
         # The tile grid must fall on pixel edges (whole metres here)
         assert abs(left - round(left)) < 1e-3 and abs(top - round(top)) < 1e-3, src.bounds
+        assert "JTSK03" in src.crs.to_wkt() and "Krovak East North" in src.crs.to_wkt(), src.crs
         nodata = src.nodata
         rows = range(math.ceil(top / TILE_M) - 1, math.floor(bottom / TILE_M) - 1, -1)  # from the top
         cols = range(math.floor(left / TILE_M), math.ceil(right / TILE_M))
@@ -194,13 +198,13 @@ def cut(product: str, zips: str, root: str, rows_limit: Optional[int] = None):
                     return None  # no data: not uploaded
                 path = os.path.join(out, tile_name(i, j))
                 os.makedirs(os.path.dirname(path), exist_ok=True)
-                _write(path, tile, src.crs, from_origin(i * TILE_M, (j + 1) * TILE_M, res, res))
+                _write(path, tile, CRS, from_origin(i * TILE_M, (j + 1) * TILE_M, res, res))
                 return _sha256(path)
 
             for i, digest in zip(todo, pool.map(save, todo)):
                 index["tiles"][f"{i}_{j}"] = digest
             del band
-            index.update(product=product, title=spec["title"], source=spec["zip"], crs="EPSG:8353",
+            index.update(product=product, title=spec["title"], source=spec["zip"], crs=CRS,
                          heights="EPSG:8357 (Baltic 1957)", tile_m=TILE_M, resolution=res, block=BLOCK,
                          encoding=f"COG LERC_ZSTD, max_z_error {MAX_Z_ERROR} m", licence="CC-BY-4.0",
                          attribution="ÚGKK SR", created=datetime.date.today().isoformat())
