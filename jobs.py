@@ -134,15 +134,11 @@ class _EventWriter:
         pass
 
 
-def search_params(request: Dict, folder: str) -> pm.SearchParams:
-    """The parameters of a request; a drawn or uploaded area is saved in the job folder."""
+def search_params(request: Dict) -> pm.SearchParams:
+    """The parameters of a request, a drawn or uploaded area as their geometry (validated, no file)."""
     values = dict(request["params"])
-    if request.get("geometry"):
-        os.makedirs(folder, exist_ok=True)
-        path = os.path.join(folder, "area.geojson")
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump(request["geometry"], f)
-        values["area"] = path
+    if request.get("geometry") is not None:
+        values["geometry"] = request["geometry"]
     return pm.SearchParams(**values)
 
 
@@ -151,7 +147,6 @@ def run_phase(data_dir: str, job_id: str, phase: str):
     import requests
 
     import progress as pg
-    import runs as rn
     import search
     from progress import progress
 
@@ -184,7 +179,7 @@ def run_phase(data_dir: str, job_id: str, phase: str):
             jobs.set(job_id, "done", error=None)
             failed = False
             return
-        params = search_params(request, jobs.folder(job_id))
+        params = search_params(request)
         # Tiles are sized from the free memory: the computing phase uses the size the
         # download phase announced, not one from the memory free by then
         tile_file = os.path.join(jobs.folder(job_id), "tile_core.json")
@@ -202,9 +197,6 @@ def run_phase(data_dir: str, job_id: str, phase: str):
                     json.dump(plan.tile_core, f)
             jobs.set(job_id, "ready")
         else:
-            if request.get("geometry") and not params.name:
-                name = rn.place_name(*plan.area.center, paths.cache) or "drawn area"
-                plan.params = params.model_copy(update={"name": name})
             lines, run = search.search_lines(plan)
             result = search.save_run(plan, lines, lambda kind, text: True, run)
             jobs.set(job_id, "done", run_id=result.run["id"], error=None)

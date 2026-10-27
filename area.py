@@ -5,7 +5,7 @@ area; the webbing may pass outside it (e.g. over a bay wider than a coastal band
 An area gives the box the working grid has to cover, a boolean mask on that grid,
 and its shape for the maps and the orthophoto cache.
 - Circle: a centre and a radius (--lat/--lon or --northing/--easting, --radius).
-- Polygon: any shape in WGS84 (search areas from files or OSM, later).
+- Polygon: any shape in WGS84 (search areas from files, OSM or drawn in the web app).
 """
 
 import math
@@ -20,6 +20,10 @@ from shapely.geometry import Point, mapping
 from grid import Grid
 
 Bounds = Tuple[float, float, float, float]  # left, bottom, right, top
+DRAWN = "drawn area"     # what runs record as the --area of a geometry drawn or uploaded in the web app
+MAX_VERTICES = 100_000   # positions of such a geometry
+MAX_DEPTH = 12           # nesting of its JSON (a MultiPolygon in a Feature of a FeatureCollection: 8)
+MAX_NODES = 1_000_000    # JSON values in it, properties included
 
 
 def _to(crs: str):
@@ -223,6 +227,82 @@ def from_shapes(shapes: list, buffer: float, limit=None, label: str = "the area"
     if limit is not None:
         geometry = geometry.intersection(limit)
     return geometry
+
+
+def check_geometry(value) -> None:
+    """Refuse a drawn or uploaded area (GeoJSON from the web) that is too large or too deeply
+    nested, not RFC 7946 GeoJSON (geojson-pydantic), outside the coordinate ranges, or not a
+    valid shape (shapely). No GDAL: the data never reaches a file reader."""
+    # Size and depth first, without recursion, so nothing below works on a huge or deep object
+    stack, positions, nodes = [(value, 1)], 0, 0
+    while stack:
+        item, depth = stack.pop()
+        nodes += 1
+        if depth > MAX_DEPTH or nodes > MAX_NODES:
+            raise ValueError("the geometry is nested too deeply or too large")
+        if isinstance(item, dict):
+            stack.extend((v, depth + 1) for v in item.values())
+        elif isinstance(item, list):
+            if item and all(isinstance(v, (int, float)) and not isinstance(v, bool) for v in item):
+                positions += 1  # a position (or a list of numbers in the properties: counted too)
+            else:
+                stack.extend((v, depth + 1) for v in item)
+    if positions > MAX_VERTICES:
+        raise ValueError(f"the geometry has {positions} vertices, at most {MAX_VERTICES} are allowed")
+    import geojson_pydantic as gj
+    from geojson_pydantic.geometries import Geometry
+    from pydantic import TypeAdapter, ValidationError
+    kind = value.get("type") if isinstance(value, dict) else None
+    model = {"FeatureCollection": gj.FeatureCollection, "Feature": gj.Feature}.get(kind, Geometry)
+    try:
+        TypeAdapter(model).validate_python(value)
+    except ValidationError as e:
+        error = e.errors()[0]
+        raise ValueError(f"the geometry is not GeoJSON: {'.'.join(map(str, error['loc']))}: {error['msg']}") from None
+    shapes = geometry_shapes(value)
+    if not shapes:
+        raise ValueError("the geometry is empty")
+    coords = np.vstack([shapely.get_coordinates(g) for g in shapes])
+    if not (np.isfinite(coords).all() and (np.abs(coords[:, 0]) <= 180).all() and (np.abs(coords[:, 1]) <= 90).all()):
+        raise ValueError("the geometry needs finite coordinates: longitude -180 to 180, latitude -90 to 90")
+    from shapely.validation import explain_validity
+    for g in shapes:
+        if not g.is_valid:
+            raise ValueError(f"the geometry is not a valid shape: {explain_validity(g)}")
+
+
+def geometry_shapes(value) -> list:
+    """The shapes (WGS84) of a GeoJSON geometry, Feature or FeatureCollection; collections are taken apart."""
+    from shapely.geometry import shape
+    if value["type"] == "FeatureCollection":
+        geometries = [f["geometry"] for f in value["features"]]
+    elif value["type"] == "Feature":
+        geometries = [value["geometry"]]
+    else:
+        geometries = [value]
+    shapes = [shape(g) for g in geometries if g is not None]
+    flat = []
+    while shapes:
+        g = shapes.pop(0)
+        if g.geom_type == "GeometryCollection":
+            shapes[:0] = list(g.geoms)
+        elif not g.is_empty:
+            flat.append(g)
+    return flat
+
+
+def from_geometry(value, buffer: float, within: str, cache_dir: str) -> "Polygon":
+    """The search area of a geometry drawn or uploaded in the web app (checked by
+    check_geometry): polygons as they are, points and lines grown by `buffer`, clipped to
+    the box or OSM area `within` if given, as for a file of --area."""
+    limit = region(within, cache_dir) if within else None
+    geometry = from_shapes(geometry_shapes(value), buffer, limit, DRAWN)
+    if geometry.is_empty:
+        raise ValueError(f"{DRAWN}: the area is empty")
+    area = Polygon(geometry)
+    area.spec = {"area": DRAWN, "buffer": buffer, "within": within}
+    area.notes = []
+    return area
 
 
 def from_spec(spec: str, buffer: float, within: str, cache_dir: str, reach: float = 0.0) -> "Polygon":

@@ -5,7 +5,8 @@ details; the argparse options of findaline.py are generated from it.
 
 - SearchParams: what a search computes and saves (validated as a whole).
 - CliOptions: what only the command line has (data folder, prompts, matplotlib window).
-Fields marked cli_only (file paths, the API key) must not come from the web.
+Fields marked cli_only (file paths, the API key) must not come from the web; web_only
+fields (a drawn geometry) are set by the web app's server, not by its form or the CLI.
 """
 
 import argparse
@@ -14,7 +15,7 @@ import typing
 import unicodedata
 from typing import List, Literal, Optional
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 from pydantic_core import PydanticUndefined
 
 import sources as src
@@ -58,6 +59,8 @@ class SearchParams(BaseModel):
                                       "KML/GPX file (polygons as they are, points and lines grown by --buffer) or "
                                       "osm:<name> (a named OpenStreetMap area); both anchors of a line lie inside, "
                                       "the webbing may leave it", "centre")
+    geometry: Optional[dict] = field(None, "a drawn or uploaded area (GeoJSON, WGS84) instead of --area; set by "
+                                           "the web app", "centre", web_only=True)
     buffer: float = field(100, "metres around the coastline, cliffs, points or lines of --area", "centre")
     within: Optional[str] = field(None, "where --area coast or cliffs applies: osm:<name> takes the coastline or "
                                         "cliffs within --max-length of that area (islets off its coast, its sea "
@@ -167,11 +170,21 @@ class SearchParams(BaseModel):
         """"mark", "reject", or None when the NMPT is not used."""
         return None if self.nmpt == "off" else self.nmpt
 
+    @field_validator("geometry")
+    @classmethod
+    def check_geometry(cls, value):
+        if value is not None:
+            from area import check_geometry
+            check_geometry(value)
+        return value
+
     @model_validator(mode="after")
     def check(self):
         wgs84 = self.lat is not None or self.lon is not None
         pl1992 = self.northing is not None or self.easting is not None
-        if self.area is not None:
+        if self.area is not None and self.geometry is not None:
+            raise ValueError("give either --area or a drawn geometry, not both")
+        if self.area is not None or self.geometry is not None:
             if wgs84 or pl1992:
                 raise ValueError("give either --area or a search centre, not both")
         elif wgs84 == pl1992:
@@ -207,7 +220,7 @@ class SearchParams(BaseModel):
             raise ValueError("--prominence-span and --drop-radius must be positive")
         if self.tile_size is not None and self.tile_size < 100:
             raise ValueError("--tile-size must be at least 100 m")
-        if self.within and self.area is None:
+        if self.within and self.area is None and self.geometry is None:
             raise ValueError("--within limits --area; give --area too")
         if self.within and not self.within.startswith("osm:"):
             from area import box_bounds
@@ -282,6 +295,8 @@ def build_parser(description: str) -> argparse.ArgumentParser:
     groups = {key: parser.add_argument_group(title) for key, title in GROUPS.items()}
     for model in (SearchParams, CliOptions):
         for name, info in model.model_fields.items():
+            if info.json_schema_extra.get("web_only"):
+                continue
             flags, kwargs = _argument(name, info)
             groups[info.json_schema_extra["group"]].add_argument(*flags, **kwargs)
     return parser

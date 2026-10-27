@@ -59,6 +59,80 @@ def test_values_checked(client, tmp_path):
     assert Jobs(str(tmp_path)).get(response.json()["id"])["title"] == "50.10000, 19.70000 (r 100 m)"
 
 
+def test_geometry_checked(client, tmp_path):
+    """A drawn or uploaded area: RFC 7946 GeoJSON within limits, valid shapes, finite coordinates in range."""
+    headers = {"x-findaline-token": TOKEN}
+    square = [[[19.75, 50.15], [19.76, 50.15], [19.76, 50.16], [19.75, 50.16], [19.75, 50.15]]]
+    nested = {"type": "Point", "coordinates": [19.75, 50.15]}
+    for _ in range(12):
+        nested = {"type": "GeometryCollection", "geometries": [nested]}
+    for geometry in ({"type": "LineString", "coordinates": [[19.75 + i * 1e-7, 50.15] for i in range(100_001)]},
+                     nested,
+                     {"type": "Polygon", "coordinates": "x"},
+                     {"type": "Circle", "coordinates": [19.75, 50.15]},
+                     {"type": "Point", "coordinates": [190, 50.15]},
+                     {"type": "Polygon", "coordinates": [[[0, 0], [1, 1], [1, 0], [0, 1], [0, 0]]]},  # a bow tie
+                     {"type": "FeatureCollection", "features": []}):
+        response = client.post("/api/jobs", json={"params": {}, "geometry": geometry}, headers=headers)
+        assert response.status_code == 400, (str(geometry)[:80], response.text)
+    text = '{"params": {}, "geometry": {"type": "Point", "coordinates": [NaN, 50.15]}}'
+    response = client.post("/api/jobs", content=text, headers={**headers, "content-type": "application/json"})
+    assert response.status_code == 400
+    response = client.post("/api/jobs", json={"params": {"lat": 50.1, "lon": 19.7},
+                                              "geometry": {"type": "Polygon", "coordinates": square}}, headers=headers)
+    assert response.status_code == 400  # a centre and an area
+    response = client.post("/api/jobs", json={"params": {"buffer": 50}, "geometry": {
+        "type": "FeatureCollection", "features": [{"type": "Feature", "properties": {"name": "x"},
+                                                   "geometry": {"type": "Polygon", "coordinates": square}}]}},
+        headers=headers)
+    assert response.status_code == 200, response.text
+    assert Jobs(str(tmp_path)).get(response.json()["id"])["title"] == "drawn area"
+    assert not os.path.exists(tmp_path / "work" / "check")
+    import params as pm
+    assert "--geometry" not in pm.build_parser("").format_help()  # web only
+
+
+def test_drawn_area_through_the_queue(tmp_path, monkeypatch):
+    """A drawn geometry computed by the workers (in tiles) gives the lines of the same shapes as an
+    --area file of the command line: a polygon as it is, a point grown by the buffer."""
+    import subprocess
+    _offline(monkeypatch)
+    geometry = {"type": "FeatureCollection", "features": [
+        {"type": "Feature", "properties": {}, "geometry": {"type": "Polygon", "coordinates": [[
+            [19.7522, 50.1546], [19.7590, 50.1546], [19.7590, 50.1580], [19.7522, 50.1580], [19.7522, 50.1546]]]}},
+        {"type": "Feature", "properties": {}, "geometry": {"type": "Point", "coordinates": [19.7545, 50.1590]}}]}
+    common = {"elevation_file": os.path.join(DATA, "zabi_kon_nmt.tif"), "max_length": 150, "buffer": 60,
+              "water": "off", "fill_gaps": "off", "ortho": "never"}
+    (tmp_path / "web").mkdir()
+    jobs = Jobs(str(tmp_path / "web"))
+    job = jobs.add({"params": {**common, "tile_size": 150}, "geometry": geometry}, "drawn")
+    scheduler = Scheduler(jobs)
+    scheduler.start()
+    try:
+        deadline = time.time() + 300
+        while jobs.get(job)["status"] not in ("done", "failed") and time.time() < deadline:
+            time.sleep(0.5)
+    finally:
+        scheduler.stop()
+    result = jobs.get(job)
+    assert result["status"] == "done", result["error"]
+    folder = tmp_path / "web" / "runs" / result["run_id"]
+    meta = json.loads((folder / "run.json").read_text(encoding="utf-8"))
+    assert meta["params"]["area"]["area"] == "drawn area" and meta["area"]["spec"]["area"] == "drawn area"
+    assert not os.path.exists(tmp_path / "web" / "work" / "jobs" / job / "area.geojson")
+
+    path = tmp_path / "drawn.geojson"
+    path.write_text(json.dumps(geometry), encoding="utf-8")
+    cli = subprocess.run(
+        [sys.executable, "findaline.py", "--area", str(path), "--no-plot", "--yes", "--data-dir", str(tmp_path / "cli"),
+         *[a for k, v in common.items() for a in ("--" + k.replace("_", "-"), str(v))]],
+        cwd=REPO, capture_output=True, text=True, encoding="utf-8", timeout=600, env=dict(os.environ))
+    assert cli.returncode == 0, cli.stdout + cli.stderr
+    cli_csv = next((tmp_path / "cli" / "runs").glob("*/lines.csv"))
+    lines = (folder / "lines.csv").read_bytes()
+    assert len(lines.splitlines()) > 10 and lines == cli_csv.read_bytes()
+
+
 def test_schema_has_no_file_fields(client):
     names = {f["name"] for f in client.get("/api/schema").json()["fields"]}
     assert {"lat", "radius", "model", "ortho"} <= names

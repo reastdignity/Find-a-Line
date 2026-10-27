@@ -165,9 +165,12 @@ def plan_search(params: SearchParams, paths: Paths, on_event: Optional[OnEvent] 
     emit = on_event or _print
     src.used_data.clear()  # several searches may run in one process
     cache.check_layout(paths.cache)
-    if params.area is not None:
+    if params.area is not None or params.geometry is not None:
         try:
-            area = ar.from_spec(params.area, params.buffer, params.within, paths.cache, params.max_length)
+            if params.geometry is not None:  # drawn or uploaded in the web app
+                area = ar.from_geometry(params.geometry, params.buffer, params.within, paths.cache)
+            else:
+                area = ar.from_spec(params.area, params.buffer, params.within, paths.cache, params.max_length)
         except (ValueError, requests.RequestException) as e:
             raise SearchError(f"Area: {e}")
         center_lat, center_lon = area.center
@@ -243,9 +246,11 @@ def plan_search(params: SearchParams, paths: Paths, on_event: Optional[OnEvent] 
 
 
 def _area_text(params: SearchParams) -> str:
-    """E.g. "coast ±100 m within osm:Gozo", "osm:Gozo", "area.geojson"."""
+    """E.g. "coast ±100 m within osm:Gozo", "osm:Gozo", "area.geojson", "drawn area"."""
     a = params.area
-    if a in ("coast", "cliffs"):
+    if params.geometry is not None:
+        text = ar.DRAWN
+    elif a in ("coast", "cliffs"):
         text = f"{a} ±{params.buffer:g} m"
     else:
         text = a if a.startswith("osm:") else os.path.basename(a)
@@ -586,7 +591,7 @@ def _run_name(plan: Plan) -> str:
     if p.area:
         return _area_text(p)
     lat, lon = plan.area.center
-    return rn.place_name(lat, lon, plan.paths.cache) or f"{lat:.5f}, {lon:.5f}"
+    return rn.place_name(lat, lon, plan.paths.cache) or (ar.DRAWN if p.geometry is not None else f"{lat:.5f}, {lon:.5f}")
 
 
 def _search_hash(plan: Plan) -> str:
@@ -748,7 +753,8 @@ def _run_params(plan: Plan) -> Dict:
     """The parameters run.json records (also what profile_of_line needs)."""
     p, circle = plan.params, isinstance(plan.area, ar.Circle)
     return {"radius": p.radius if circle else None,
-            "area": None if circle else {"area": p.area, "buffer": p.buffer, "within": p.within},
+            "area": None if circle else {"area": ar.DRAWN if p.geometry is not None else p.area,
+                                         "buffer": p.buffer, "within": p.within},
             "resolution": plan.resolution,
             "min_length": p.min_length, "max_length": p.max_length,
             "max_anchor_diff": p.max_anchor_diff,

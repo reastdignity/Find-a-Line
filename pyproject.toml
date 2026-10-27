@@ -8,6 +8,7 @@ dependencies = [
     "affine>=2.4",
     "contextily>=1.6",
     "fastapi>=0.162.0",
+    "geojson-pydantic>=2.2",
     "geopandas>=1.1",
     "matplotlib>=3.10",
     "numba>=0.68",

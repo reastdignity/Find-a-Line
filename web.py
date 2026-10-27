@@ -17,7 +17,8 @@ Security (docs/roadmap.md, "Security"): the server listens on 127.0.0.1 only, bu
 website the user visits could send requests to it, so it accepts only its own Host
 names, and every request that changes something needs the session token of the page
 (a header a foreign website cannot set). File paths never come from the web: the
-cli_only fields are refused, and a drawn or uploaded area is saved by the server.
+cli_only fields are refused, and a drawn or uploaded area is a GeoJSON geometry checked
+without GDAL (SearchParams.geometry, area.check_geometry), never written to a file.
 """
 
 import asyncio
@@ -42,12 +43,12 @@ APP_DIST = os.path.join(os.path.dirname(os.path.abspath(__file__)), "viewer", "d
 
 
 def schema() -> List[Dict]:
-    """The fields of SearchParams the page may set (cli_only fields are left out)."""
+    """The fields of SearchParams the page may set (cli_only and web_only fields are left out)."""
     import typing
     fields = []
     for name, info in pm.SearchParams.model_fields.items():
         extra = info.json_schema_extra or {}
-        if extra.get("cli_only"):
+        if extra.get("cli_only") or extra.get("web_only"):
             continue
         kind, choices = info.annotation, None
         if typing.get_origin(kind) is typing.Union:
@@ -89,10 +90,10 @@ def check_request(request: Dict) -> Dict:
     return {"params": params, "geometry": geometry}
 
 
-def title(request: Dict, p: pm.SearchParams) -> str:
+def title(p: pm.SearchParams) -> str:
     """The title of a job in the queue, from its validated parameters."""
-    circle = not request.get("geometry") and p.area is None
-    if request.get("geometry"):
+    circle = p.geometry is None and p.area is None
+    if p.geometry is not None:
         where = "drawn area"
     elif p.area:
         where = p.area
@@ -169,10 +170,10 @@ def create_app(data_dir: str, token: Optional[str] = None, port: int = PORT, sta
 
         def work():
             messages = []
-            folder = os.path.join(data_dir, "work", "estimates", uuid.uuid4().hex)
+            params = search_params(request)
+            folder = os.path.join(data_dir, "work", "estimates", uuid.uuid4().hex)  # one per request
             try:
-                params = search_params(request, folder)
-                paths = search.Paths(data_dir, os.path.join(folder, "work"))
+                paths = search.Paths(data_dir, folder)
                 plan = search.plan_search(params, paths, lambda kind, text: messages.append([kind, text]))
                 result = search.estimate_search(plan)
             finally:
@@ -192,12 +193,10 @@ def create_app(data_dir: str, token: Optional[str] = None, port: int = PORT, sta
     async def add_job(body: Dict):
         request = parse(body)
         try:
-            params = await run_in_threadpool(search_params, request, os.path.join(data_dir, "work", "check"))
+            params = await run_in_threadpool(search_params, request)
         except ValueError as e:
             raise HTTPException(400, str(e))
-        finally:
-            shutil.rmtree(os.path.join(data_dir, "work", "check"), ignore_errors=True)
-        return {"id": jobs.add(request, title(request, params))}
+        return {"id": jobs.add(request, title(params))}
 
     @app.get("/api/jobs")
     def list_jobs():

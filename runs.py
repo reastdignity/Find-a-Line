@@ -198,7 +198,7 @@ def params_summary(meta: Dict) -> str:
     nmpt = f"NMPT {p['nmpt']}" if p["nmpt"] else "no NMPT"
     if p.get("area"):
         a = p["area"]
-        where = f"area {a['area']}" + (f" ±{a['buffer']:g} m" if a["area"] in ("coast", "cliffs") else "") \
+        where = (a["area"] if a["area"] == "drawn area" else f"area {a['area']}") + (f" ±{a['buffer']:g} m" if a["area"] in ("coast", "cliffs") else "") \
             + (f" within {a['within']}" if a.get("within") else "")
     else:
         where = f"radius {p['radius']:g} m"
