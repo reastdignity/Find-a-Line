@@ -5,6 +5,7 @@ import type { FeatureCollection } from "geojson";
 import { useEffect, useMemo, useState } from "preact/hooks";
 import { api, type Estimate, type Field, type SearchRequest } from "./api";
 import { countAreas } from "./areas";
+import { readAreaFile } from "./files";
 import type { Mode, PlaceMap } from "./PlaceMap";
 
 // Fields set by the "Where" part of the form, not in the parameter groups
@@ -172,11 +173,11 @@ export function SearchForm({place, fields, groups, initial, onStarted}: SearchFo
     }
   };
 
-  const uploadFile = async (input: HTMLInputElement) => {
+  const readFile = async (input: HTMLInputElement) => {
     const chosen = input.files?.[0];
     if (!chosen) return;
     try {
-      const areas = await api.areaFile(chosen);
+      const areas = await readAreaFile(chosen);
       setFile({name: chosen.name, areas});
       place.showFile(areas);
     } catch (e) {
@@ -216,7 +217,7 @@ export function SearchForm({place, fields, groups, initial, onStarted}: SearchFo
         change them. Both anchors of a line lie inside, the webbing may leave the area.</p>
     </div>}
     {mode === "file" && <div>
-      <input key={fileKey} type="file" accept=".geojson,.json,.kml,.gpx" onChange={(e) => uploadFile(e.currentTarget)} />
+      <input key={fileKey} type="file" accept=".geojson,.json,.kml,.gpx" onChange={(e) => readFile(e.currentTarget)} />
       <p class="fa-hint">{file ? `${file.name}: ${file.areas.features.length} shapes` :
         "Polygons are used as they are, points and lines grown by the buffer."}</p>
       {bufferInput}

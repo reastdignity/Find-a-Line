@@ -442,3 +442,81 @@ def test_app_counts_and_clears_areas(tmp_path):
     queued = jobs.all()
     assert len(queued) == 1
     assert len(json.loads(jobs.get(queued[0]["id"])["request"])["geometry"]["features"]) == 3
+
+
+AREA_FILES = {
+    "crag.kml": """<?xml version="1.0" encoding="UTF-8"?>
+<kml xmlns="http://www.opengis.net/kml/2.2"><Document>
+<Placemark><name>Crag</name><Polygon><outerBoundaryIs><LinearRing><coordinates>
+19.7522,50.1546,0 19.7590,50.1546,0 19.7590,50.1580,0 19.7522,50.1580,0 19.7522,50.1546,0
+</coordinates></LinearRing></outerBoundaryIs></Polygon></Placemark>
+<Placemark><name>Rock</name><Point><coordinates>19.7545,50.1590,0</coordinates></Point></Placemark>
+</Document></kml>""",
+    "walk.gpx": """<?xml version="1.0" encoding="UTF-8"?>
+<gpx version="1.1" creator="test" xmlns="http://www.topografix.com/GPX/1/1"><trk><name>Walk</name><trkseg>
+<trkpt lat="50.1550" lon="19.7530"><time>2026-10-27T10:00:00Z</time></trkpt>
+<trkpt lat="50.1560" lon="19.7550"><time>2026-10-27T10:05:00Z</time></trkpt>
+<trkpt lat="50.1570" lon="19.7560"><time>2026-10-27T10:10:00Z</time></trkpt>
+</trkseg></trk></gpx>""",
+}
+
+FILES_SCRIPT = """
+(function () {
+  const out = document.createElement("pre");
+  out.id = "result";
+  document.body.appendChild(out);
+  const say = (what) => { out.textContent += what + " | "; };
+  const button = (text) => [...document.querySelectorAll("button")].find((b) => b.textContent === text);
+  const hint = () => [...document.querySelectorAll(".fa-hint")].map((p) => p.textContent).join(" ");
+  const wait = (ok, then, tries = 100) => ok() ? then() : tries ? setTimeout(() => wait(ok, then, tries - 1), 100)
+                                                    : say("timeout: " + hint() + " " + document.querySelector(".fa-error")?.textContent);
+  const load = (name, then) => {
+    const input = document.querySelector("input[type=file]");
+    const files = new DataTransfer();
+    files.items.add(new File([FILES[name]], name));
+    input.files = files.files;
+    input.dispatchEvent(new Event("change", {bubbles: true}));
+    wait(() => hint().includes(name + ":"), () => { say(hint()); then(); });
+  };
+  wait(() => window.FINDALINE_PLACE && button("File"), () => {
+    button("File").click();
+    setTimeout(() => load("crag.kml", () => load("walk.gpx", () => {
+      button("Estimate").click();
+      wait(() => button("Start") && !button("Start").disabled, () => {
+        button("Start").click();
+        wait(() => !hint().includes("walk.gpx"), () => say("started"));
+      });
+    })), 200);
+  });
+})();
+"""
+
+
+@pytest.mark.skipif(not os.path.exists(EDGE), reason="needs Microsoft Edge")
+def test_app_reads_area_files(tmp_path):
+    """KML and GPX files are read in the browser (togeojson); the server takes the shapes as the
+    geometry of the job (there is no upload endpoint any more)."""
+    import re
+    folder = tmp_path / "runs" / "apptest"
+    folder.mkdir(parents=True)
+    (folder / "stubs.js").write_text(APP_STUBS, encoding="utf-8")
+    (folder / "test.js").write_text("const FILES = " + json.dumps(AREA_FILES) + ";\n" + FILES_SCRIPT, encoding="utf-8")
+    app = web.create_app(str(tmp_path), token=TOKEN, start_scheduler=False)
+    with TestClient(app) as client:
+        page = client.get("/").text
+        assert client.post("/api/area-file", headers={"x-findaline-token": TOKEN}).status_code in (404, 405)
+    (folder / "index.html").write_text(page.replace(
+        '<script src="/app/app.js"></script>',
+        '<script src="stubs.js"></script><script src="/app/app.js"></script><script src="test.js"></script>'),
+        encoding="utf-8")
+    dom = _edge_page(tmp_path, "runs/apptest/index.html")
+    text = re.search(r'<pre id="result">(.*?)</pre>', dom, re.S).group(1)
+    kml, gpx, started = text.split(" | ")[:3]
+    assert kml.startswith("crag.kml: 2 shapes"), text
+    assert gpx.startswith("walk.gpx: 1 shapes"), text
+    assert started == "started", text
+    queued = Jobs(str(tmp_path)).all()
+    assert len(queued) == 1 and queued[0]["title"] == "drawn area"
+    geometry = json.loads(Jobs(str(tmp_path)).get(queued[0]["id"])["request"])["geometry"]
+    assert [f["geometry"]["type"] for f in geometry["features"]] == ["LineString"]
+    assert geometry["features"][0]["geometry"]["coordinates"][0][:2] == [19.753, 50.155]

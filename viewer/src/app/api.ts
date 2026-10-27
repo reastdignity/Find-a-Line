@@ -1,4 +1,4 @@
-import type { FeatureCollection, GeoJSON } from "geojson";
+import type { GeoJSON } from "geojson";
 
 // Requests to the local server (web.py). Changing requests carry the session token
 // of the page, which a foreign website cannot read or set.
@@ -64,8 +64,7 @@ const token = document.querySelector<HTMLMetaElement>("meta[name=findaline-token
 
 async function call<T>(method: string, url: string, body?: unknown): Promise<T> {
   const init: RequestInit = {method, headers: {"X-Findaline-Token": token}};
-  if (body instanceof FormData) init.body = body;
-  else if (body !== undefined) {
+  if (body !== undefined) {
     init.body = JSON.stringify(body);
     (init.headers as Record<string, string>)["Content-Type"] = "application/json";
   }
@@ -91,11 +90,6 @@ export const api = {
   osm: (lat: number, lon: number) => call<OsmState>("GET", `/api/osm?lat=${lat}&lon=${lon}`),
   osmJob: (action: "download" | "update", region: string) =>
     call<{id: string}>("POST", "/api/osm", {action, region}),
-  areaFile: (file: File) => {
-    const form = new FormData();
-    form.append("file", file);
-    return call<FeatureCollection>("POST", "/api/area-file", form);
-  },
 };
 
 /** Events of all jobs after `since` (Server-Sent Events, reconnected by the browser). */

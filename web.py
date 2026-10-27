@@ -17,8 +17,9 @@ Security (docs/roadmap.md, "Security"): the server listens on 127.0.0.1 only, bu
 website the user visits could send requests to it, so it accepts only its own Host
 names, and every request that changes something needs the session token of the page
 (a header a foreign website cannot set). File paths never come from the web: the
-cli_only fields are refused, and a drawn or uploaded area is a GeoJSON geometry checked
-without GDAL (SearchParams.geometry, area.check_geometry), never written to a file.
+cli_only fields are refused, and a drawn area or an area file (read in the browser) is a
+GeoJSON geometry checked without GDAL (SearchParams.geometry, area.check_geometry), never
+written to a file.
 """
 
 import asyncio
@@ -38,7 +39,6 @@ import params as pm
 from jobs import TICK, Jobs, Scheduler, search_params
 
 PORT = 8765
-MAX_UPLOAD = 5_000_000    # bytes of an uploaded area file
 APP_DIST = os.path.join(os.path.dirname(os.path.abspath(__file__)), "viewer", "dist")
 
 
@@ -106,7 +106,7 @@ def title(p: pm.SearchParams) -> str:
 
 def create_app(data_dir: str, token: Optional[str] = None, port: int = PORT, start_scheduler: bool = True):
     """The FastAPI application (tests create it without the scheduler)."""
-    from fastapi import FastAPI, HTTPException, Request, UploadFile
+    from fastapi import FastAPI, HTTPException, Request
     from fastapi.concurrency import run_in_threadpool
     from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
     from fastapi.staticfiles import StaticFiles
@@ -314,36 +314,6 @@ def create_app(data_dir: str, token: Optional[str] = None, port: int = PORT, sta
             return await run_in_threadpool(work)
         except (ValueError, search.SearchError) as e:
             raise HTTPException(400, str(e))
-
-    @app.post("/api/area-file")
-    async def area_file(file: UploadFile):
-        """An uploaded GeoJSON/KML/GPX file as GeoJSON (shown on the map, then sent as the geometry)."""
-        content = await file.read(MAX_UPLOAD + 1)
-        if len(content) > MAX_UPLOAD:
-            raise HTTPException(413, f"the file is larger than {MAX_UPLOAD // 1_000_000} MB")
-        suffix = os.path.splitext(file.filename or "")[1].lower()
-        if suffix not in (".geojson", ".json", ".kml", ".gpx"):
-            raise HTTPException(400, "GeoJSON, KML or GPX expected")
-        folder = os.path.join(data_dir, "work", "uploads", uuid.uuid4().hex)
-        os.makedirs(folder)
-        path = os.path.join(folder, "area" + suffix)
-        with open(path, "wb") as f:
-            f.write(content)
-
-        def read():
-            from area import _read_file
-            from shapely.geometry import mapping
-            return [mapping(g) for g in _read_file(path)]
-        try:
-            geometries = await run_in_threadpool(read)
-        except Exception as e:  # GDAL errors of every kind
-            raise HTTPException(400, f"could not read the file: {e}")
-        finally:
-            shutil.rmtree(folder, ignore_errors=True)
-        if not geometries:
-            raise HTTPException(400, "no geometries in the file")
-        return {"type": "FeatureCollection",
-                "features": [{"type": "Feature", "properties": {}, "geometry": g} for g in geometries]}
 
     app.mount("/app", StaticFiles(directory=APP_DIST), name="app")
     app.mount("/runs", StaticFiles(directory=runs_dir), name="runs")
