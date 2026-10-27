@@ -41,6 +41,24 @@ def test_guards(client, tmp_path):
     assert TOKEN in page.text and "script-src 'self'" in page.headers["content-security-policy"]
 
 
+def test_values_checked(client, tmp_path):
+    """Finite values in range, the choices of the form, and a title from the validated values."""
+    headers = {"x-findaline-token": TOKEN}
+    point = {"lat": 50.1, "lon": 19.7}
+    for params in ({"lat": 91, "lon": 19.7}, {**point, "source": "files"}, {**point, "slope_threshold": 0},
+                   {**point, "ortho_detail": -1}, {**point, "name": "x" * 101}, {**point, "name": "a\nb"},
+                   {"area": "coast", "within": "36.1,14.2,36.0,14.3"}, {"area": "coast", "within": "nan,1,2,3"}):
+        response = client.post("/api/jobs", json={"params": params}, headers=headers)
+        assert response.status_code == 400, params
+    for text in ('{"params": {"lat": NaN, "lon": 19.7}}', '{"params": {"lat": 50, "lon": 19.7, "radius": Infinity}}'):
+        response = client.post("/api/jobs", content=text, headers={**headers, "content-type": "application/json"})
+        assert response.status_code == 400, text
+    response = client.post("/api/jobs", json={"params": {"lat": "50.1", "lon": "19.7", "radius": 100}},
+                           headers=headers)
+    assert response.status_code == 200, response.text
+    assert Jobs(str(tmp_path)).get(response.json()["id"])["title"] == "50.10000, 19.70000 (r 100 m)"
+
+
 def test_schema_has_no_file_fields(client):
     names = {f["name"] for f in client.get("/api/schema").json()["fields"]}
     assert {"lat", "radius", "model", "ortho"} <= names

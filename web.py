@@ -70,10 +70,14 @@ def check_request(request: Dict) -> Dict:
     params = request.get("params")
     if not isinstance(params, dict):
         raise ValueError("params missing")
-    allowed = {f["name"] for f in schema()}
-    unknown = set(params) - allowed
+    fields = {f["name"]: f for f in schema()}
+    unknown = set(params) - set(fields)
     if unknown:
         raise ValueError(f"not allowed: {', '.join(sorted(unknown))}")
+    for name, value in params.items():  # e.g. no local files as the source
+        choices = fields[name]["choices"]
+        if choices and value is not None and value not in choices:
+            raise ValueError(f"{name}: one of {', '.join(map(str, choices))}")
     area = params.get("area")
     if area is not None and area not in ("coast", "cliffs") and not str(area).startswith("osm:"):
         raise ValueError("area: coast, cliffs, osm:<name> or a drawn/uploaded geometry")
@@ -85,18 +89,18 @@ def check_request(request: Dict) -> Dict:
     return {"params": params, "geometry": geometry}
 
 
-def title(request: Dict) -> str:
-    p = request["params"]
+def title(request: Dict, p: pm.SearchParams) -> str:
+    """The title of a job in the queue, from its validated parameters."""
+    circle = not request.get("geometry") and p.area is None
     if request.get("geometry"):
         where = "drawn area"
-    elif p.get("area"):
-        where = p["area"]
-    elif p.get("lat") is not None:
-        where = f"{p['lat']:.5f}, {p['lon']:.5f}"
+    elif p.area:
+        where = p.area
+    elif p.lat is not None:
+        where = f"{p.lat:.5f}, {p.lon:.5f}"
     else:
-        where = "?"
-    return (p.get("name") or where) + (f" (r {p['radius']:g} m)" if p.get("radius") and not p.get("area")
-                                       and not request.get("geometry") else "")
+        where = f"N {p.northing:.0f}, E {p.easting:.0f}"
+    return (p.name or where) + (f" (r {p.radius:g} m)" if circle else "")
 
 
 def create_app(data_dir: str, token: Optional[str] = None, port: int = PORT, start_scheduler: bool = True):
@@ -188,12 +192,12 @@ def create_app(data_dir: str, token: Optional[str] = None, port: int = PORT, sta
     async def add_job(body: Dict):
         request = parse(body)
         try:
-            await run_in_threadpool(search_params, request, os.path.join(data_dir, "work", "check"))
+            params = await run_in_threadpool(search_params, request, os.path.join(data_dir, "work", "check"))
         except ValueError as e:
             raise HTTPException(400, str(e))
         finally:
             shutil.rmtree(os.path.join(data_dir, "work", "check"), ignore_errors=True)
-        return {"id": jobs.add(request, title(request))}
+        return {"id": jobs.add(request, title(request, params))}
 
     @app.get("/api/jobs")
     def list_jobs():

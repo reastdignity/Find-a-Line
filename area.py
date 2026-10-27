@@ -120,6 +120,17 @@ def _metric(geometry) -> str:
     return utm_crs(c.y, c.x)
 
 
+def box_bounds(text: str) -> Bounds:
+    """(south, west, north, east) of a box "S,W,N,E" in degrees, checked to be a box on the globe."""
+    try:
+        south, west, north, east = (float(v) for v in text.split(","))
+    except ValueError:
+        raise ValueError(f"{text!r}: expected osm:<name> or S,W,N,E")
+    if not (-90 <= south < north <= 90 and -180 <= west < east <= 180):  # NaN fails too
+        raise ValueError(f"{text!r}: S,W,N,E with -90 <= S < N <= 90 and -180 <= W < E <= 180")
+    return south, west, north, east
+
+
 def region(text: str, cache_dir: str):
     """A WGS84 polygon from "osm:<name>" (Nominatim) or "S,W,N,E" (a box in degrees)."""
     from shapely.geometry import box, shape
@@ -130,10 +141,7 @@ def region(text: str, cache_dir: str):
         if not geometry or geometry.geom_type not in ("Polygon", "MultiPolygon"):
             raise ValueError(f"{text}: no area of that name in OpenStreetMap")
         return geometry
-    try:
-        south, west, north, east = (float(v) for v in text.split(","))
-    except ValueError:
-        raise ValueError(f"{text!r}: expected osm:<name> or S,W,N,E")
+    south, west, north, east = box_bounds(text)
     return box(west, south, east, north)
 
 

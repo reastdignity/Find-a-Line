@@ -11,6 +11,7 @@ Fields marked cli_only (file paths, the API key) must not come from the web.
 import argparse
 import os
 import typing
+import unicodedata
 from typing import List, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
@@ -39,8 +40,11 @@ def field(default, help: str, group: str, *, default_text: Optional[str] = None,
     return Field(default, description=help, json_schema_extra=meta)
 
 
+MAX_NAME = 100  # characters of a run name
+
+
 class SearchParams(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)  # no NaN or Inf anywhere
 
     # Search centre
     lat: Optional[float] = field(None, "latitude, WGS84 (e.g. 49.2320)", "centre")
@@ -174,6 +178,8 @@ class SearchParams(BaseModel):
             raise ValueError("give the search centre as either --lat/--lon or --northing/--easting")
         if wgs84 and (self.lat is None or self.lon is None):
             raise ValueError("both --lat and --lon are required")
+        if wgs84 and not (-90 <= self.lat <= 90 and -180 <= self.lon <= 180):
+            raise ValueError("--lat is -90 to 90 and --lon -180 to 180 degrees")
         if pl1992 and (self.northing is None or self.easting is None):
             raise ValueError("both --northing and --easting are required")
         if self.source not in SOURCE_CHOICES:
@@ -203,6 +209,16 @@ class SearchParams(BaseModel):
             raise ValueError("--tile-size must be at least 100 m")
         if self.within and self.area is None:
             raise ValueError("--within limits --area; give --area too")
+        if self.within and not self.within.startswith("osm:"):
+            from area import box_bounds
+            box_bounds(self.within)  # a box S,W,N,E in range
+        if not 0 < self.slope_threshold <= 90:
+            raise ValueError("--slope-threshold is more than 0 and at most 90 degrees")
+        if self.ortho_detail is not None and self.ortho_detail < 0:
+            raise ValueError("--ortho-detail cannot be negative")
+        if self.name is not None and (len(self.name) > MAX_NAME
+                                      or any(unicodedata.category(c) == "Cc" for c in self.name)):
+            raise ValueError(f"--name: at most {MAX_NAME} characters, no control characters")
         if self.shore_buffer < 0:
             raise ValueError("--shore-buffer cannot be negative")
         if self.group_distance is not None and self.group_distance <= 0:
