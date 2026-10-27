@@ -1140,9 +1140,9 @@ SOURCES: Dict[str, Source] = {s.id: s for s in [
         # Published only as one ZIP of 155-200 GB per model: our own 2 km tiles of them
         # (tools/sk_tiles.py), on the national grid, pixel edges on whole metres
         nmt=GridTiles("DMR 5.0 (terrain)", [f"{base}/dmr5/1m" for base in SLOVAK_TILES], "EPSG:8353",
-                      "slovakia/dmr5/5.0/epsg8353-1m-2km", 2000, 1.0, 5e6, mirror="slovakia/dmr5/1m"),
+                      "slovakia/dmr5/5.0/epsg8353-1m-2km", 2000, 1.0, 4.8e6, mirror="slovakia/dmr5/1m"),
         nmpt=GridTiles("DMP 1.0 (trees, buildings)", [f"{base}/dmp1/1m" for base in SLOVAK_TILES], "EPSG:8353",
-                       "slovakia/dmp1/1.0/epsg8353-1m-2km", 2000, 1.0, 5e6, mirror="slovakia/dmp1/1m"),
+                       "slovakia/dmp1/1.0/epsg8353-1m-2km", 2000, 1.0, 5.7e6, mirror="slovakia/dmp1/1m"),
         countries=("sk",), crs="EPSG:8353", ortho=ZBGIS_ORTHO,
         note="Data © ÚGKK SR, CC BY 4.0 (laser scanning 2017-2023)."),
     _malta(2018, note="Malta 2018 heights are published in whole metres, which makes slopes and "

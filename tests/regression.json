@@ -531,5 +531,32 @@
     },
     "notes": "downloads the 0.5 m terrain tiles (about 80 MB) next to R19's 2 m ones",
     "seconds": 2.5
+  },
+  "R21": {
+    "place": "Súľovské skaly, Slovakia: our own ÚGKK SR tiles (DMR 5.0 / DMP 1.0, 1 m) from the local mirror",
+    "args": "--lat 49.1700 --lon 18.5750 --radius 400 --min-length 50 --max-length 400",
+    "sets": [
+      "sources",
+      "sk"
+    ],
+    "needs_env": "FINDALINE_MIRROR",
+    "expected": {
+      "anchors": 62991,
+      "open": 2556,
+      "checked": 7196,
+      "lines": 1653,
+      "spots": 23,
+      "csv_sha256": "62265025221de7ff8588f1cf089dab808dfcf0af17bd3d1a2bd3283478dedf9f",
+      "length_km": 154.004,
+      "clearance_min": 0.0,
+      "clearance_mean": 1.565,
+      "clearance_max": 9.61,
+      "over_trees": 1653,
+      "coverage": 100.0,
+      "empty_tiles": 0,
+      "source": "ÚGKK SR (DMR 5.0 / DMP 1.0)"
+    },
+    "notes": "skipped without FINDALINE_MIRROR; --source auto picks Slovakia (the centre is in SK); first run on an empty cache: 9 s, 2 DTM tiles 12 MB and 2 DSM tiles 14 MB copied from the mirror; forest everywhere: all lines over trees",
+    "seconds": 8.8
   }
 }
