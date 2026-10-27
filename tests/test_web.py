@@ -11,6 +11,7 @@ import pytest
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DATA = os.path.join(REPO, "tests", "data")
 sys.path.insert(0, REPO)
+from jobs import Jobs, Scheduler  # noqa: E402
 import web  # noqa: E402
 
 pytest.importorskip("httpx2")
@@ -56,12 +57,12 @@ def test_job_through_the_queue(tmp_path, monkeypatch):
     """A job (added directly: local files are refused over the web) downloads, computes
     and saves a run in worker processes; a queued job can be cancelled."""
     _offline(monkeypatch)
-    jobs = web.Jobs(str(tmp_path))
+    jobs = Jobs(str(tmp_path))
     params = {"elevation_file": os.path.join(DATA, "zabi_kon_nmt.tif"), "northing": 254608, "easting": 553966,
               "radius": 150, "water": "off", "fill_gaps": "off", "name": "Clip", "ortho": "never"}
     job = jobs.add({"params": params, "geometry": None}, "clip")
     other = jobs.add({"params": params, "geometry": None}, "clip again")
-    scheduler = web.Scheduler(jobs)
+    scheduler = Scheduler(jobs)
     assert scheduler.cancel(other)
     scheduler.start()
     try:
@@ -98,10 +99,10 @@ class _Ended:
 def test_download_process_ending_late(tmp_path):
     """A download process that exits after its job has started computing does not fail the job;
     a compute process that ends without a word does."""
-    jobs = web.Jobs(str(tmp_path))
+    jobs = Jobs(str(tmp_path))
     job = jobs.add({"params": {}, "geometry": None}, "job")
     jobs.set(job, "computing")
-    scheduler = web.Scheduler(jobs)
+    scheduler = Scheduler(jobs)
     scheduler.running["download"] = (job, _Ended())
     scheduler.running["compute"] = (job, type("Running", (), {"is_alive": lambda self: True})())
     scheduler._check()
@@ -173,11 +174,11 @@ def test_osm_jobs(client, tmp_path):
     assert client.post("/api/osm", json={"action": "delete", "region": "malta"}, headers=headers).status_code == 400
     response = client.post("/api/osm", json={"action": "download", "region": "malta"}, headers=headers)
     assert response.status_code == 200
-    assert web.Jobs(str(tmp_path)).get(response.json()["id"])["title"] == "OSM download: malta"
+    assert Jobs(str(tmp_path)).get(response.json()["id"])["title"] == "OSM download: malta"
 
 
 def test_run_again_and_edit(client, tmp_path):
-    jobs = web.Jobs(str(tmp_path))
+    jobs = Jobs(str(tmp_path))
     request = {"params": {"name": "Cliff", "radius": 300}, "geometry": {"type": "Point", "coordinates": [14.2, 36.0]}}
     job = jobs.add(request, "Cliff")
     headers = {"x-findaline-token": TOKEN}
@@ -345,7 +346,7 @@ def test_app_counts_and_clears_areas(tmp_path):
     assert drawn.startswith("2 separate areas (3 shapes"), text
     assert cleared == "none, drawn no", text
     assert started == "after start: none", text
-    jobs = web.Jobs(str(tmp_path))
+    jobs = Jobs(str(tmp_path))
     queued = jobs.all()
     assert len(queued) == 1
     assert len(json.loads(jobs.get(queued[0]["id"])["request"])["geometry"]["features"]) == 3

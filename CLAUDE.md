@@ -33,7 +33,8 @@ Finds possible highlines in elevation data: anchors on steep pixels, every pair 
 | `sag.py` | Sag estimator (elastic catenary + point load) and envelope table for `--model sag` |
 | `mapping.py` | Coordinates, grouping, matplotlib map; `save_map` writes a run's `map.html` + `data.js` for the viewer |
 | `viewer/` | The result viewer (TypeScript, Preact, Leaflet; `src/`), bundled by esbuild into `dist/` (committed); copied to `runs/_viewer/` by every run |
-| `web.py` | `findaline.py web`: FastAPI on 127.0.0.1 (Host check, session token, CSP), job queue in `jobs.sqlite`, worker processes (download, then compute), SSE events, `/api/profile` (a line's profile computed again, or of two points measured on the map: `search.profile_of_line`); the page is `viewer/src/app` |
+| `web.py` | `findaline.py web`: FastAPI on 127.0.0.1 (Host check, session token, CSP), the requests the page may send, SSE events, `/api/profile` (a line's profile computed again, or of two points measured on the map: `search.profile_of_line`); the page is `viewer/src/app` |
+| `jobs.py` | The web app's job queue (`Jobs`, `jobs.sqlite` with the events) and its worker processes (`Scheduler`, `run_phase`: download, then compute) |
 | `update.py` | `findaline.py cache status/update` and `osm download/update`: which cached data can change, checks, runs on changed data |
 | `osmextract.py` | Geofabrik OSM extracts: download, replication diffs (pyosmium), theme features, theme tiles built from extracts |
 | `orthophoto.py` | Orthophoto tile cache (XYZ tiles requested from a WMS in EPSG:4326) |
