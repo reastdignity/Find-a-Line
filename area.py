@@ -210,6 +210,21 @@ def _near(theme: str, limit, reach: float, buffer: float, cache_dir: str):
     return project(grown, crs, "EPSG:4326"), notes
 
 
+def from_shapes(shapes: list, buffer: float, limit=None, label: str = "the area"):
+    """One WGS84 geometry from shapes (WGS84): polygons as they are, points and lines grown
+    by `buffer` metres, all clipped to `limit` (a WGS84 polygon) if given."""
+    from shapely.ops import unary_union
+    areas = [g for g in shapes if g.geom_type in ("Polygon", "MultiPolygon")]
+    others = [g for g in shapes if g.geom_type not in ("Polygon", "MultiPolygon")]
+    parts = areas + ([_buffered(others, buffer)] if others else [])
+    geometry = unary_union(parts) if parts else None
+    if geometry is None or geometry.is_empty:
+        raise ValueError(f"{label}: no geometries")
+    if limit is not None:
+        geometry = geometry.intersection(limit)
+    return geometry
+
+
 def from_spec(spec: str, buffer: float, within: str, cache_dir: str, reach: float = 0.0) -> "Polygon":
     """The search area of --area (with --buffer and --within):
     coast    land and sea within `buffer` of the OSM coastline
@@ -238,16 +253,7 @@ def from_spec(spec: str, buffer: float, within: str, cache_dir: str, reach: floa
         if limit is not None:
             geometry = geometry.intersection(limit)
     elif os.path.exists(spec):
-        shapes = _read_file(spec)
-        areas = [g for g in shapes if g.geom_type in ("Polygon", "MultiPolygon")]
-        others = [g for g in shapes if g.geom_type not in ("Polygon", "MultiPolygon")]
-        parts = areas + ([_buffered(others, buffer)] if others else [])
-        from shapely.ops import unary_union
-        geometry = unary_union(parts) if parts else None
-        if geometry is None or geometry.is_empty:
-            raise ValueError(f"{spec}: no geometries")
-        if limit is not None:
-            geometry = geometry.intersection(limit)
+        geometry = from_shapes(_read_file(spec), buffer, limit, spec)
     else:
         raise ValueError(f"--area {spec!r}: expected coast, cliffs, osm:<name> or an existing file")
     if geometry.is_empty:
