@@ -297,20 +297,20 @@
     "expected": {
       "anchors": 433,
       "open": 433,
-      "checked": 2137,
-      "lines": 920,
-      "spots": 152,
-      "csv_sha256": "cf1c87e85fe5777f492e152d3c10d1f9bcb6016eb23ebdca0e43c2793987ed0f",
-      "length_km": 511.394,
-      "clearance_min": 0.02,
-      "clearance_mean": 14.214,
-      "clearance_max": 66.27,
+      "checked": 2148,
+      "lines": 925,
+      "spots": 154,
+      "csv_sha256": "e827abd2d8524eda87e1566a986f9a9a8ebe7d0d392551d4d68c219ca35c22f7",
+      "length_km": 513.102,
+      "clearance_min": 0.01,
+      "clearance_mean": 14.233,
+      "clearance_max": 66.24,
       "over_trees": 0,
       "coverage": 100.0,
       "empty_tiles": 0
     },
     "notes": "",
-    "seconds": 1.9
+    "seconds": 1.8
   },
   "R13": {
     "place": "Quick smoke test, Kasprowy Wierch (~15 s with cache)",
