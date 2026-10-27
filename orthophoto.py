@@ -130,7 +130,7 @@ def _get(url: str, params: Optional[Dict], z: int, x: int, y: int) -> bytes:
         except requests.RequestException as e:
             last_error = e
         time.sleep(2 ** attempt)
-    raise RuntimeError(f"Could not download orthophoto tile {z}/{x}/{y}: {last_error}")
+    raise RuntimeError(f"Could not download orthophoto tile {z}/{x}/{y}: {cache.clean_error(last_error)}")
 
 
 def _get_map(url: str, layer: str, z: int, x: int, y: int, png: bool = False) -> bytes:

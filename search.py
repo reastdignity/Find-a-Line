@@ -172,7 +172,7 @@ def plan_search(params: SearchParams, paths: Paths, on_event: Optional[OnEvent] 
             else:
                 area = ar.from_spec(params.area, params.buffer, params.within, paths.cache, params.max_length)
         except (ValueError, requests.RequestException) as e:
-            raise SearchError(f"Area: {e}")
+            raise SearchError(f"Area: {cache.clean_error(e)}")
         center_lat, center_lon = area.center
     else:
         if params.lat is not None:
@@ -185,7 +185,7 @@ def plan_search(params: SearchParams, paths: Paths, on_event: Optional[OnEvent] 
         source, reason = src.choose_source(params.source, center_lat, center_lon, paths.cache,
                                            params.elevation_file, params.surface_file)
     except ValueError as e:
-        raise SearchError(str(e))
+        raise SearchError(cache.clean_error(e))
     src.OpenTopographyTiles.api_key = params.opentopo_key
     nmpt = params.nmpt_mode
     if nmpt and source.nmpt is None:

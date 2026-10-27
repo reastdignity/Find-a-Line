@@ -99,6 +99,16 @@ def clean_url(url: Optional[str]) -> Optional[str]:
     return re.sub(r"((?:api_?key|key|token)=)[^&]+", r"\1...", url, flags=re.I) if url else url
 
 
+def clean_error(error) -> str:
+    """The message of an error (or a text) with the query strings of its URLs cut off.
+
+    requests puts the whole URL into its errors ("... for url: https://...?API_Key=..."),
+    and these messages reach the terminal, job events and the web page; a key or token
+    in a query must not. A query is "?" followed by text with "=" and no spaces.
+    """
+    return re.sub(r"\?[^\s'\"()<>?]*=[^\s'\"()<>]*", "?...", str(error))
+
+
 def _split(cache_dir: str, path: str):
     rel = os.path.relpath(path, cache_dir).replace("\\", "/")
     top, _, inner = rel.partition("/")

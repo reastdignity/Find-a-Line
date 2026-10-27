@@ -170,7 +170,7 @@ def sea_mask(grid: Grid, cache_dir: str, mode: str, copernicus_sea: np.ndarray,
         try:
             lines = _osm_coastline(grid, cache_dir, update)
         except (requests.RequestException, ValueError) as e:
-            warning = (f"OpenStreetMap coastline could not be downloaded from Overpass ({e}). "
+            warning = (f"OpenStreetMap coastline could not be downloaded from Overpass ({cache.clean_error(e)}). "
                        "Using the Copernicus water body mask instead: its shoreline is only accurate "
                        "to about 70 m (90% of the coast), so lines near the shore may be missed or "
                        "land next to the sea may be taken for water. Run again later, or use "

@@ -202,10 +202,10 @@ def run_phase(data_dir: str, job_id: str, phase: str):
             jobs.set(job_id, "done", run_id=result.run["id"], error=None)
         failed = False
     except (search.SearchError, ValueError, RuntimeError, requests.RequestException) as e:  # ValueError: parameters
-        jobs.set(job_id, "failed", error=str(e))
+        jobs.set(job_id, "failed", error=cache.clean_error(e))
         failed = False
     except Exception as e:  # anything else: keep the work folder to look at
-        jobs.set(job_id, "failed", error=f"{type(e).__name__}: {e} (working grids kept in {paths.work})")
+        jobs.set(job_id, "failed", error=f"{type(e).__name__}: {cache.clean_error(e)} (working grids kept in {paths.work})")
         raise
     finally:
         if not failed:

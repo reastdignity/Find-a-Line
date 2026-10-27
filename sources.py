@@ -75,7 +75,7 @@ def _get(url: str, params=None, timeout: int = 300, binary_types=("image", "octe
         except (requests.RequestException, RuntimeError) as e:
             last_error = e
             _sleep(attempt)
-    raise RuntimeError(str(last_error))
+    raise RuntimeError(cache.clean_error(last_error))  # no API key from a query in the message
 
 
 def _sleep(attempt: int):

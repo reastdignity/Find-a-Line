@@ -264,7 +264,7 @@ def create_app(data_dir: str, token: Optional[str] = None, port: int = PORT, sta
         try:
             return await run_in_threadpool(work)
         except Exception as e:  # the Geofabrik index could not be fetched
-            raise HTTPException(502, f"Geofabrik index: {e}")
+            raise HTTPException(502, f"Geofabrik index: {cache.clean_error(e)}")
 
     @app.post("/api/osm")
     async def osm_job(body: Dict):

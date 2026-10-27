@@ -369,3 +369,16 @@ def test_cgroup_limits(tmp_path, monkeypatch):
     monkeypatch.delenv("NUMBA_NUM_THREADS")
     assert search.line_threads(params) is None
     assert search.tile_core_size(params, 1.0) == 12000
+
+
+def test_errors_without_query_strings(monkeypatch):
+    """A failed request reports its URL without the query (an API key must not reach messages)."""
+    monkeypatch.setattr(src, "_sleep", lambda attempt: None)
+    url = "http://127.0.0.1:9/API/globaldem?demtype=NASADEM&API_Key=secret123"
+    with pytest.raises(RuntimeError) as error:
+        src._get(url, timeout=2)
+    assert "secret123" not in str(error.value) and "/API/globaldem" in str(error.value)
+    with pytest.raises(RuntimeError) as error:
+        src._get("http://127.0.0.1:9/API/globaldem", params={"API_Key": "secret123"}, timeout=2)
+    assert "secret123" not in str(error.value)
+    assert cache.clean_error("404 for url: https://x.org/a?key=k&b=1 (why?)") == "404 for url: https://x.org/a?... (why?)"

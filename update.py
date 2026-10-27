@@ -204,7 +204,7 @@ def run_update(cache_dir: str, folder: Optional[str] = None, update: str = "stal
                 if check.action() is True:
                     reported.add(check.path)
             except (RuntimeError, OSError, ValueError, requests.RequestException) as e:
-                errors.append(f"{check.path}: {e}")
+                errors.append(f"{check.path}: {cache.clean_error(e)}")
             progress.download.update(1, failed=len(errors))
         if group[0].parallel:
             with ThreadPoolExecutor(max_workers=THREADS) as pool:
@@ -343,5 +343,5 @@ def main(argv: List[str]) -> int:
                 for rid, pbf in found:
                     osmextract.update(cache_dir, rid, pbf)
     except (ValueError, RuntimeError, requests.RequestException) as e:
-        raise SystemExit(f"Failed: {e}")
+        raise SystemExit(f"Failed: {cache.clean_error(e)}")
     return 0

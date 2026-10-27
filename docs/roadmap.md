@@ -320,7 +320,7 @@ These apply from stage 3 on, the local version included. *Not yet* marks what st
 - **Area files**: KML/GPX/GeoJSON are read in the browser (`@tmcw/togeojson`, the browser's XML parser; at most 5 MB); the server takes no files, only a geometry checked by `geojson-pydantic` with vertex, depth and range limits and by shapely (`area.check_geometry`), so GDAL never reads data from the web and `defusedxml` is not needed. *Not yet*: a limit on the request body (SWAG, section 7).
 - **XSS / CSP**: names from Nominatim and user input are escaped. The static viewer allows a strict Content-Security-Policy without inline scripts. *Not yet*: inline styles in popups and `runs/index.html`, run ids not escaped in links (section 1: `style-src 'self'`).
 - **The local server is reachable by any website the user visits** (CSRF, DNS rebinding). The server checks the `Host` and `Origin` headers and requires a session token. *Not yet*: the `Origin` check (section 3).
-- **Secrets** (OpenTopography key) stay in server environment variables and never reach results or logs. *Not yet*: a `requests` error can carry the key in its URL (section 1: URLs without query strings).
+- **Secrets** (OpenTopography key) stay in server environment variables and never reach results or logs. Errors of requests report their URLs without query strings (`cache.clean_error`).
 - **Public deployment**: HTTPS only, security headers, non-root read-only containers, pinned dependencies checked with `pip-audit`, audit log. *Not yet*: all of it (sections 3, 4, 5, 7).
 - **No shell anywhere**: the worker calls `run_search()` directly.
 
