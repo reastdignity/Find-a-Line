@@ -109,8 +109,16 @@ def test_height_limits_filter_the_lines(tmp_path):
     assert 0 < len(expected) < len(everything) / 2
     key = lambda r: (r["anchor1_easting"], r["anchor1_northing"], r["anchor2_easting"], r["anchor2_northing"])
     assert sorted(map(line_values, high), key=key) == sorted(expected, key=key)
-    left_out = int(re.search(r"Left out as not high enough above the terrain \(.*\): (\d+)", output).group(1))
+    left_out = int(re.search(r"Left out by the line limits \(.*\): (\d+)", output).group(1))
     assert left_out == len(everything) - len(high)
+    # The wall angle: pairs are dropped before their pixels are checked, with the same result
+    # (lines.csv rounds angles to 0.1°: lines within 0.05° of the limit may go either way)
+    _, straight = run_search(tmp_path / "straight", *common, "--max-wall-angle", "40")
+    angle = lambda r: max(float(r["anchor1_wall_angle"]), float(r["anchor2_wall_angle"]))
+    clear = lambda rows: sorted((line_values(r) for r in rows if abs(angle(r) - 40) > 0.05), key=key)
+    expected = [r for r in everything if angle(r) <= 40]
+    assert 0 < len(expected) < len(everything)
+    assert clear(straight) == clear(expected) and all(angle(r) <= 40.05 for r in straight)
 
 
 def test_area_in_tiles(tmp_path):

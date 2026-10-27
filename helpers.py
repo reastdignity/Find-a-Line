@@ -31,33 +31,75 @@ class Line(NamedTuple):
     height_max: float              # largest height of the webbing above the terrain (webbing_height)
     height_mean: float             # its mean over the pixels between the anchors
     high_pct: float                # % of those pixels where it is at least high_above
+    angle1: float                  # degrees between the line and the downslope direction at anchor 1
+    angle2: float                  # the same at anchor 2 (wall_angles)
 
 
 @dataclass
-class HeightLimits:
-    """Search limits of the webbing heights above the terrain (None: no limit):
-    --min-height, --min-mean-height and --min-high-share (% of high_above)."""
+class LineLimits:
+    """Search limits of the lines (None: no limit): the webbing heights above the terrain
+    (--min-height, --min-mean-height, --min-high-share as % of high_above) and the angle
+    to the wall at both anchors (--max-wall-angle)."""
     min_height: Optional[float] = None
     min_mean_height: Optional[float] = None
     min_high_share: Optional[float] = None
-    left_out: int = 0  # valid lines that were not high enough
+    max_wall_angle: Optional[float] = None
+    left_out: int = 0  # valid lines that did not reach the limits
 
     @property
     def active(self) -> bool:
-        return any(v is not None for v in (self.min_height, self.min_mean_height, self.min_high_share))
+        return any(v is not None for v in (self.min_height, self.min_mean_height, self.min_high_share,
+                                           self.max_wall_angle))
 
-    def passes(self, height_max: float, height_mean: float, high_pct: float) -> bool:
+    def passes(self, height_max: float, height_mean: float, high_pct: float, angle1: float, angle2: float) -> bool:
         ok = ((self.min_height is None or height_max >= self.min_height)
               and (self.min_mean_height is None or height_mean >= self.min_mean_height)
-              and (self.min_high_share is None or high_pct >= self.min_high_share))
+              and (self.min_high_share is None or high_pct >= self.min_high_share)
+              and (self.max_wall_angle is None or max(angle1, angle2) <= self.max_wall_angle))
         if not ok:
             self.left_out += 1
         return ok
 
     def describe(self) -> str:
         parts = [f"{text} {v:g}" for text, v in (("height ≥", self.min_height), ("mean ≥", self.min_mean_height),
-                                                  ("high % ≥", self.min_high_share)) if v is not None]
+                                                  ("high % ≥", self.min_high_share),
+                                                  ("wall angle ≤", self.max_wall_angle)) if v is not None]
         return ", ".join(parts)
+
+
+def downslope(elevation: np.ndarray, anchors: np.ndarray, res: float) -> np.ndarray:
+    """Unit vectors (row, col) of the downslope direction at the anchors: the Horn gradient
+    of the 3 x 3 pixels around each (pixels outside the grid or without data take the
+    anchor's elevation); (0, 0) where the terrain is flat."""
+    anchors = np.asarray(anchors, dtype=np.int64).reshape(-1, 2)
+    h, w = elevation.shape
+    z = np.empty((len(anchors), 3, 3))
+    centre = np.asarray(elevation[anchors[:, 0], anchors[:, 1]], dtype=np.float64)
+    for i in range(3):
+        for j in range(3):
+            r, c = anchors[:, 0] + i - 1, anchors[:, 1] + j - 1
+            inside = (r >= 0) & (r < h) & (c >= 0) & (c < w)
+            values = np.full(len(anchors), np.nan)
+            values[inside] = elevation[r[inside], c[inside]]
+            z[:, i, j] = np.where(np.isnan(values), centre, values)
+    weights = np.array([1.0, 2.0, 1.0])
+    d_col = ((z[:, :, 2] - z[:, :, 0]) @ weights) / (8 * res)
+    d_row = ((z[:, 2, :] - z[:, 0, :]) @ weights) / (8 * res)
+    vector = -np.column_stack([d_row, d_col])
+    norm = np.hypot(vector[:, 0], vector[:, 1])
+    return np.divide(vector, norm[:, None], out=np.zeros_like(vector), where=norm[:, None] > 0)
+
+
+def wall_angles(a1: np.ndarray, a2: np.ndarray, down1: np.ndarray, down2: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+    """Degrees (0-180) between each line, seen from its anchor, and the downslope direction
+    there (downslope): 0 the line leaves the edge straight over the drop, 90 it runs along
+    the wall (or the terrain at the anchor is flat)."""
+    d = (np.asarray(a2, dtype=np.float64) - np.asarray(a1, dtype=np.float64)).reshape(-1, 2)
+    n = np.hypot(d[:, 0], d[:, 1])
+    with np.errstate(invalid="ignore"):  # a pair of the same pixel (never a line): NaN
+        cos1 = (d * down1).sum(axis=1) / n
+        cos2 = -(d * down2).sum(axis=1) / n
+    return tuple(np.degrees(np.arccos(np.clip(c, -1.0, 1.0))) for c in (cos1, cos2))
 
 
 def fall_allowance(sag_table=None) -> float:

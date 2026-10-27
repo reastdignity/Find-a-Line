@@ -110,6 +110,9 @@ class SearchParams(BaseModel):
                                                    "many metres above the terrain", "search")
     min_high_share: Optional[float] = field(None, "keep only lines that are at least --high-above metres above "
                                                   "the terrain over at least this % of their length", "search")
+    max_wall_angle: Optional[float] = field(None, "keep only lines that leave both anchors at most this many "
+                                                  "degrees from the downslope direction there (0: straight out "
+                                                  "over the drop, 90: along the wall)", "search")
     threads: Optional[int] = field(None, "number of threads for the line search (default: CPU count - 1)",
                                    "search")
     tile_size: Optional[float] = field(None, "large areas are computed in square tiles of this size in metres "
@@ -182,6 +185,8 @@ class SearchParams(BaseModel):
             raise ValueError("--high-above cannot be negative")
         if self.min_high_share is not None and not 0 <= self.min_high_share <= 100:
             raise ValueError("--min-high-share is a share of the length: 0 to 100")
+        if self.max_wall_angle is not None and not 0 <= self.max_wall_angle <= 180:
+            raise ValueError("--max-wall-angle is 0 to 180 degrees")
         if self.tile_size is not None and self.tile_size < 100:
             raise ValueError("--tile-size must be at least 100 m")
         if self.within and self.area is None:

@@ -9,7 +9,8 @@ import iconUrl from "leaflet/dist/images/marker-icon.png";
 import shadowUrl from "leaflet/dist/images/marker-shadow.png";
 import { render } from "preact";
 import "./viewer.css";
-import { dh, lowerAnchor, passes, range as valueRange, saveFilters, savedFilters, type Filters } from "./filters";
+import { dh, lowerAnchor, passes, range as valueRange, saveFilters, savedFilters, wallAngle,
+         type Filters } from "./filters";
 import { groupLines, type Group } from "./grouping";
 import { baseLayers } from "./layers";
 import { inLocalPlane, listOthers, loadLines, colorOf, NEARBY_KM, saveChoice, savedChoice } from "./others";
@@ -50,6 +51,10 @@ function lineInfo(l: Line): string {
   if (isFinite(l.hmax)) {
     html += "<br><b>Webbing above the terrain:</b> up to " + l.hmax.toFixed(0) + " m, mean " + l.hmean.toFixed(0) +
       " m, " + l.highPct.toFixed(0) + "% of the line " + highAbove + " m or more";
+  }
+  if (isFinite(l.angle1)) {
+    html += "<br><b>Angle to the wall:</b> A1 " + l.angle1.toFixed(0) + "°, A2 " + l.angle2.toFixed(0) +
+      "° (0° straight out over the drop)";
   }
   if (l.water > 0) html += "<br><b>Over water:</b> " + l.water.toFixed(0) + " m of " + l.len.toFixed(0) + " m";
   if (l.filled > 0)
@@ -190,7 +195,8 @@ function start(data: RunData) {
           measuredLine = {lat1: a.lat, lon1: a.lng, lat2: b.lat, lon2: b.lng, x1: 0, y1: 0, x2: 0, y2: 0,
                           len: p.d[n], clr: p.min[1], clrN: p.min_nmpt ? p.min_nmpt[1] : null,
                           e1: p.z[0]!, e2: p.z[n]!, over: false, water: p.water_m, filled: p.filled_m,
-                          hmax: p.max_height ? p.max_height[1] : NaN, hmean: NaN, highPct: NaN, prof: p};
+                          hmax: p.max_height ? p.max_height[1] : NaN, hmean: NaN, highPct: NaN,
+                          angle1: NaN, angle2: NaN, prof: p};
           drawBox();
           showProfile(measuredLine);
         })
@@ -237,7 +243,7 @@ function start(data: RunData) {
                          clrN: valueRange(all, (l) => l.clrN), dh: valueRange(all, dh),
                          elev: valueRange(all, lowerAnchor), hmax: valueRange(all, (l) => l.hmax),
                          hmean: valueRange(all, (l) => l.hmean), highPct: valueRange(all, (l) => l.highPct),
-                         highAbove: data.high_above,
+                         highAbove: data.high_above, angle: valueRange(all, wallAngle),
                          group: largestGroup > 1 ? {min: 1, max: largestGroup} : null,
                          water: all.some((l) => l.water > 0), filled: all.some((l) => l.filled > 0)}}
                 onChange={(next) => { state = next; drawLines(); }}

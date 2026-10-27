@@ -95,7 +95,9 @@ FIELDS = ["group", "representative", "group_size", "length_m", "clearance_m",
           "clearance_nmpt_m", "over_trees_buildings", "water_m", "filled_m",
           "height_max_m", "height_mean_m", "high_pct",
           "anchor1_lat", "anchor1_lon", "anchor1_elev_m", "anchor1_northing", "anchor1_easting",
-          "anchor2_lat", "anchor2_lon", "anchor2_elev_m", "anchor2_northing", "anchor2_easting"]
+          "anchor1_wall_angle",
+          "anchor2_lat", "anchor2_lon", "anchor2_elev_m", "anchor2_northing", "anchor2_easting",
+          "anchor2_wall_angle"]
 
 
 def _rows(groups: List[Dict]):
@@ -118,9 +120,11 @@ def _rows(groups: List[Dict]):
                 "anchor1_lat": round(r["anchor1"][0], 7), "anchor1_lon": round(r["anchor1"][1], 7),
                 "anchor1_elev_m": round(r["elev_a1"], 2),
                 "anchor1_northing": round(r["a1_xy"][1], 2), "anchor1_easting": round(r["a1_xy"][0], 2),
+                "anchor1_wall_angle": round(r["angle1"], 1),
                 "anchor2_lat": round(r["anchor2"][0], 7), "anchor2_lon": round(r["anchor2"][1], 7),
                 "anchor2_elev_m": round(r["elev_a2"], 2),
                 "anchor2_northing": round(r["a2_xy"][1], 2), "anchor2_easting": round(r["a2_xy"][0], 2),
+                "anchor2_wall_angle": round(r["angle2"], 1),
             }
 
 
@@ -199,7 +203,8 @@ def params_summary(meta: Dict) -> str:
         text += f", Δh ≤{p['max_anchor_diff']:g}% / {p['max_anchor_diff_m']:g} m"
     limits = [f"{text}{p[key]:g}{unit}" for key, text, unit in (
         ("min_height", "height ≥", " m"), ("min_mean_height", "mean height ≥", " m"),
-        ("min_high_share", f"≥{p.get('high_above', 20):g} m high over ≥", "%")) if p.get(key) is not None]
+        ("min_high_share", f"≥{p.get('high_above', 20):g} m high over ≥", "%"),
+        ("max_wall_angle", "wall angle ≤", "°")) if p.get(key) is not None]
     if limits:
         text += ", " + ", ".join(limits)
     if p.get("model") == "sag":

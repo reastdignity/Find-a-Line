@@ -67,6 +67,8 @@ def coordify(lines: List[Line], grid: Grid, nmpt_mode: Optional[str]) -> List[Di
             "height_max": line.height_max,
             "height_mean": line.height_mean,
             "high_pct": line.high_pct,
+            "angle1": line.angle1,
+            "angle2": line.angle2,
         })
     progress.compute.finish()
     return results
@@ -256,7 +258,8 @@ def save_map(results: List[Dict], area, run_path: str, runs_dir: str, run: Dict,
                   None if r["clearance_nmpt"] is None else round(r["clearance_nmpt"], 2),
                   round(r["elev_a1"], 2), round(r["elev_a2"], 2), r["over_obstacles"],
                   round(r.get("water_m", 0.0), 1), round(r.get("filled_m", 0.0), 1),
-                  r["height_max"], round(r["height_mean"], 2), round(r["high_pct"], 1)] for r in chunk]
+                  r["height_max"], round(r["height_mean"], 2), round(r["high_pct"], 1),
+                  round(r["angle1"], 1), round(r["angle2"], 1)] for r in chunk]
         on_lines(len(chunk), "data.js")
     data = {
         "run": {"id": run["id"], "name": run["name"], "created": run["created"],

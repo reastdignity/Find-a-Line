@@ -434,8 +434,8 @@ def _lines(plan: Plan, data: Data, core: Optional[tuple] = None) -> Tuple[List[D
     valid_lines = ls.find_valid_lines(data.elevation, data.surface, anchors, plan.resolution,
                                       p.min_length, p.max_length, plan.nmpt, p.threads,
                                       sag_table, p.max_anchor_diff / 100, p.max_anchor_diff_m, first,
-                                      p.high_above, sh.HeightLimits(p.min_height, p.min_mean_height,
-                                                                    p.min_high_share))
+                                      p.high_above, sh.LineLimits(p.min_height, p.min_mean_height,
+                                                                  p.min_high_share, p.max_wall_angle))
     if not valid_lines and core is None:
         raise SearchError("No lines found matching elevation requirements.")
 
@@ -650,6 +650,7 @@ def _run_params(plan: Plan) -> Dict:
             "max_anchor_diff_m": p.max_anchor_diff_m,
             "slope_threshold": p.slope_threshold, "slope_file": p.slope_file, "high_above": p.high_above,
             "min_height": p.min_height, "min_mean_height": p.min_mean_height, "min_high_share": p.min_high_share,
+            "max_wall_angle": p.max_wall_angle,
             "nmpt": plan.nmpt, "water": p.water, "coastline": p.coastline,
             "shore_buffer": p.shore_buffer, "fill_gaps": p.fill_gaps,
             "group_distance": plan.group_distance,

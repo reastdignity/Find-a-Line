@@ -171,15 +171,35 @@ def test_evaluate_lines_matches_evaluate_line(model):
     table = sag.EnvelopeTable(sag.Rigging(), 20, 200) if model == "sag" else None
     for mode, high_above in (("mark", sh.HIGH_ABOVE), ("reject", 35.0)):
         fast = ls.evaluate_lines(found, anchors, terrain, 1.0, surface, table, mode, high_above)
+        down = sh.downslope(terrain, anchors, 1.0)
+        angles = np.column_stack(sh.wall_angles(anchors[found[:, 0]], anchors[found[:, 1]],
+                                                down[found[:, 0]], down[found[:, 1]])).tolist()
         slow = []
-        for i, j in found:
+        for (i, j), (angle1, angle2) in zip(found, angles):
             result = sh.evaluate_line(anchors[i], anchors[j], terrain, 1.0, surface, table, high_above)
             if sh.is_valid(result, mode):  # as find_valid_lines always made them
                 elev_a1, elev_a2, length, clearance, clearance_nmpt, *heights = result
                 slow.append(sh.Line(tuple(map(int, anchors[i])), tuple(map(int, anchors[j])),
-                                    length, elev_a1, elev_a2, clearance, clearance_nmpt, *heights))
+                                    length, elev_a1, elev_a2, clearance, clearance_nmpt, *heights, angle1, angle2))
         assert slow and fast == slow
         assert 0 < sum(0 < line.high_pct < 100 for line in fast)  # the threshold is crossed
+
+
+def test_wall_angles():
+    """The downslope direction of a slope and the angle of lines leaving it."""
+    import helpers as sh
+    rows, cols = np.mgrid[0:20, 0:20]
+    terrain = 100.0 - 2.0 * cols  # falls towards the east (growing col)
+    terrain[5, 5] = np.nan        # no data next to an anchor: its elevation is used instead
+    down = sh.downslope(terrain, [(10, 10), (4, 4), (0, 0)], 1.0)
+    assert np.allclose(down[0], [0, 1])
+    # next to no data and at the corner of the grid: still a direction, roughly east
+    assert np.allclose(np.hypot(down[1:, 0], down[1:, 1]), 1) and (down[1:, 1] > 0.9).all()
+    a1, a2 = np.array([[10, 10], [10, 10], [10, 10]]), np.array([[10, 18], [2, 10], [18, 18]])
+    angle1, angle2 = sh.wall_angles(a1, a2, down[[0, 0, 0]], down[[0, 0, 0]])
+    assert np.allclose(angle1, [0, 90, 45]) and np.allclose(angle2, [180, 90, 135])  # east, north, south-east
+    assert np.array_equal(sh.downslope(np.full((3, 3), 5.0), [(1, 1)], 1.0), [[0, 0]])  # flat: 90° to all
+    assert np.allclose(sh.wall_angles(np.array([[1, 1]]), np.array([[1, 2]]), np.zeros((1, 2)), np.zeros((1, 2))), 90)
 
 
 def test_webbing_heights():
@@ -228,7 +248,8 @@ def _fake_lines(n):
     return [{"anchor1": (50 + k / 1e4, 19.1234567), "anchor2": (50.0001, 19 + k / 1e4), "a1_xy": (k * 0.5, 1.0),
              "a2_xy": (2.0, k / 3), "length": 100 + k / 7, "clearance": k / 3, "clearance_nmpt": None if k % 2 else k / 9,
              "over_obstacles": bool(k % 3), "elev_a1": 400 + k / 11, "elev_a2": 410.0, "water_m": 0.0, "filled_m": k / 13,
-             "height_max": 30 + k / 17, "height_mean": 20 + k / 19, "high_pct": k / 0.23, "profile": None}
+             "height_max": 30 + k / 17, "height_mean": 20 + k / 19, "high_pct": k / 0.23, "angle1": k * 7.3,
+             "angle2": 90 - k / 3, "profile": None}
             for k in range(n)]
 
 

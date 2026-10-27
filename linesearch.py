@@ -143,12 +143,14 @@ def _sector(dr, dc):
 
 @njit(parallel=True, cache=True)
 def _pairs(z, anchors, elev, rings, todo, order, starts, cell, cells_x, res,
-           min_length, max_length, max_dh_ratio, max_dh,
+           min_length, max_length, max_dh_ratio, max_dh, down, cos_limit,
            use_sag, log_spans, ratios, table, fall_zone, first_only, offsets, out, counts):
     """Partners of the anchors in todo that pass all tests: only partners with a higher index,
     or with first_only those for which the anchor is the first (smaller x, then y; a tile
     keeps the lines whose first anchor lies in its core). A pair is always checked and
     written from its lower index: the pixels sampled depend on the direction (rint).
+    With cos_limit > -1, the line must leave both anchors within the wall angle whose
+    cosine it is (down: helpers.downslope; within EPS, evaluate_lines decides).
 
     With offsets None, counts[q] = [candidate pairs, pairs checked, lines] for todo[q].
     Otherwise the pairs are written to out from offsets[q] on.
@@ -178,6 +180,11 @@ def _pairs(z, anchors, elev, rings, todo, order, starts, cell, cells_x, res,
                         continue
                     if not (abs(elev[b] - elev[a]) <= min(max_dh_ratio * length, max_dh)):
                         continue
+                    if cos_limit > -1.0:
+                        n = math.hypot(dr, dc)
+                        if (dr * down[a, 0] + dc * down[a, 1]) / n < cos_limit - EPS or \
+                                -(dr * down[b, 0] + dc * down[b, 1]) / n < cos_limit - EPS:
+                            continue
                     candidates += 1
                     need = min(RINGS, max(abs(dr), abs(dc)) // 2)
                     if rings[a, _sector(dr, dc)] < need or rings[b, _sector(-dr, -dc)] < need:
@@ -283,10 +290,16 @@ def _evaluate(z, s, has_s, anchors, found, res, use_sag, log_spans, span_index, 
 
 def evaluate_lines(found: np.ndarray, anchors: np.ndarray, elevation: np.ndarray, res: float,
                    surface: Optional[np.ndarray], sag_table, nmpt_mode: Optional[str],
-                   high_above: float = sh.HIGH_ABOVE, heights: Optional[sh.HeightLimits] = None) -> List[sh.Line]:
+                   high_above: float = sh.HIGH_ABOVE, limits: Optional[sh.LineLimits] = None,
+                   down: Optional[np.ndarray] = None) -> List[sh.Line]:
     """The lines among the pairs found (indices into anchors) that pass helpers.evaluate_line
-    and helpers.is_valid: the same decision and values, computed in parallel. With heights,
-    only the lines high enough above the terrain (sh.HeightLimits.passes)."""
+    and helpers.is_valid: the same decision and values, computed in parallel. With limits,
+    only the lines that reach them (sh.LineLimits.passes). down: helpers.downslope of the
+    anchors (computed here when not given)."""
+    if down is None:
+        down = sh.downslope(elevation, anchors, res)
+    found = np.asarray(found, dtype=np.int64).reshape(-1, 2)
+    angles = sh.wall_angles(anchors[found[:, 0]], anchors[found[:, 1]], down[found[:, 0]], down[found[:, 1]])
     out = np.zeros((len(found), 9))
     if len(found):
         if sag_table is None:
@@ -305,11 +318,12 @@ def evaluate_lines(found: np.ndarray, anchors: np.ndarray, elevation: np.ndarray
                   np.ascontiguousarray(found, dtype=np.int64), float(res), sag_table is not None, log_spans,
                   span_index, ratios, ratio_index, sag, fractions, fall_zone, float(high_above), out)
     lines = []
-    for (i, j), (e1, e2, length, clearance, nmpt, ok, *values) in zip(found.tolist(), out.tolist()):
+    for (i, j), (e1, e2, length, clearance, nmpt, ok, *values), angle1, angle2 in zip(
+            found.tolist(), out.tolist(), angles[0].tolist(), angles[1].tolist()):
         result = (e1, e2, length, clearance, None if nmpt != nmpt else nmpt) if ok else None
-        if sh.is_valid(result, nmpt_mode) and (heights is None or heights.passes(*values)):
+        if sh.is_valid(result, nmpt_mode) and (limits is None or limits.passes(*values, angle1, angle2)):
             lines.append(sh.Line(tuple(anchors[i].tolist()), tuple(anchors[j].tolist()), length, e1, e2,
-                                 clearance, result[4], *values))
+                                 clearance, result[4], *values, angle1, angle2))
     return lines
 
 
@@ -348,7 +362,7 @@ def find_valid_lines(elevation: np.ndarray, surface: Optional[np.ndarray], ancho
                      nmpt_mode: Optional[str] = None, threads: Optional[int] = None,
                      sag_table=None, max_dh_ratio: float = np.inf,
                      max_dh: float = np.inf, first: Optional[np.ndarray] = None,
-                     high_above: float = sh.HIGH_ABOVE, heights: Optional[sh.HeightLimits] = None
+                     high_above: float = sh.HIGH_ABOVE, limits: Optional[sh.LineLimits] = None
                      ) -> List[sh.Line]:
     """Finds valid lines between anchors.
 
@@ -366,8 +380,8 @@ def find_valid_lines(elevation: np.ndarray, surface: Optional[np.ndarray], ancho
         first: Optional mask of the anchors whose lines are wanted when they are the
             first anchor (smaller x, then y): the anchors in the core of a tile
         high_above: Height above the terrain from which a pixel of a line counts as high
-        heights: Optional limits of the heights above the terrain; lines below them are
-            left out (counted in heights.left_out)
+        limits: Optional limits of the heights above the terrain and the wall angle; lines
+            that do not reach them are left out (counted in limits.left_out)
 
     Returns:
         Valid lines, longest first
@@ -409,9 +423,12 @@ def find_valid_lines(elevation: np.ndarray, surface: Optional[np.ndarray], ancho
     starts = np.searchsorted(np.sort(keys), np.arange(cells_y * cells_x)).astype(np.int64)
 
     args = (z, anchors, elev, rings)
+    down = sh.downslope(z, anchors, res)
+    max_angle = limits.max_wall_angle if limits is not None and limits.max_wall_angle is not None else 180.0
+    cos_limit = -2.0 if max_angle >= 180 else math.cos(math.radians(max_angle))
     tail = (order, starts, cell, cells_x, res, float(min_length), float(max_length),
-            float(max_dh_ratio), float(max_dh), use_sag, log_spans, ratios, table, float(fall_zone),
-            first is not None)
+            float(max_dh_ratio), float(max_dh), down, cos_limit, use_sag, log_spans, ratios, table,
+            float(fall_zone), first is not None)
     pairs, candidates, checked = [], 0, 0
     progress.compute.start("anchor pairs", len(todo_all), unit="anchor")
     for todo in np.array_split(todo_all, min(CHUNKS, max(1, len(todo_all)))):
@@ -432,15 +449,15 @@ def find_valid_lines(elevation: np.ndarray, surface: Optional[np.ndarray], ancho
     progress.compute.start("checking lines", len(found), unit="line")
     for part in np.array_split(found, max(1, min(CHUNKS, len(found) // 10000))):
         valid_lines += evaluate_lines(part, anchors, elevation, res, surface, sag_table, nmpt_mode, high_above,
-                                      heights)
+                                      limits, down)
         progress.compute.update(len(part), valid=len(valid_lines))
     progress.compute.finish(f"{len(valid_lines)} valid")
     print(f"\n{'=' * 60}")
     print(f"Completed in {time.time() - start_time:.2f} seconds")
     print(f"Candidate pairs between anchors with an open direction: {candidates}")
     print(f"Checked pixel by pixel: {checked}")
-    if heights is not None and heights.active:
-        print(f"Left out as not high enough above the terrain ({heights.describe()}): {heights.left_out}")
+    if limits is not None and limits.active:
+        print(f"Left out by the line limits ({limits.describe()}): {limits.left_out}")
     print(f"Found {len(valid_lines)} valid lines")
     print(f"{'=' * 60}")
 
