@@ -1755,6 +1755,55 @@ def test_names_paths_and_profiles(run_people, clip_run, tmp_path, account_settin
     assert not jb.warn_without_cgroup(str(cgroup))
 
 
+def test_disk_and_download_quota_in_the_worker(tmp_path, monkeypatch):
+    """The worker checks the free disk again before each phase (also for a user without limits), counts
+    the estimate of a download against the user's MB of 24 hours, and on the public site removes the
+    work folder of a job that failed unexpectedly."""
+    import jobs as jb
+    import search
+    from settings import Limits
+    _phase_in_this_process(monkeypatch)
+    jobs = jb.Jobs(str(tmp_path), public=True)
+    clip = {"params": {**CLIP, "northing": 254608, "easting": 553966, "radius": 150}, "geometry": None}
+
+    def phase(job, name, limits):
+        jobs.claim("queued" if name == "download" else "ready", jb.PHASE_STATUS[name], "w1")
+        jb.run_phase(str(tmp_path), job, name, limits, True)
+        return jobs.get(job)
+
+    class Disk:
+        free = 5e9
+    real = jb.shutil.disk_usage
+    monkeypatch.setattr(jb.shutil, "disk_usage", lambda path: Disk())
+    short = Limits(free_disk_gb_min=20)
+    for unlimited in (False, True):
+        job = jobs.add(clip, "short of disk", user_id=7, unlimited=unlimited)
+        result = phase(job, "download", short)
+        assert result["status"] == "failed" and "disk space" in result["error"], result
+    job = jobs.add(clip, "ready", user_id=7)
+    monkeypatch.setattr(jb.shutil, "disk_usage", real)
+    assert phase(job, "download", Limits())["status"] == "ready"
+    monkeypatch.setattr(jb.shutil, "disk_usage", lambda path: Disk())
+    result = phase(job, "compute", short)
+    assert result["status"] == "failed" and "before its computing" in result["error"]
+    monkeypatch.setattr(jb.shutil, "disk_usage", real)
+
+    monkeypatch.setattr(search, "estimate_search", lambda plan: search.Estimate(download_mb=600, work_gb=0))
+    quota = Limits(download_mb_day_max=1000)
+    first, second = jobs.add(clip, "first", user_id=8), jobs.add(clip, "second", user_id=8)
+    assert phase(first, "download", quota)["status"] == "ready"
+    result = phase(second, "download", quota)
+    assert result["status"] == "failed" and "MB of downloads" in result["error"], result
+    assert phase(jobs.add(clip, "another user", user_id=9), "download", quota)["status"] == "ready"
+
+    broken = jobs.add({"geometry": None}, "broken", user_id=8)  # no params: an unexpected KeyError
+    jobs.claim("queued", "downloading", "w1")
+    with pytest.raises(KeyError):
+        jb.run_phase(str(tmp_path), broken, "download", None, True)
+    assert jobs.get(broken)["error"] == f"internal error, ref {broken}"
+    assert not os.path.exists(jobs.folder(broken))
+
+
 def test_request_limits(monkeypatch, tmp_path):
     """The public site's limits on request values (each overridable, `none` for no limit) refuse
     values over them and fields it does not allow, and give the form its min/max; locally, and for

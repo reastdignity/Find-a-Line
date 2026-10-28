@@ -154,7 +154,8 @@ class QuotaExceeded(ValueError):
 
 
 DAY = 86400.0  # seconds of the daily quotas (a moving 24 hours)
-USAGE = {"km2": "km² of search areas", "nominatim": "uncached Nominatim requests (place names, osm: areas)"}
+USAGE = {"km2": "km² of search areas", "nominatim": "uncached Nominatim requests (place names, osm: areas)",
+         "download_mb": "MB of downloads (the estimates of your searches)"}
 
 
 def _in(values: Iterable) -> str:
@@ -696,6 +697,17 @@ def nominatim_quota(jobs: Jobs, user_id: Optional[int], limits: Optional[Limits]
         osm.BEFORE_REQUEST = lambda: jobs.use(user_id, "nominatim", 1, limits.nominatim_day_max)
 
 
+def check_disk(data_dir: str, limits: Optional[Limits], phase: str):
+    """Fail a phase while the disk of the data folder has less free space than Limits.free_disk_gb_min
+    (a safeguard for everyone: also for users without limits)."""
+    if limits is None or limits.free_disk_gb_min is None:
+        return
+    free = shutil.disk_usage(data_dir).free / 1e9
+    if free < limits.free_disk_gb_min:
+        raise QuotaExceeded(f"the server is short of disk space ({free:.0f} GB free): the search stopped before "
+                            f"its {phase}; try again later", 503)
+
+
 def charge_area(jobs: Jobs, user_id: Optional[int], plan, limits: Optional[Limits]):
     """Count the km² of a search's area for its user against Limits.km2_day_max (QuotaExceeded over
     it); known only here for osm:<name> and coast/cliffs areas. A circle counts as π r²."""
@@ -721,6 +733,7 @@ def run_phase(data_dir: str, job_id: str, phase: str, limits: Optional[Limits] =
     jobs = Jobs(data_dir, public)
     job = jobs.get(job_id)
     request = json.loads(job["request"])
+    safeguards = limits  # of the server: for everyone
     if job["unlimited"]:
         limits = None  # a user without limits: the time limits of the phase (Scheduler) still apply
     nominatim_quota(jobs, job["user_id"], limits)
@@ -742,6 +755,7 @@ def run_phase(data_dir: str, job_id: str, phase: str, limits: Optional[Limits] =
     os.makedirs(paths.work, exist_ok=True)
     failed = True
     try:
+        check_disk(data_dir, safeguards, "download" if phase == "download" else "computing")
         if "osm" in request:  # an OpenStreetMap extract: one phase only
             import osmextract
             region = request["osm"]["region"]
@@ -765,8 +779,11 @@ def run_phase(data_dir: str, job_id: str, phase: str, limits: Optional[Limits] =
         plan.owner = job["user_id"]  # a tiled search resumes only for the same user
         if phase == "download":
             charge_area(jobs, job["user_id"], plan, limits)
-            if limits and limits.download_mb_max:  # the estimate costs index requests
-                search.check_estimate(plan, search.estimate_search(plan))
+            if limits and (limits.download_mb_max or limits.download_mb_day_max):  # the estimate asks the indexes
+                estimate = search.estimate_search(plan)
+                search.check_estimate(plan, estimate)
+                if limits.download_mb_day_max and job["user_id"] is not None:  # the estimate, before the download
+                    jobs.use(job["user_id"], "download_mb", estimate.download_mb, limits.download_mb_day_max)
             search.download_data(plan)
             if plan.tile_core:
                 os.makedirs(jobs.folder(job_id), exist_ok=True)
@@ -783,10 +800,11 @@ def run_phase(data_dir: str, job_id: str, phase: str, limits: Optional[Limits] =
     except (search.SearchError, ValueError, RuntimeError, requests.RequestException) as e:  # ValueError: parameters
         jobs.set(job_id, "failed", when=working, error=cache.clean_error(e))
         failed = False
-    except Exception as e:  # anything else: keep the work folder to look at
+    except Exception as e:  # anything else: keep the work folder to look at (not on the public site)
         if public:  # the traceback (raised below) goes to the log, the page gets a reference
-            print(f"internal error, ref {job_id} (working grids kept in {paths.work}):", file=sys.stderr)
+            print(f"internal error, ref {job_id} (its working grids are removed):", file=sys.stderr)
             jobs.set(job_id, "failed", when=working, error=f"internal error, ref {job_id}")
+            failed = False  # the public site keeps no work folders: its disk is shared
         else:
             jobs.set(job_id, "failed", when=working,
                      error=f"{type(e).__name__}: {cache.clean_error(e)} (working grids kept in {paths.work})")

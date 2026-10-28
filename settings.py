@@ -42,6 +42,7 @@ PUBLIC = {
     "region_km2_max": 2500, "area_km2_max": 50, "bbox_km_max": 75, "grid_mpx_max": 36, "tiles_max": 300, "anchors_max": 3_000_000,
     "lines_max": 3_000_000, "download_mb_max": 3000, "ortho_minutes": 10,
     "jobs_active_max": 2, "jobs_day_max": 20, "km2_day_max": 250, "runs_gb_max": 5, "nominatim_day_max": 50,
+    "download_mb_day_max": 10000,
     "estimate_rate": "20/minute;300/hour", "profile_rate": "30/minute;500/hour", "job_rate": "10/minute;60/hour",
     "queue_max": 50, "free_disk_gb_min": 20,
 }
@@ -114,6 +115,9 @@ class Limits(BaseSettings):
     km2_day_max: Optional[float] = Field(
         None, gt=0, description="km² of the search areas of a user in 24 hours (counted by the worker, which knows "
                                 "the area of osm: and coast/cliffs searches; circles count too)")
+    download_mb_day_max: Optional[float] = Field(
+        None, gt=0, description="MB a user's searches may download in 24 hours: the estimate of each search (the "
+                                "tiles not cached yet), counted when its download starts")
     runs_gb_max: Optional[float] = Field(
         None, gt=0, description="GB of a user's saved runs; no new search above it (runs can be deleted in Runs)")
     nominatim_day_max: Optional[int] = Field(
@@ -128,7 +132,8 @@ class Limits(BaseSettings):
     # Safeguards of the server, for everyone (also users without limits and administrators)
     queue_max: Optional[int] = Field(None, gt=0, description="searches waiting or running on the site at once")
     free_disk_gb_min: Optional[float] = Field(
-        None, ge=0, description="no new searches while the disk of the data folder has less free space, GB")
+        None, ge=0, description="no new searches while the disk of the data folder has less free space, GB; "
+                                "checked again before a search downloads and before it computes")
 
     @field_validator("estimate_rate", "profile_rate", "job_rate")
     @classmethod
