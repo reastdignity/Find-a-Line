@@ -9,7 +9,7 @@ import shadowUrl from "leaflet/dist/images/marker-shadow.png";
 import { render } from "preact";
 import { useEffect, useRef, useState } from "preact/hooks";
 import "./app.css";
-import { api, subscribe, type Field, type JobEvent, type RunListed, type SearchRequest } from "./api";
+import { api, subscribe, user, type Field, type JobEvent, type RunListed, type SearchRequest } from "./api";
 import { JobList, type Bar, type JobView } from "./Jobs";
 import { OsmPanel } from "./OsmPanel";
 import { PlaceMap } from "./PlaceMap";
@@ -65,6 +65,10 @@ function App() {
   return <div class="fa-app">
     <div class="fa-map" ref={mapRef}></div>
     <div class="fa-side">
+      {!user.local && <div class="fa-user">
+        <span>{user.name}{user.admin ? " (administrator)" : ""}</span>
+        <button class="fa-small" onClick={() => api.logout().finally(() => { location.href = "/"; })}>sign out</button>
+      </div>}
       <div class="fa-tabs">
         <button class={tab === "search" ? "fa-on" : ""} onClick={() => setTab("search")}>New search</button>
         <button class={tab === "jobs" ? "fa-on" : ""} onClick={() => setTab("jobs")}>

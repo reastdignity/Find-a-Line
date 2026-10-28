@@ -10,5 +10,6 @@ quotes; the files are git-ignored and never enter the image.
 | `findaline_github_client_secret` | The client secret of the GitHub OAuth app |
 | `findaline_google_client_secret` | The client secret of the Google OAuth client |
 
-Every file must exist (compose refuses to start without it), and the container
-user (uid 10001) must be able to read it, e.g. `sudo chown 10001:10001 secrets/findaline_* && sudo chmod 400 secrets/findaline_*`.
+Every file must exist (compose refuses to start without it): leave the file of a provider you do not
+use empty (with its client id unset), and it is not offered. The session secret must have at least 32
+characters. The container user (uid 10001) must be able to read it, e.g. `sudo chown 10001:10001 secrets/findaline_* && sudo chmod 400 secrets/findaline_*`.

@@ -214,6 +214,7 @@ findaline_map.html
 runs/
 work/
 jobs.sqlite*
+accounts.sqlite*
 
 # Viewer build tools (viewer/dist is committed)
 viewer/node_modules/

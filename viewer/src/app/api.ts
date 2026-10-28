@@ -64,6 +64,11 @@ export interface SearchRequest {
 
 const token = document.querySelector<HTMLMetaElement>("meta[name=findaline-token]")?.content || "";
 
+/** The signed-in user of the public site (web.py, accounts.User.public), or {local: true}. */
+export interface PageUser { local?: boolean; name?: string; provider?: string; status?: string; admin?: boolean }
+export const user: PageUser = JSON.parse(
+  document.querySelector<HTMLMetaElement>("meta[name=findaline-user]")?.content || "{\"local\": true}");
+
 async function call<T>(method: string, url: string, body?: unknown): Promise<T> {
   const init: RequestInit = {method, headers: {"X-Findaline-Token": token}};
   if (body !== undefined) {
@@ -92,6 +97,7 @@ export const api = {
   osm: (lat: number, lon: number) => call<OsmState>("GET", `/api/osm?lat=${lat}&lon=${lon}`),
   osmJob: (action: "download" | "update", region: string) =>
     call<{id: string}>("POST", "/api/osm", {action, region}),
+  logout: () => call<unknown>("POST", "/logout"),  // answered with the sign-in page
 };
 
 /** Events of all jobs after `since` (Server-Sent Events, reconnected by the browser), and whether

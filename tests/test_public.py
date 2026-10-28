@@ -1,25 +1,105 @@
 """The public mode of the web app (web.py --public, settings.PublicSettings): settings, guards
-and headers; without accounts, everything but the page and its assets answers 401."""
+and headers; signing in with GitHub and Google (accounts.py) against fake providers (an
+httpx2.MockTransport given to Authlib's clients), sessions, and who may do what."""
 
+import base64
+import hashlib
 import json
 import os
 import sys
+import time
 import warnings
+from urllib.parse import parse_qs, urlsplit
 
 import pytest
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, REPO)
+import accounts as ac  # noqa: E402
 import web  # noqa: E402
-from settings import PublicSettings  # noqa: E402
+from settings import AccountSettings, PublicSettings  # noqa: E402
 
 pytest.importorskip("httpx2")
+import httpx2  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 
 TOKEN = "test-token"
 URL = "https://lines.example.org"
 SETTINGS = {"FINDALINE_PUBLIC_URL": URL, "FINDALINE_TRUSTED_PROXY": "172.30.0.2",
             "FINDALINE_CONTACT": "admin@example.org"}
+ADMIN = ("github", "1")  # FINDALINE_ADMINS=github:1
+ACCOUNTS = {"FINDALINE_SESSION_SECRET": "s3cret-" * 6, "FINDALINE_GITHUB_CLIENT_ID": "gh-client",
+            "FINDALINE_GITHUB_CLIENT_SECRET": "gh-secret", "FINDALINE_GOOGLE_CLIENT_ID": "google-client",
+            "FINDALINE_GOOGLE_CLIENT_SECRET": "google-secret", "FINDALINE_ADMINS": "github:1"}
+
+
+class FakeProviders:
+    """GitHub and Google as Authlib's clients see them (an httpx2.MockTransport): codes are given out by
+    `authorize` (what the user's browser would get from the provider) and taken once, with the PKCE
+    verifier of their challenge; Google answers with an ID token signed by its own key."""
+
+    ISSUER = "https://accounts.google.com"
+
+    def __init__(self):
+        from joserfc.jwk import RSAKey
+        self.key = RSAKey.generate_key(2048, parameters={"kid": "k1"})
+        self.codes, self.tokens, self.calls = {}, {}, []
+        self.transport = httpx2.MockTransport(self.handle)
+        self.id_token_changes = {}  # claims to change in the next ID token (tests of its checks)
+
+    def authorize(self, location: str, user: dict) -> str:
+        """The callback address the provider sends the browser to, after `user` agreed."""
+        url = urlsplit(location)
+        query = {k: v[0] for k, v in parse_qs(url.query).items()}
+        assert query["code_challenge_method"] == "S256" and len(query["code_challenge"]) == 43
+        provider = "google" if url.hostname == "accounts.google.com" else "github"
+        assert query["redirect_uri"] == f"{URL}/auth/{provider}"
+        if provider == "google":
+            assert query["scope"] == "openid profile" and query["nonce"]
+        else:
+            assert "scope" not in query  # GitHub: public data only
+        code = os.urandom(8).hex()
+        self.codes[code] = {"challenge": query["code_challenge"], "user": user, "nonce": query.get("nonce"),
+                            "provider": provider}
+        return f"/auth/{provider}?code={code}&state={query['state']}"
+
+    def handle(self, request: httpx2.Request) -> httpx2.Response:
+        from joserfc import jwt
+        url = str(request.url)
+        self.calls.append(url)
+        if url == "https://accounts.google.com/.well-known/openid-configuration":
+            return httpx2.Response(200, json={
+                "issuer": self.ISSUER, "authorization_endpoint": "https://accounts.google.com/o/oauth2/v2/auth",
+                "token_endpoint": "https://oauth2.googleapis.com/token",
+                "jwks_uri": "https://www.googleapis.com/oauth2/v3/certs",
+                "id_token_signing_alg_values_supported": ["RS256"]})
+        if url == "https://www.googleapis.com/oauth2/v3/certs":
+            return httpx2.Response(200, json={"keys": [self.key.as_dict(private=False)]})
+        if url in ("https://github.com/login/oauth/access_token", "https://oauth2.googleapis.com/token"):
+            form = {k: v[0] for k, v in parse_qs(request.content.decode()).items()}
+            grant = self.codes.pop(form.get("code"), None)  # a code is taken once
+            if grant is None:
+                return httpx2.Response(400, json={"error": "invalid_grant"})
+            verifier = form.get("code_verifier", "")
+            challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).rstrip(b"=").decode()
+            if challenge != grant["challenge"]:
+                return httpx2.Response(400, json={"error": "invalid_grant", "error_description": "PKCE"})
+            access = os.urandom(8).hex()
+            self.tokens[access] = grant["user"]
+            answer = {"access_token": access, "token_type": "bearer"}
+            if grant["provider"] == "google":
+                now = int(time.time())
+                claims = {"iss": self.ISSUER, "aud": "google-client", "sub": grant["user"]["sub"],
+                          "name": grant["user"].get("name"), "nonce": grant["nonce"], "iat": now, "exp": now + 600,
+                          "at_hash": None}
+                claims.pop("at_hash")
+                claims.update(self.id_token_changes)
+                answer["id_token"] = jwt.encode({"alg": "RS256", "kid": "k1"}, claims, self.key)
+            return httpx2.Response(200, json=answer)
+        if url == "https://api.github.com/user":
+            user = self.tokens.get(request.headers.get("authorization", "").removeprefix("Bearer "))
+            return httpx2.Response(200, json=user) if user else httpx2.Response(401, json={})
+        return httpx2.Response(404, json={})
 
 
 @pytest.fixture
@@ -30,10 +110,40 @@ def settings(monkeypatch):
 
 
 @pytest.fixture
-def public(tmp_path, settings):
-    app = web.create_app(str(tmp_path), token=TOKEN, public=settings)  # start_scheduler is ignored
-    with TestClient(app, base_url=URL) as c:
+def account_settings(monkeypatch):
+    for key, value in ACCOUNTS.items():
+        monkeypatch.setenv(key, value)
+    return AccountSettings.load()
+
+
+@pytest.fixture
+def providers():
+    return FakeProviders()
+
+
+def _public_app(data_dir, settings, account_settings, providers, **kwargs):
+    return web.create_app(str(data_dir), token=TOKEN, public=settings, accounts=account_settings,
+                          oauth_transport=providers.transport, **kwargs)  # start_scheduler is ignored
+
+
+@pytest.fixture
+def public(tmp_path, settings, account_settings, providers):
+    with TestClient(_public_app(tmp_path, settings, account_settings, providers), base_url=URL) as c:
         yield c
+
+
+def sign_in(client, providers, user: dict, provider: str = "github", next_path: str = "/"):
+    """Sign a TestClient in through the fake provider; the last answer (the redirect to `next`)."""
+    start = client.get(f"/login/{provider}", params={"next": next_path}, follow_redirects=False)
+    assert start.status_code == 302, start.text
+    return client.get(providers.authorize(start.headers["location"], user), follow_redirects=False)
+
+
+def csrf_of(client) -> str:
+    """The CSRF token of a signed-in client's session, from its page."""
+    import re
+    page = client.get("/").text
+    return re.search(r'name="findaline-token" content="([^"]+)"', page).group(1)
 
 
 def test_settings(monkeypatch, tmp_path):
@@ -74,11 +184,13 @@ def test_command_line(monkeypatch):
     assert web.is_loopback("127.0.0.1") and web.is_loopback("::1") and not web.is_loopback("0.0.0.0")
 
 
-def test_public_guards(public, tmp_path):
-    """Only the page and its assets answer without signing in; only the public host; changes only from
-    the site's Origin; the security headers on every answer; no worker in the web process."""
+def test_public_guards(public, providers):
+    """Without signing in only the sign-in page and its assets answer; only the public host; changes
+    only from the site's Origin and with the session's token; the security headers on every answer;
+    no worker in the web process."""
     page = public.get("/")
-    assert page.status_code == 200 and TOKEN in page.text
+    assert page.status_code == 200 and "Sign in with GitHub" in page.text and "Sign in with Google" in page.text
+    assert TOKEN not in page.text and "<script" not in page.text
     assert public.get("/app/app.js").status_code == 200
     for path in ("/api/schema", "/api/jobs", "/api/events", "/api/runs", "/runs/index.html", "/cache/x/wm256/1.jpg",
                  "/api/profile?run=x&line=1,2,3,4", "/docs", "/nothing"):
@@ -90,13 +202,224 @@ def test_public_guards(public, tmp_path):
     assert public.get("/", headers={"host": "evil.example"}).status_code == 400
     assert public.post("/", headers={"x-findaline-token": TOKEN}).status_code == 403  # no Origin
     assert public.post("/", headers={**headers, "origin": "https://evil.example"}).status_code == 403
-    assert public.post("/", headers=headers).status_code == 405  # through the guard
+    assert public.post("/", headers=headers).status_code == 403  # the app's token is no session's
+    sign_in(public, providers, {"id": 1, "login": "admin"})
+    own = {"x-findaline-token": csrf_of(public), "origin": URL}
+    assert public.post("/", headers=own).status_code == 405  # through the guard
+    assert public.post("/", headers={**own, "x-findaline-token": TOKEN}).status_code == 403
     for response in (page, public.get("/api/jobs")):
         for name, value in web.SECURITY_HEADERS.items():
             assert response.headers[name] == value, name
         assert "server" not in response.headers or "uvicorn" not in response.headers["server"]
     assert "base-uri 'none'" in page.headers["content-security-policy"]
     assert not public.app.state.jobs.worker_alive()  # the worker runs as `findaline.py worker --public`
+
+
+def test_account_settings(monkeypatch, tmp_path):
+    """--public needs the session secret and a provider; a provider without its id and secret is not
+    offered; Docker secrets are read whatever the case of their file names; administrators are
+    <provider>:<id>."""
+    for key in ACCOUNTS:
+        monkeypatch.delenv(key, raising=False)
+    with pytest.raises(SystemExit) as stop:
+        AccountSettings.load(str(tmp_path / "nothing"))
+    assert "FINDALINE_SESSION_SECRET" in str(stop.value)
+    monkeypatch.setenv("FINDALINE_SESSION_SECRET", "x" * 40)
+    with pytest.raises(SystemExit) as stop:
+        AccountSettings.load(str(tmp_path / "nothing"))
+    assert "provider" in str(stop.value)
+    monkeypatch.setenv("FINDALINE_GOOGLE_CLIENT_ID", "google-client")  # no secret: not offered
+    with pytest.raises(SystemExit):
+        AccountSettings.load(str(tmp_path / "nothing"))
+    monkeypatch.delenv("FINDALINE_SESSION_SECRET")
+    (tmp_path / "FINDALINE_SESSION_SECRET").write_text("y" * 40 + "\n")
+    (tmp_path / "findaline_github_client_secret").write_text("gh-secret\n")
+    monkeypatch.setenv("FINDALINE_GITHUB_CLIENT_ID", "gh-client")
+    loaded = AccountSettings.load(str(tmp_path))
+    assert loaded.session_secret.get_secret_value() == "y" * 40 and loaded.providers == ["github"]
+    assert loaded.client("github") == ("gh-client", "gh-secret") and loaded.signup == "approval"
+    assert "y" * 40 not in repr(loaded)
+    # compose.yaml mounts every secret file: an empty one (or an empty client id) is a provider not offered
+    (tmp_path / "findaline_google_client_secret").write_text("")
+    monkeypatch.setenv("FINDALINE_GOOGLE_CLIENT_ID", "google-client")
+    assert AccountSettings.load(str(tmp_path)).providers == ["github"]
+    (tmp_path / "findaline_google_client_secret").write_text("google-secret\n")
+    monkeypatch.setenv("FINDALINE_GOOGLE_CLIENT_ID", " ")
+    assert AccountSettings.load(str(tmp_path)).providers == ["github"]
+    (tmp_path / "findaline_github_client_secret").write_text("\n")
+    with pytest.raises(SystemExit):  # no provider left
+        AccountSettings.load(str(tmp_path))
+    (tmp_path / "FINDALINE_SESSION_SECRET").write_text("")
+    with pytest.raises(SystemExit):  # an empty session secret is refused
+        AccountSettings.load(str(tmp_path))
+    for wrong in ({"session_secret": "short"}, {"admins": "12345"}, {"admins": "gitlab:1"}, {"signup": "maybe"}):
+        with pytest.raises(ValueError):
+            AccountSettings(**{"session_secret": "z" * 40, **wrong})
+    assert AccountSettings(session_secret="z" * 40, admins=" github:1, google:abc ").admin_ids == \
+        [("github", "1"), ("google", "abc")]
+
+
+def test_sign_in_with_github(public, providers, tmp_path):
+    """A new GitHub account waits for approval (its page says so, the API answers 403); an approved
+    one gets the app with its session's token; the identity is the numeric id, kept with its name;
+    every sign-in makes a new session; administrators are approved at once."""
+    answer = sign_in(public, providers, {"id": 42, "login": "alice", "email": "a@example.org"}, next_path="/?x=1")
+    assert answer.status_code == 303 and answer.headers["location"] == "/?x=1"
+    cookie = answer.headers["set-cookie"]
+    assert cookie.startswith(ac.SESSION_COOKIE + "=") and all(f in cookie.lower() for f in (
+        "secure", "httponly", "samesite=lax", "path=/", "max-age=2592000")) and "domain" not in cookie.lower()
+    page = public.get("/")
+    assert "waiting for an administrator" in page.text and "alice" in page.text and "findaline-token" not in page.text
+    assert public.get("/api/jobs").status_code == 403
+    import sqlite3
+    db = sqlite3.connect(tmp_path / "accounts.sqlite")
+    rows = db.execute("SELECT provider, subject, name, status FROM users").fetchall()
+    assert rows == [("github", "42", "alice", "pending")]
+    assert "a@example.org" not in json.dumps(db.execute("SELECT * FROM users").fetchall())
+    stored = db.execute("SELECT hash FROM sessions").fetchall()
+    token = public.cookies.get(ac.SESSION_COOKIE)
+    assert stored == [(hashlib.sha256(token.encode()).hexdigest(),)]  # only the hash
+    db.execute("UPDATE users SET status = 'approved'")
+    db.commit()
+    page = public.get("/")
+    assert 'name="findaline-token"' in page.text and "&quot;name&quot;: &quot;alice&quot;" in page.text
+    assert csrf_of(public) != TOKEN and public.get("/api/jobs").status_code == 200
+    sign_in(public, providers, {"id": 42, "login": "alice2"})
+    assert public.cookies.get(ac.SESSION_COOKIE) != token  # a new session; the old one ended
+    assert db.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 1
+    assert db.execute("SELECT name FROM users").fetchone()[0] == "alice2"
+    with TestClient(public.app, base_url=URL) as admin:
+        sign_in(admin, providers, {"id": 1, "login": "root"})
+        assert admin.get("/api/jobs").status_code == 200 and "(administrator)" not in admin.get("/").text
+        assert "&quot;admin&quot;: true" in admin.get("/").text
+    db.close()
+
+
+def test_sign_in_with_google(public, providers, tmp_path):
+    """Google: OpenID Connect; Authlib checks the ID token (nonce, audience, issuer, expiry, signature)."""
+    answer = sign_in(public, providers, {"sub": "g-123", "name": "Gina"}, provider="google")
+    assert answer.status_code == 303, answer.text
+    assert "Gina" in public.get("/").text
+    for change in ({"nonce": "other"}, {"aud": "someone-else"}, {"iss": "https://evil.example"},
+                   {"exp": int(time.time()) - 3600}):
+        providers.id_token_changes = change
+        with TestClient(public.app, base_url=URL) as other:
+            answer = sign_in(other, providers, {"sub": "g-456", "name": "Mallory"}, provider="google")
+            assert answer.status_code == 400 and ac.SESSION_COOKIE not in other.cookies, change
+    import sqlite3
+    db = sqlite3.connect(tmp_path / "accounts.sqlite")
+    assert db.execute("SELECT provider, subject FROM users").fetchall() == [("google", "g-123")]
+    db.close()
+
+
+def test_login_csrf_and_replayed_state(public, providers):
+    """A callback is accepted only by the browser that started the sign-in (its signed cookie holds
+    the state): another browser's state, a replayed state, a state without a cookie or a foreign
+    cookie all fail; so does a code without its PKCE verifier."""
+    start = public.get("/login/github", follow_redirects=False)
+    callback = providers.authorize(start.headers["location"], {"id": 7, "login": "victim"})
+    with TestClient(public.app, base_url=URL) as attacker:  # login CSRF: the victim's callback elsewhere
+        attacker.get("/login/github", follow_redirects=False)  # a cookie of its own sign-in
+        assert attacker.get(callback, follow_redirects=False).status_code == 400
+    with TestClient(public.app, base_url=URL) as nobody:
+        assert nobody.get(callback, follow_redirects=False).status_code == 400
+    oauth_cookie = public.cookies.get(ac.OAUTH_COOKIE)
+    assert public.get(callback, follow_redirects=False).status_code == 303
+    assert public.get(callback, follow_redirects=False).status_code == 400  # replayed
+    public.cookies.set(ac.OAUTH_COOKIE, oauth_cookie, domain="lines.example.org")  # the old cookie again
+    assert public.get(callback, follow_redirects=False).status_code == 400  # the code is taken once
+    public.cookies.set(ac.OAUTH_COOKIE, oauth_cookie[:-3] + "AAA", domain="lines.example.org")  # forged
+    assert public.get(callback, follow_redirects=False).status_code == 400
+    start = public.get("/login/github", follow_redirects=False)
+    callback = providers.authorize(start.headers["location"], {"id": 7, "login": "victim"})
+    code = parse_qs(urlsplit(callback).query)["code"][0]
+    providers.codes[code]["challenge"] = "x" * 43  # the verifier no longer fits
+    assert public.get(callback, follow_redirects=False).status_code == 400
+    assert public.get("/login/gitlab", follow_redirects=False).status_code == 404
+
+
+def test_next_is_a_local_path(public, providers):
+    """`next` of a sign-in is a path of this site only (no open redirect)."""
+    for wrong in ("//evil.example/x", "https://evil.example", "/\\evil.example", "javascript:alert(1)",
+                  "evil.example", "/\tx", ""):
+        with TestClient(public.app, base_url=URL) as client:
+            answer = sign_in(client, providers, {"id": 9, "login": "u"}, next_path=wrong)
+            assert answer.headers["location"] == "/", wrong
+    answer = sign_in(public, providers, {"id": 9, "login": "u"}, next_path="/runs/x/map.html?a=1")
+    assert answer.headers["location"] == "/runs/x/map.html?a=1"
+    location = public.get("/login/github?next=//evil.example", follow_redirects=False).headers["location"]
+    assert parse_qs(urlsplit(location).query)["redirect_uri"] == [f"{URL}/auth/github"]  # not from Host
+
+
+def test_sessions_end(public, providers, tmp_path):
+    """A session ends when it expires, after a week without requests, when it is revoked, when its
+    user is blocked, and when signing out (a POST with its token, from the header or the form)."""
+    import sqlite3
+    db = sqlite3.connect(tmp_path / "accounts.sqlite")
+    sign_in(public, providers, {"id": 1, "login": "admin"})
+    assert public.get("/api/jobs").status_code == 200
+    db.execute("UPDATE sessions SET created = created - ?", (31 * 86400,))
+    db.commit()
+    assert public.get("/api/jobs").status_code == 401 and "Sign in with" in public.get("/").text
+    sign_in(public, providers, {"id": 1, "login": "admin"})
+    db.execute("UPDATE sessions SET seen = seen - ?", (8 * 86400,))
+    db.commit()
+    assert public.get("/api/jobs").status_code == 401
+    sign_in(public, providers, {"id": 1, "login": "admin"})
+    db.execute("UPDATE sessions SET seen = seen - ?", (6 * 86400,))  # idle less than a week: still on
+    db.commit()
+    assert public.get("/api/jobs").status_code == 200
+    users = ac.Accounts(str(tmp_path), public.app.state.account_settings)
+    users.revoke(users.ensure_user("github", "1"))
+    assert public.get("/api/jobs").status_code == 401
+
+    with TestClient(public.app, base_url=URL) as bob:
+        sign_in(bob, providers, {"id": 5, "login": "bob"})
+        bob_id = users.ensure_user("github", "5")
+        users.set_status(bob_id, "approved")
+        assert bob.get("/api/jobs").status_code == 200
+        users.set_status(bob_id, "blocked")  # ends its sessions
+        assert bob.get("/api/jobs").status_code == 401
+        sign_in(bob, providers, {"id": 5, "login": "bob"})
+        assert bob.get("/api/jobs").status_code == 403 and "is blocked" in bob.get("/").text
+        assert users.user(bob_id).status == "blocked"
+
+    sign_in(public, providers, {"id": 1, "login": "admin"})
+    csrf = csrf_of(public)
+    assert public.post("/logout", headers={"origin": URL}).status_code == 403          # no token
+    assert public.post("/logout", data={"csrf": "wrong"}, headers={"origin": URL}).status_code == 403
+    assert public.post("/logout", data={"csrf": csrf}).status_code == 403              # no Origin
+    answer = public.post("/logout", data={"csrf": csrf}, headers={"origin": URL}, follow_redirects=False)
+    assert answer.status_code == 303 and public.get("/api/jobs").status_code == 401
+    assert db.execute("SELECT COUNT(*) FROM sessions s JOIN users u ON u.id = s.user_id "
+                      "WHERE u.subject = '1'").fetchone()[0] == 0
+    sign_in(public, providers, {"id": 1, "login": "admin"})
+    answer = public.post("/logout", headers={"origin": URL, "x-findaline-token": csrf_of(public)},
+                         follow_redirects=False)
+    assert answer.status_code == 303 and public.get("/api/jobs").status_code == 401
+    db.close()
+
+
+def test_signup_modes_and_login_rate(tmp_path, settings, account_settings, providers):
+    """FINDALINE_SIGNUP=open approves new accounts, closed refuses them (administrators still sign in);
+    sign-in requests are limited per IP address."""
+    import sqlite3
+    (tmp_path / "open").mkdir()
+    (tmp_path / "closed").mkdir()
+    open_ = account_settings.model_copy(update={"signup": "open"})
+    with TestClient(_public_app(tmp_path / "open", settings, open_, providers), base_url=URL) as client:
+        sign_in(client, providers, {"id": 3, "login": "carol"})
+        assert client.get("/api/jobs").status_code == 200
+    closed = account_settings.model_copy(update={"signup": "closed"})
+    with TestClient(_public_app(tmp_path / "closed", settings, closed, providers), base_url=URL) as client:
+        answer = sign_in(client, providers, {"id": 3, "login": "carol"})
+        assert answer.status_code == 403 and "not accepted" in answer.text
+        assert sign_in(client, providers, {"id": 1, "login": "admin"}).status_code == 303
+        db = sqlite3.connect(tmp_path / "closed" / "accounts.sqlite")
+        assert db.execute("SELECT subject FROM users").fetchall() == [("1",)]
+        db.close()
+        codes = [client.get("/login/github", follow_redirects=False).status_code for _ in range(25)]
+        assert codes.count(429) >= 3 and codes[0] == 302
 
 
 def test_local_headers(tmp_path):

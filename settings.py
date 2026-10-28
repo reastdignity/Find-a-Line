@@ -11,14 +11,19 @@ Settings and limits of the web app, from environment variables (pydantic-setting
 - PublicSettings: what the public site needs (`findaline.py web --public`, `worker --public`):
   FINDALINE_PUBLIC_URL, FINDALINE_TRUSTED_PROXY, FINDALINE_CONTACT, also read from Docker
   secrets (/run/secrets/findaline_<name>) when that folder exists.
+- AccountSettings: the sign-in of the public site (`web --public` only; accounts.py):
+  FINDALINE_SESSION_SECRET, FINDALINE_GITHUB_CLIENT_ID / _SECRET, FINDALINE_GOOGLE_CLIENT_ID /
+  _SECRET, FINDALINE_ADMINS, FINDALINE_SIGNUP; secrets from the same Docker secrets folder
+  (file names as the variables, in any case). A provider without its client id and secret
+  is not offered.
 """
 
 import ipaddress
 import os
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Literal, Optional, Tuple
 from urllib.parse import urlsplit
 
-from pydantic import Field, field_validator
+from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 SECRETS_DIR = "/run/secrets"  # Docker secrets
@@ -198,6 +203,79 @@ class PublicSettings(BaseSettings):
         except ValidationError as e:
             raise SystemExit("--public needs these settings (environment or Docker secrets):\n"
                              + describe_error(e, "FINDALINE_"))
+
+
+PROVIDERS = ("github", "google")  # the sign-in providers (accounts.py)
+
+
+class AccountSettings(BaseSettings):
+    """The sign-in of the public site (`findaline.py web --public`); the worker does not need them."""
+    model_config = SettingsConfigDict(env_prefix="FINDALINE_", extra="ignore")
+
+    session_secret: SecretStr = Field(
+        description="random secret (at least 32 characters) signing the short-lived cookie of a sign-in in "
+                    "progress (OAuth state, nonce and PKCE verifier)")
+    github_client_id: Optional[str] = Field(None, description="client id of the GitHub OAuth app")
+    github_client_secret: Optional[SecretStr] = Field(None, description="client secret of the GitHub OAuth app")
+    google_client_id: Optional[str] = Field(None, description="client id of the Google OAuth client")
+    google_client_secret: Optional[SecretStr] = Field(None, description="client secret of the Google OAuth client")
+    admins: str = Field("", description="administrators as <provider>:<id>, comma-separated (github:12345 with "
+                                        "the numeric GitHub user id, google:<sub>); the first one owns the runs "
+                                        "from before the public mode")
+    signup: Literal["approval", "open", "closed"] = Field(
+        "approval", description="new accounts: approval (they wait for an administrator), open (approved at "
+                                "once) or closed (only the administrators can sign in)")
+
+    @field_validator("session_secret")
+    @classmethod
+    def check_secret(cls, value: SecretStr) -> SecretStr:
+        secret = value.get_secret_value().strip()
+        if len(secret) < 32:
+            raise ValueError("at least 32 random characters (python -c \"import secrets; "
+                             "print(secrets.token_urlsafe(32))\")")
+        return SecretStr(secret)
+
+    @field_validator("admins")
+    @classmethod
+    def check_admins(cls, value: str) -> str:
+        items = [item.strip() for item in value.split(",") if item.strip()]
+        for item in items:
+            provider, _, subject = item.partition(":")
+            if provider not in PROVIDERS or not subject:
+                raise ValueError(f"{item!r}: <provider>:<id> expected, the provider one of {', '.join(PROVIDERS)}")
+        return ",".join(items)
+
+    @property
+    def admin_ids(self) -> List[Tuple[str, str]]:
+        """The administrators as (provider, id), in the order given."""
+        return [tuple(item.split(":", 1)) for item in self.admins.split(",") if item]
+
+    def client(self, provider: str) -> Optional[Tuple[str, str]]:
+        """(client id, client secret) of a provider; None when it is not configured (not offered)."""
+        client_id, secret = getattr(self, f"{provider}_client_id"), getattr(self, f"{provider}_client_secret")
+        if not client_id or not client_id.strip() or not secret or not secret.get_secret_value().strip():
+            return None
+        return client_id.strip(), secret.get_secret_value().strip()
+
+    @property
+    def providers(self) -> List[str]:
+        """The providers offered (those with a client id and secret)."""
+        return [p for p in PROVIDERS if self.client(p)]
+
+    @classmethod
+    def load(cls, secrets_dir: str = SECRETS_DIR) -> "AccountSettings":
+        """Like PublicSettings.load; also refuses to start without any provider."""
+        from pydantic import ValidationError
+        try:
+            settings = cls(_secrets_dir=secrets_dir if os.path.isdir(secrets_dir) else None)
+        except ValidationError as e:
+            raise SystemExit("--public needs these settings (environment or Docker secrets):\n"
+                             + describe_error(e, "FINDALINE_"))
+        if not settings.providers:
+            raise SystemExit("--public needs a sign-in provider: FINDALINE_GITHUB_CLIENT_ID and "
+                             "FINDALINE_GITHUB_CLIENT_SECRET, or FINDALINE_GOOGLE_CLIENT_ID and "
+                             "FINDALINE_GOOGLE_CLIENT_SECRET")
+        return settings
 
 
 def describe_error(error, prefix: str) -> str:

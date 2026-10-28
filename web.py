@@ -25,12 +25,15 @@ carries the headers of SECURITY_HEADERS.
 
 The public mode (`--public`, settings.PublicSettings) serves the site behind a reverse
 proxy: only the host of FINDALINE_PUBLIC_URL, an Origin required for changes, X-Forwarded-*
-trusted from FINDALINE_TRUSTED_PROXY only, no worker in this process. Until accounts
-exist, everything but the page and its assets (is_open) answers 401.
+trusted from FINDALINE_TRUSTED_PROXY only, no worker in this process. Users sign in with
+GitHub or Google (accounts.py, settings.AccountSettings); the token a change needs is then
+the CSRF token of the user's session, and sign-in requests are limited per IP address
+(the `limits` library, in memory).
 """
 
 import asyncio
 import contextlib
+import html
 import json
 import math
 import os
@@ -41,10 +44,11 @@ import time
 import webbrowser
 from typing import Dict, List, Optional
 
+import accounts as ac
 import cache
 import params as pm
 from jobs import TICK, Jobs, Scheduler, search_params
-from settings import Limits, PublicSettings
+from settings import AccountSettings, Limits, PublicSettings
 
 PORT = 8765
 PING = 15           # seconds between the keep-alive comments of the event stream
@@ -151,29 +155,34 @@ def title(p: pm.SearchParams) -> str:
 
 
 def is_open(path: str) -> bool:
-    """Whether the public mode serves a path without signing in: the page and its assets."""
-    return path == "/" or path.startswith("/app/")
+    """Whether the public mode serves a path without signing in: the page and its assets, signing in and out."""
+    return path in ("/", "/logout") or path.startswith(("/app/", "/login/", "/auth/"))
 
 
 def create_app(data_dir: str, token: Optional[str] = None, port: int = PORT, start_scheduler: bool = True,
-               public: Optional[PublicSettings] = None, limits: Optional[Limits] = None):
+               public: Optional[PublicSettings] = None, limits: Optional[Limits] = None,
+               accounts: Optional[AccountSettings] = None, oauth_transport=None):
     """The FastAPI application (tests create it without the scheduler); with `public`, the public
-    mode, which never runs the worker in this process. `limits` of the request values: by default
-    from FINDALINE_LIMIT_* (and the public site's defaults in the public mode)."""
+    mode, which never runs the worker in this process and needs `accounts` (the sign-in;
+    `oauth_transport`: an httpx2 transport to the providers, for tests). `limits` of the request
+    values: by default from FINDALINE_LIMIT_* (and the public site's defaults in the public mode)."""
     from fastapi import FastAPI, HTTPException, Request
     from fastapi.concurrency import run_in_threadpool
-    from fastapi.responses import HTMLResponse, JSONResponse
+    from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
     from fastapi.staticfiles import StaticFiles
     from sse_starlette import EventSourceResponse
     from starlette.middleware.trustedhost import TrustedHostMiddleware
 
     import runs as rn
 
+    if public and accounts is None:
+        raise ValueError("the public mode needs the account settings")
     token = token or secrets.token_urlsafe(24)
     limits = limits if limits is not None else Limits.load(public is not None)
     start_scheduler = start_scheduler and public is None
     jobs = Jobs(data_dir)
     scheduler = Scheduler(jobs, limits=limits)
+    users = ac.Accounts(data_dir, accounts) if public else None
 
     @contextlib.asynccontextmanager
     async def lifespan(_):
@@ -184,6 +193,7 @@ def create_app(data_dir: str, token: Optional[str] = None, port: int = PORT, sta
 
     app = FastAPI(title="Find-a-Line", docs_url=None, redoc_url=None, openapi_url=None, lifespan=lifespan)
     app.state.jobs, app.state.scheduler, app.state.token, app.state.limits = jobs, scheduler, token, limits
+    app.state.accounts, app.state.account_settings = users, accounts
     if public:
         hosts, origins = [public.host], {public.origin}
     else:
@@ -192,17 +202,34 @@ def create_app(data_dir: str, token: Optional[str] = None, port: int = PORT, sta
     runs_dir = os.path.join(data_dir, "runs")
     os.makedirs(runs_dir, exist_ok=True)
 
+    def signed_in(request: Request) -> Optional[tuple]:
+        """(user, CSRF token) of the request's session in the public mode (looked up once per request)."""
+        if not public:
+            return None
+        if not hasattr(request.state, "signed_in"):
+            request.state.signed_in = users.session(request.cookies.get(ac.SESSION_COOKIE))
+        return request.state.signed_in
+
+    def csrf_ok(request: Request, given: Optional[str]) -> bool:
+        """Whether a token sent with a change is the page's: the session's (public) or the app's (local)."""
+        expected = (signed_in(request) or (None, None))[1] if public else token
+        return bool(expected) and given is not None and secrets.compare_digest(given, expected)
+
     @app.middleware("http")
     async def guard(request: Request, call_next):
         # Anything that changes state only from our own page (CSRF): its Origin (required in the
         # public mode; locally a client without one, e.g. curl, is no browser) and its token
+        # (/logout takes it from its form too: the sign-in page has no script)
         changes = request.method not in ("GET", "HEAD")
         origin = request.headers.get("origin")
-        if public and not is_open(request.url.path):
-            response = JSONResponse({"detail": "sign-in required"}, status_code=401)
-        elif changes and (public or origin is not None) and origin not in origins:
+        path = request.url.path
+        if changes and (public or origin is not None) and origin not in origins:
             response = JSONResponse({"detail": "foreign or missing Origin"}, status_code=403)
-        elif changes and request.headers.get("x-findaline-token") != token:
+        elif public and not is_open(path) and not signed_in(request):
+            response = JSONResponse({"detail": "sign-in required"}, status_code=401)
+        elif public and not is_open(path) and not signed_in(request)[0].approved:
+            response = JSONResponse({"detail": "your account is not approved"}, status_code=403)
+        elif changes and path != "/logout" and not csrf_ok(request, request.headers.get("x-findaline-token")):
             response = JSONResponse({"detail": "missing or wrong token"}, status_code=403)
         else:
             response = await call_next(request)
@@ -212,12 +239,91 @@ def create_app(data_dir: str, token: Optional[str] = None, port: int = PORT, sta
         response.headers.setdefault("Cache-Control", "no-cache")
         return response
 
+    if public:
+        from starlette.middleware.sessions import SessionMiddleware
+
+        from limits import parse_many, storage, strategies
+        # A sign-in in progress (Authlib's state, nonce and PKCE verifier): a signed cookie of ten minutes
+        app.add_middleware(SessionMiddleware, secret_key=accounts.session_secret.get_secret_value(),
+                           session_cookie=ac.OAUTH_COOKIE, max_age=ac.OAUTH_SECONDS, path="/", same_site="lax",
+                           https_only=True)
+        oauth = ac.oauth_clients(accounts, oauth_transport)
+        login_limiter = strategies.MovingWindowRateLimiter(storage.MemoryStorage())
+        login_rates = parse_many(ac.LOGIN_RATE)
+
     # Only our own host names (DNS rebinding; behind the proxy the public host), before the guard
     app.add_middleware(TrustedHostMiddleware, allowed_hosts=hosts, www_redirect=False)
 
+    def client_of(request: Request, provider: str):
+        """Authlib's client of a provider, after the limit of sign-in requests per IP address."""
+        client = oauth.create_client(provider) if public and provider in accounts.providers else None
+        if client is None:
+            raise HTTPException(404, "no such sign-in")
+        address = request.client.host if request.client else "?"
+        if not all([login_limiter.hit(rate, "login", address) for rate in login_rates]):
+            raise HTTPException(429, "too many sign-in attempts: try again later")
+        return client
+
     @app.get("/", response_class=HTMLResponse)
-    def page():
-        return APP_HTML.format(token=token)
+    def page(request: Request):
+        if not public:
+            return APP_HTML.format(token=token, user=html.escape(json.dumps({"local": True})))
+        found = signed_in(request)
+        if found and found[0].approved:
+            return APP_HTML.format(token=found[1], user=html.escape(json.dumps(found[0].public())))
+        return signin_page(accounts.providers, *(found or (None, None)))
+
+    @app.get("/login/{provider}")
+    async def login(request: Request, provider: str, next: str = "/"):
+        """Start signing in: to the provider, which sends the browser back to /auth/<provider>."""
+        client = client_of(request, provider)
+        request.session.clear()
+        request.session["next"] = ac.local_path(next)
+        return await client.authorize_redirect(request, f"{public.public_url}/auth/{provider}")
+
+    @app.get("/auth/{provider}")
+    async def auth(request: Request, provider: str):
+        """The provider's answer: a new session of the user (a new account waits for approval)."""
+        import httpx2
+        from authlib.integrations.starlette_client import OAuthError
+        from joserfc.errors import JoseError
+        client = client_of(request, provider)
+        try:
+            # Checks the state against the cookie of this browser (login CSRF), sends the PKCE verifier,
+            # and for Google checks the ID token
+            oauth_token = await client.authorize_access_token(request)
+            subject, name = await ac.identity(client, provider, oauth_token)
+            user = await run_in_threadpool(users.sign_in, provider, subject, name)
+        except ac.SignupClosed:
+            return HTMLResponse(signin_page(accounts.providers, note="New accounts are not accepted."), 403)
+        except (OAuthError, JoseError, ValueError, KeyError, httpx2.HTTPError) as e:  # the ID token's checks: JoseError
+            request.session.clear()
+            return HTMLResponse(signin_page(accounts.providers, note=f"Signing in failed ({type(e).__name__})."),
+                                400)
+        next_path = ac.local_path(request.session.get("next"))
+        request.session.clear()
+        await run_in_threadpool(users.end_session, request.cookies.get(ac.SESSION_COOKIE))
+        session, _ = await run_in_threadpool(users.new_session, user.id)  # a new id at every sign-in
+        response = RedirectResponse(next_path, 303)
+        response.set_cookie(ac.SESSION_COOKIE, session, max_age=ac.SESSION_DAYS * 86400, path="/", secure=True,
+                            httponly=True, samesite="lax")
+        return response
+
+    @app.post("/logout")
+    async def logout(request: Request):
+        """Sign out (a POST with the CSRF token, as the header or the `csrf` field of the form)."""
+        from urllib.parse import parse_qs
+        if not public:
+            raise HTTPException(404)
+        given = request.headers.get("x-findaline-token")
+        if given is None and int(request.headers.get("content-length") or 0) <= 4096:
+            given = (parse_qs((await request.body())[:4096].decode("utf-8", "replace")).get("csrf") or [None])[0]
+        if signed_in(request) and not csrf_ok(request, given):
+            raise HTTPException(403, "missing or wrong token")
+        await run_in_threadpool(users.end_session, request.cookies.get(ac.SESSION_COOKIE))
+        response = RedirectResponse("/", 303)
+        response.delete_cookie(ac.SESSION_COOKIE, path="/", secure=True, httponly=True, samesite="lax")
+        return response
 
     @app.get("/api/schema")
     def get_schema():
@@ -404,12 +510,45 @@ def create_app(data_dir: str, token: Optional[str] = None, port: int = PORT, sta
 APP_HTML = """<!doctype html>
 <html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="findaline-token" content="{token}">
+<meta name="findaline-user" content="{user}">
 <title>Find-a-Line</title>
 <link rel="stylesheet" href="/app/app.css">
 </head><body><div id="app"></div>
 <script src="/app/app.js"></script>
 </body></html>
 """
+
+
+SIGNIN_HTML = """<!doctype html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Find-a-Line</title>
+<link rel="stylesheet" href="/app/app.css">
+</head><body><div class="fa-signin">
+<h1>Find-a-Line</h1>
+<p>Finds possible highlines in elevation data.</p>
+{body}
+</div></body></html>
+"""
+
+
+def signin_page(providers: List[str], user=None, csrf: Optional[str] = None, note: str = "") -> str:
+    """The page of the public site for a visitor not signed in, or whose account is not approved
+    (pending or blocked): sign-in links, or the account's state and signing out. No script."""
+    e = html.escape
+    parts = [f"<p class='fa-error'>{e(note)}</p>"] if note else []
+    if user is None:
+        parts.append("<p>Sign in to search:</p><p class='fa-signin-links'>" + " ".join(
+            f"<a class='fa-signin-link' href='/login/{p}'>Sign in with {ac.NAMES[p]}</a>" for p in providers) + "</p>")
+        parts.append("<p class='fa-hint'>A new account waits for an administrator's approval. The site keeps your "
+                     "provider's user id and display name, no e-mail address.</p>")
+    else:
+        state = ("is waiting for an administrator's approval" if user.status == "pending"
+                 else "is blocked")
+        parts.append(f"<p>Your account <b>{e(user.name)}</b> ({e(ac.NAMES.get(user.provider, user.provider))}) "
+                     f"{state}.</p>")
+        parts.append(f"<form method='post' action='/logout'><input type='hidden' name='csrf' value='{e(csrf or '')}'>"
+                     "<button type='submit'>Sign out</button></form>")
+    return SIGNIN_HTML.format(body="\n".join(parts))
 
 
 def is_loopback(host: str) -> bool:
@@ -433,16 +572,18 @@ def main(argv: List[str]) -> int:
                         help="do not run the worker in this process; `findaline.py worker` runs the searches")
     parser.add_argument("--public", action="store_true",
                         help="the public site behind a reverse proxy: needs FINDALINE_PUBLIC_URL, "
-                             "FINDALINE_TRUSTED_PROXY and FINDALINE_CONTACT; implies --no-worker and --no-browser "
+                             "FINDALINE_TRUSTED_PROXY, FINDALINE_CONTACT, FINDALINE_SESSION_SECRET and a sign-in "
+                             "provider (FINDALINE_GITHUB_CLIENT_ID/_SECRET, FINDALINE_GOOGLE_CLIENT_ID/_SECRET); implies --no-worker and --no-browser "
                              "(the worker runs as `findaline.py worker --public`)")
     args = parser.parse_args(argv)
     if not args.public and not is_loopback(args.host):
         parser.error("--host other than a loopback address needs --public (the local app has no sign-in)")
     import uvicorn
     public = PublicSettings.load() if args.public else None
+    accounts = AccountSettings.load() if args.public else None
     data = cache.data_dir(args.data_dir)
     cache.check_layout(os.path.join(data, "cache"))
-    app = create_app(data, port=args.port, start_scheduler=not args.no_worker, public=public)
+    app = create_app(data, port=args.port, start_scheduler=not args.no_worker, public=public, accounts=accounts)
     server = {"host": args.host, "port": args.port, "log_level": "warning", "server_header": False,
               "timeout_graceful_shutdown": GRACEFUL_SECONDS, "timeout_keep_alive": KEEP_ALIVE_SECONDS}
     if public:

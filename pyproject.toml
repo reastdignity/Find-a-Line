@@ -6,11 +6,16 @@ readme = "README.md"
 requires-python = ">=3.12"  # scipy 1.18 needs it
 dependencies = [
     "affine>=2.4",
+    "authlib>=1.9.1",  # 1.9.1: fixes up to GHSA-8m4g-j4wp-wgcg (empty HMAC keys); 1.8+: its client on httpx2
     "contextily>=1.6",
     "fastapi>=0.162.0",
     "filelock>=4.2.4",
     "geojson-pydantic>=2.2",
     "geopandas>=1.1",
+    "httpx2>=2.16.0",
+    "itsdangerous>=2.2",  # signs the OAuth state cookie (Starlette SessionMiddleware)
+    "joserfc>=1.6.8",  # Authlib's JOSE; 1.6.8: no empty HMAC keys
+    "limits>=5.8",
     "matplotlib>=3.10",
     "numba>=0.68",
     "numpy>=2.3",
@@ -33,7 +38,6 @@ dependencies = [
 
 [dependency-groups]
 dev = [
-    "httpx2>=2.16.0",
     "pytest>=8",
 ]
 tools = [
