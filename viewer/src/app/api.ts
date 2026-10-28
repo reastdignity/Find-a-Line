@@ -11,6 +11,8 @@ export interface Field {
   help: string;
   group: string;
   optional: boolean;
+  min: number | null;  // the site's limits (web.schema), null: none
+  max: number | null;
 }
 
 export interface Estimate {

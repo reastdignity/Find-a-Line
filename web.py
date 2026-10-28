@@ -44,7 +44,7 @@ from typing import Dict, List, Optional
 import cache
 import params as pm
 from jobs import TICK, Jobs, Scheduler, search_params
-from limits import PublicSettings
+from limits import Limits, PublicSettings
 
 PORT = 8765
 PING = 15           # seconds between the keep-alive comments of the event stream
@@ -72,13 +72,16 @@ SECURITY_HEADERS = {
 }
 
 
-def schema() -> List[Dict]:
-    """The fields of SearchParams the page may set (cli_only and web_only fields are left out)."""
+def schema(limits: Optional[Limits] = None) -> List[Dict]:
+    """The fields of SearchParams the page may set (cli_only and web_only fields are left out),
+    with the bounds of `limits` (min/max; fields and choices they do not allow are left out)."""
     import typing
+
+    import sources as src
     fields = []
     for name, info in pm.SearchParams.model_fields.items():
         extra = info.json_schema_extra or {}
-        if extra.get("cli_only") or extra.get("web_only"):
+        if extra.get("cli_only") or extra.get("web_only") or (limits and not limits.allows(name)):
             continue
         kind, choices = info.annotation, None
         if typing.get_origin(kind) is typing.Union:
@@ -89,19 +92,32 @@ def schema() -> List[Dict]:
             choices, kind = pm.SOURCE_CHOICES[:1] + pm.SOURCE_CHOICES[2:], "choice"  # no local files
         else:
             kind = {float: "number", int: "integer", bool: "boolean", str: "text"}.get(kind, "text")
+        if choices and limits:
+            choices = [c for c in choices if limits.allows(name, c)]
         default = None if info.default_factory else info.default
+        low, high = limits.bounds(name, src.MIN_RESOLUTION) if limits else (None, None)
+        text = info.description
+        if name == "group_distance" and low is not None:
+            text += f" (on this site at least {limits.group_distance_min_res:g} × the resolution)"
+        elif low is not None or high is not None:
+            said = ([] if low is None else [f"at least {low:g}"]) + ([] if high is None else [f"at most {high:g}"])
+            text += f" (on this site {' and '.join(said)})"
         fields.append({"name": name, "type": kind, "choices": choices, "default": default,
-                       "help": info.description, "group": extra.get("group"),
+                       "help": text, "group": extra.get("group"), "min": low, "max": high,
                        "optional": not info.is_required() and default is None})
     return fields
 
 
-def check_request(request: Dict) -> Dict:
-    """Refuse what the web must not set; returns the request with known keys only."""
+def check_request(request: Dict, limits: Optional[Limits] = None) -> Dict:
+    """Refuse what the web must not set, and values over `limits` (None: no limits); returns the
+    request with known keys only."""
+    import sources as src
     params = request.get("params")
     if not isinstance(params, dict):
         raise ValueError("params missing")
-    fields = {f["name"]: f for f in schema()}
+    if limits:
+        limits.check_request(params, src.MIN_RESOLUTION)
+    fields = {f["name"]: f for f in schema(limits)}
     unknown = set(params) - set(fields)
     if unknown:
         raise ValueError(f"not allowed: {', '.join(sorted(unknown))}")
@@ -140,9 +156,10 @@ def is_open(path: str) -> bool:
 
 
 def create_app(data_dir: str, token: Optional[str] = None, port: int = PORT, start_scheduler: bool = True,
-               public: Optional[PublicSettings] = None):
+               public: Optional[PublicSettings] = None, limits: Optional[Limits] = None):
     """The FastAPI application (tests create it without the scheduler); with `public`, the public
-    mode, which never runs the worker in this process."""
+    mode, which never runs the worker in this process. `limits` of the request values: by default
+    from FINDALINE_LIMIT_* (and the public site's defaults in the public mode)."""
     from fastapi import FastAPI, HTTPException, Request
     from fastapi.concurrency import run_in_threadpool
     from fastapi.responses import HTMLResponse, JSONResponse
@@ -153,6 +170,7 @@ def create_app(data_dir: str, token: Optional[str] = None, port: int = PORT, sta
     import runs as rn
 
     token = token or secrets.token_urlsafe(24)
+    limits = limits if limits is not None else Limits.load(public is not None)
     start_scheduler = start_scheduler and public is None
     jobs = Jobs(data_dir)
     scheduler = Scheduler(jobs)
@@ -165,7 +183,7 @@ def create_app(data_dir: str, token: Optional[str] = None, port: int = PORT, sta
         scheduler.stop()
 
     app = FastAPI(title="Find-a-Line", docs_url=None, redoc_url=None, openapi_url=None, lifespan=lifespan)
-    app.state.jobs, app.state.scheduler, app.state.token = jobs, scheduler, token
+    app.state.jobs, app.state.scheduler, app.state.token, app.state.limits = jobs, scheduler, token, limits
     if public:
         hosts, origins = [public.host], {public.origin}
     else:
@@ -203,11 +221,11 @@ def create_app(data_dir: str, token: Optional[str] = None, port: int = PORT, sta
 
     @app.get("/api/schema")
     def get_schema():
-        return {"fields": schema(), "groups": pm.GROUPS}
+        return {"fields": schema(limits), "groups": pm.GROUPS}
 
     def parse(body: Dict) -> Dict:
         try:
-            return check_request(body)
+            return check_request(body, limits)
         except ValueError as e:
             raise HTTPException(400, str(e))
 
@@ -264,7 +282,10 @@ def create_app(data_dir: str, token: Optional[str] = None, port: int = PORT, sta
         if job["status"] not in ("done", "failed", "cancelled"):
             raise HTTPException(409, "the job is still waiting or running")
         title = re.sub(r"( \(again\))+$", "", job["title"]) + " (again)"
-        return {"id": jobs.add(json.loads(job["request"]), title)}
+        request = json.loads(job["request"])
+        if "osm" not in request:
+            parse(request)  # the limits may have changed since
+        return {"id": jobs.add(request, title)}
 
     @app.get("/api/jobs/{job_id}/events")
     def job_events(job_id: str):

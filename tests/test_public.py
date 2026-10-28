@@ -106,3 +106,56 @@ def test_local_headers(tmp_path):
         assert response.headers["referrer-policy"] == "strict-origin-when-cross-origin"
         assert response.headers["cross-origin-opener-policy"] == "same-origin"
         assert client.get("/", headers={"host": "localhost:8765"}).status_code == 200
+
+
+def test_request_limits(monkeypatch, tmp_path):
+    """The public site's limits on request values (each overridable, `none` for no limit) refuse
+    values over them and fields it does not allow, and give the form its min/max; locally, and for
+    limits=None (a user without limits, later), nothing applies."""
+    from limits import PUBLIC, Limits
+    assert Limits.load() == Limits() and Limits().max_length_max is None and Limits().not_allowed == []
+    limits = Limits.load(public=True)
+    assert limits.max_length_max == PUBLIC["max_length_max"] == 2000 and "threads" in limits.not_allowed
+    monkeypatch.setenv("FINDALINE_LIMIT_MAX_LENGTH_MAX", "3000")
+    monkeypatch.setenv("FINDALINE_LIMIT_BUFFER_MAX", "none")
+    monkeypatch.setenv("FINDALINE_LIMIT_NOT_ALLOWED", '["update"]')
+    changed = Limits.load(public=True)
+    assert (changed.max_length_max, changed.buffer_max, changed.not_allowed) == (3000, None, ["update"])
+    assert changed.slope_threshold_min == 30
+    for key in ("FINDALINE_LIMIT_MAX_LENGTH_MAX", "FINDALINE_LIMIT_BUFFER_MAX", "FINDALINE_LIMIT_NOT_ALLOWED"):
+        monkeypatch.delenv(key)
+
+    point = {"lat": 50.1, "lon": 19.7}
+    refused = [{**point, "max_length": 2500}, {"area": "coast", "within": "osm:Gozo", "buffer": 600},
+               {**point, "prominence_span": 1500}, {**point, "drop_radius": 1001}, {**point, "slope_threshold": 20},
+               {**point, "ortho_detail": 51}, {**point, "ortho": "always"}, {**point, "update": "stale"},
+               {**point, "coastline": "world"}, {**point, "threads": 2}, {**point, "tile_size": 500},
+               {**point, "resolution": 5, "group_distance": 9}, {**point, "group_distance": 1}]
+    for params in refused:
+        with pytest.raises(ValueError):
+            web.check_request({"params": params}, limits)
+        web.check_request({"params": params}, None)  # no limits
+    for params in ({**point, "max_length": 2000, "slope_threshold": 30, "ortho": "never"},
+                   {**point, "resolution": 5, "group_distance": 10}, {**point, "max_length": "1500"}):
+        web.check_request({"params": params}, limits)
+    with pytest.raises(ValueError) as error:
+        web.check_request({"params": {**point, "max_length": 2500, "threads": 2}}, limits)
+    assert "max_length: at most 2000" in str(error.value) and "threads: not allowed" in str(error.value)
+
+    fields = {f["name"]: f for f in web.schema(limits)}
+    assert not {"threads", "tile_size", "update"} & set(fields)
+    assert "always" not in fields["ortho"]["choices"] and "world" not in fields["coastline"]["choices"]
+    assert (fields["max_length"]["max"], fields["slope_threshold"]["min"], fields["group_distance"]["min"]) == (2000, 30, 2)
+    assert "at most 2000" in fields["max_length"]["help"]
+    local = {f["name"]: f for f in web.schema()}
+    assert local["max_length"]["max"] is None and "threads" in local
+
+    with TestClient(web.create_app(str(tmp_path), token=TOKEN, start_scheduler=False, limits=limits)) as client:
+        headers = {"x-findaline-token": TOKEN}
+        response = client.post("/api/jobs", json={"params": {**point, "max_length": 2500}}, headers=headers)
+        assert response.status_code == 400 and "at most 2000" in response.text
+        assert client.post("/api/estimate", json={"params": {**point, "threads": 2}}, headers=headers).status_code == 400
+        names = {f["name"] for f in client.get("/api/schema").json()["fields"]}
+        assert "threads" not in names
+    with TestClient(web.create_app(str(tmp_path), token=TOKEN, start_scheduler=False)) as client:
+        assert "threads" in {f["name"] for f in client.get("/api/schema").json()["fields"]}  # locally all

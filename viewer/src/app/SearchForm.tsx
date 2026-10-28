@@ -30,6 +30,7 @@ function Input({field, value, onChange}: {field: Field; value: unknown; onChange
   }
   const numeric = field.type === "number" || field.type === "integer";
   const text = shown === null || shown === undefined ? "" : String(shown);
+  const bounds = {min: field.min ?? undefined, max: field.max ?? undefined};  // the site's limits
   const placeholder = field.optional ? "default" : "";
   const changed = (e: Event) => {
     const value = (e.currentTarget as HTMLInputElement).value.trim();
@@ -38,7 +39,7 @@ function Input({field, value, onChange}: {field: Field; value: unknown; onChange
   // The page is drawn again on every event of the queue: a number field keeps what is
   // being typed (defaultValue) and is read when it is left; a text field follows every key
   return numeric
-    ? <input type="number" step={field.type === "integer" ? 1 : "any"} defaultValue={text}
+    ? <input type="number" step={field.type === "integer" ? 1 : "any"} defaultValue={text} {...bounds}
              placeholder={placeholder} onChange={changed} />
     : <input type="text" value={text} placeholder={placeholder} onInput={changed} />;
 }
@@ -192,8 +193,9 @@ export function SearchForm({place, fields, groups, initial, onStarted}: SearchFo
     if (value === byName[key].default) delete next[key]; else next[key] = value;
     setValues(next);
   };
-  const bufferInput = <label class="fa-row">buffer, m <input type="number" min={0} defaultValue={String(buffer)}
-                                                              onChange={(e) => setBuffer(Number(e.currentTarget.value))} />
+  const bufferInput = <label class="fa-row" title={byName.buffer?.help}>buffer, m <input
+    type="number" min={0} max={byName.buffer?.max ?? undefined} defaultValue={String(buffer)}
+    onChange={(e) => setBuffer(Number(e.currentTarget.value))} />
   </label>;
 
   return <div class="fa-form">
