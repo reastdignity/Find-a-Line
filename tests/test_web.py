@@ -13,7 +13,7 @@ REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DATA = os.path.join(REPO, "tests", "data")
 sys.path.insert(0, REPO)
 from jobs import Jobs, Scheduler  # noqa: E402
-from limits import Limits  # noqa: E402
+from settings import Limits  # noqa: E402
 import web  # noqa: E402
 
 pytest.importorskip("httpx2")

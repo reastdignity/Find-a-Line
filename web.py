@@ -23,7 +23,7 @@ an area file (read in the browser) is a GeoJSON geometry checked without GDAL
 (SearchParams.geometry, area.check_geometry), never written to a file. Every answer
 carries the headers of SECURITY_HEADERS.
 
-The public mode (`--public`, limits.PublicSettings) serves the site behind a reverse
+The public mode (`--public`, settings.PublicSettings) serves the site behind a reverse
 proxy: only the host of FINDALINE_PUBLIC_URL, an Origin required for changes, X-Forwarded-*
 trusted from FINDALINE_TRUSTED_PROXY only, no worker in this process. Until accounts
 exist, everything but the page and its assets (is_open) answers 401.
@@ -44,7 +44,7 @@ from typing import Dict, List, Optional
 import cache
 import params as pm
 from jobs import TICK, Jobs, Scheduler, search_params
-from limits import Limits, PublicSettings
+from settings import Limits, PublicSettings
 
 PORT = 8765
 PING = 15           # seconds between the keep-alive comments of the event stream

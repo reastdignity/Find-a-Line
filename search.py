@@ -19,7 +19,7 @@ through progress.py (progress.subscribe). Questions (an expensive run, orthophot
 downloads) go to confirm(kind, text) -> bool; without it the answer is yes.
 A search that cannot go on raises SearchError with the message for the user.
 
-Optional limits (limits.Limits, the web worker's; None, as on the command line, checks
+Optional limits (settings.Limits, the web worker's; None, as on the command line, checks
 nothing) refuse a search before its costly work: plan_search checks the size of the
 `within` box and of a Nominatim area before OpenStreetMap is asked for their themes, the
 area, the pixels of the grid or of a tile, and the tiles; check_estimate the download;
@@ -58,7 +58,7 @@ import runs as rn
 import sag as sg
 import sources as src
 import terrain
-from limits import Limits
+from settings import Limits
 from params import SearchParams
 from progress import progress
 

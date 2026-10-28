@@ -1,4 +1,4 @@
-"""The public mode of the web app (web.py --public, limits.PublicSettings): settings, guards
+"""The public mode of the web app (web.py --public, settings.PublicSettings): settings, guards
 and headers; without accounts, everything but the page and its assets answers 401."""
 
 import json
@@ -11,7 +11,7 @@ import pytest
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, REPO)
 import web  # noqa: E402
-from limits import PublicSettings  # noqa: E402
+from settings import PublicSettings  # noqa: E402
 
 pytest.importorskip("httpx2")
 from fastapi.testclient import TestClient  # noqa: E402
@@ -113,7 +113,7 @@ def test_request_limits(monkeypatch, tmp_path):
     """The public site's limits on request values (each overridable, `none` for no limit) refuse
     values over them and fields it does not allow, and give the form its min/max; locally, and for
     limits=None (a user without limits, later), nothing applies."""
-    from limits import PUBLIC, Limits
+    from settings import PUBLIC, Limits
     assert Limits.load() == Limits() and Limits().max_length_max is None and Limits().not_allowed == []
     limits = Limits.load(public=True)
     assert limits.max_length_max == PUBLIC["max_length_max"] == 2000 and "threads" in limits.not_allowed
@@ -182,7 +182,7 @@ def test_search_limits_before_requests(tmp_path, monkeypatch):
     or a tile and the tiles before any data; nothing is checked without limits."""
     import osm
     import search
-    from limits import Limits
+    from settings import Limits
     from shapely.geometry import box, mapping
     calls = {"search": 0, "theme": 0}
 
@@ -234,7 +234,7 @@ def test_search_limits_before_requests(tmp_path, monkeypatch):
 def test_search_limits_of_anchors_and_lines(tmp_path):
     """Too many anchors or lines stop the search with a hint, before the profiles."""
     import search
-    from limits import Limits
+    from settings import Limits
     point = {"northing": 254608, "easting": 553966, "radius": 150}
     for limits, text in ((Limits(anchors_max=10), "anchors, at most 10"), (Limits(lines_max=5), "lines, at most 5")):
         plan = _plan(tmp_path, limits, **point)
@@ -250,7 +250,7 @@ def test_worker_orthophoto_limit(monkeypatch):
     to everything without the limit."""
     import jobs
     import search
-    from limits import Limits
+    from settings import Limits
     monkeypatch.setattr(search, "CONFIRM_MINUTES", search.CONFIRM_MINUTES)
     said = []
     assert jobs.ortho_confirm(Limits(), lambda kind, text: said.append(text))("ortho", "?")

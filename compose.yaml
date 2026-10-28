@@ -41,9 +41,9 @@ services:
       - findaline_google_client_secret
     networks: [web]
     # GET / with the public host as Host (TrustedHostMiddleware answers 400 to any other);
-    # the host comes from the same settings as the server's (limits.PublicSettings)
+    # the host comes from the same settings as the server's (settings.PublicSettings)
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request as r, limits; r.urlopen(r.Request('http://127.0.0.1:8765/', headers={'Host': limits.PublicSettings.load().host}), timeout=5)"]
+      test: ["CMD", "python", "-c", "import urllib.request as r, settings; r.urlopen(r.Request('http://127.0.0.1:8765/', headers={'Host': settings.PublicSettings.load().host}), timeout=5)"]
       interval: 30s
       timeout: 10s
       start_period: 20s

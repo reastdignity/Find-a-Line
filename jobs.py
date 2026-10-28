@@ -41,7 +41,7 @@ from typing import Any, Dict, Iterable, List, NamedTuple, Optional, Set
 
 import cache
 import params as pm
-from limits import Limits, PublicSettings
+from settings import Limits, PublicSettings
 
 TICK = 0.5                # seconds between looks at the queue
 PROGRESS_INTERVAL = 0.3   # seconds between progress events of a job
