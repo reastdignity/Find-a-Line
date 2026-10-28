@@ -20,10 +20,11 @@ downloads) go to confirm(kind, text) -> bool; without it the answer is yes.
 A search that cannot go on raises SearchError with the message for the user.
 
 Optional limits (settings.Limits, the web worker's; None, as on the command line, checks
-nothing) refuse a search before its costly work: plan_search checks the size of the
-`within` box and of a Nominatim area before OpenStreetMap is asked for their themes, the
-area, the pixels of the grid or of a tile, and the tiles; check_estimate the download;
-_lines the anchors and lines found.
+nothing) refuse a search before its costly work: plan_search checks the request values,
+the size of the `within` box and of a Nominatim area before OpenStreetMap is asked for
+their themes, the area (a circle's too) and its bounding box before any other service is
+asked, the bounding box of the grid, the pixels of the grid or of a tile, and the tiles;
+check_estimate the download; _lines the anchors and lines found.
 """
 
 import dataclasses
@@ -197,6 +198,11 @@ def plan_search(params: SearchParams, paths: Paths, on_event: Optional[OnEvent] 
         else:
             center_lat, center_lon = mp.pl1992_to_wgs84(params.easting, params.northing)
         area = ar.Circle(center_lat, center_lon, params.radius)
+        km2 = math.pi * params.radius ** 2 / 1e6
+        if limits and limits.area_km2_max and km2 > limits.area_km2_max:
+            raise SearchError(f"The circle covers {km2:.1f} km², at most {limits.area_km2_max:g} km² on this site: "
+                              f"a smaller --radius")
+    _check_box(limits, *_area_box(area))  # before the source is chosen (its country) and any data
 
     try:
         source, reason = src.choose_source(params.source, center_lat, center_lon, paths.cache,
@@ -221,6 +227,9 @@ def plan_search(params: SearchParams, paths: Paths, on_event: Optional[OnEvent] 
     left, bottom, right, top = area.bounds(crs)
     grid = gd.make_grid((left - margin, bottom - margin, right + margin, top + margin), resolution, crs,
                         source.grid_origin)
+    if limits and limits.bbox_km_max:  # the box the data, the indexes and OpenStreetMap are asked for
+        from rasterio.warp import transform_bounds
+        _check_box(limits, *transform_bounds(crs, "EPSG:4326", *grid.bounds))
     tiles = core = None
     max_px = limits.grid_mpx_max * 1e6 if limits and limits.grid_mpx_max else None
     if isinstance(area, ar.Polygon):
@@ -278,6 +287,30 @@ def _check_params(limits: Optional[Limits], params: SearchParams, resolution: Op
             limits.check_params(params, resolution, allowed=False, min_resolution=src.MIN_RESOLUTION)
         except ValueError as e:
             raise SearchError(str(e))
+
+
+def _area_box(area: ar.Area) -> Tuple[float, float, float, float]:
+    """(west, south, east, north) of an area in degrees (a circle's from its radius)."""
+    if isinstance(area, ar.Circle):
+        lat, lon = area.center
+        dlat = area.radius / 111320
+        dlon = dlat / max(math.cos(math.radians(min(abs(lat) + dlat, 89.9))), 0.01)
+        return lon - dlon, lat - dlat, lon + dlon, lat + dlat
+    return area.geometry.bounds
+
+
+def _check_box(limits: Optional[Limits], west: float, south: float, east: float, north: float):
+    """Refuse a search whose bounding box (WGS84) has a side over Limits.bbox_km_max: two small
+    areas far apart, a huge circle. Data, sheet indexes and Overpass are asked over the box."""
+    if not limits or not limits.bbox_km_max:
+        return
+    lat = 0.0 if south <= 0 <= north else min(abs(south), abs(north))  # where the box is widest
+    width = (east - west) * 111.32 * math.cos(math.radians(lat))
+    height = (north - south) * 110.57
+    if max(width, height) > limits.bbox_km_max:
+        raise SearchError(f"The search spans {width:.0f} × {height:.0f} km (its bounding box), at most "
+                          f"{limits.bbox_km_max:g} km on a side on this site: a smaller area, or areas far apart "
+                          f"as separate searches")
 
 
 def _check_tiles(grid: gd.Grid, params: SearchParams, res: float, core: float, limits: Limits):

@@ -37,7 +37,8 @@ PUBLIC = {
     "buffer_max": 500, "max_length_max": 2000, "prominence_span_max": 1000, "drop_radius_max": 1000,
     "slope_threshold_min": 30, "group_distance_min_res": 2, "ortho_detail_max": 50,
     "not_allowed": ["ortho=always", "update", "coastline=world", "threads", "tile_size"],
-    "region_km2_max": 2500, "area_km2_max": 50, "grid_mpx_max": 36, "tiles_max": 300, "anchors_max": 3_000_000,
+    "radius_max": 3500, "resolution_max": 30,
+    "region_km2_max": 2500, "area_km2_max": 50, "bbox_km_max": 75, "grid_mpx_max": 36, "tiles_max": 300, "anchors_max": 3_000_000,
     "lines_max": 3_000_000, "download_mb_max": 3000, "ortho_minutes": 10,
     "jobs_active_max": 2, "jobs_day_max": 20, "km2_day_max": 250, "runs_gb_max": 5, "nominatim_day_max": 50,
     "estimate_rate": "20/minute;300/hour", "profile_rate": "30/minute;500/hour",
@@ -46,7 +47,8 @@ PUBLIC = {
 # Limits on request values: field of Limits -> (parameter of SearchParams, "min" or "max")
 BOUNDS = {"buffer_max": ("buffer", "max"), "max_length_max": ("max_length", "max"),
           "prominence_span_max": ("prominence_span", "max"), "drop_radius_max": ("drop_radius", "max"),
-          "slope_threshold_min": ("slope_threshold", "min"), "ortho_detail_max": ("ortho_detail", "max")}
+          "slope_threshold_min": ("slope_threshold", "min"), "ortho_detail_max": ("ortho_detail", "max"),
+          "radius_max": ("radius", "max"), "resolution_max": ("resolution", "max")}
 
 
 class Limits(BaseSettings):
@@ -77,6 +79,9 @@ class Limits(BaseSettings):
     group_distance_min_res: Optional[float] = Field(
         None, ge=0, description="smallest --group-distance, in multiples of the resolution")
     ortho_detail_max: Optional[int] = Field(None, ge=0, description="largest --ortho-detail")
+    radius_max: Optional[float] = Field(None, gt=0, description="largest --radius, m")
+    resolution_max: Optional[float] = Field(
+        None, gt=0, description="largest --resolution, m (also the data's own, when none is given)")
     not_allowed: List[str] = Field(
         default_factory=list, description="parameters the web may not set (\"threads\"), or values of them "
                                           "(\"ortho=always\"); a JSON list")
@@ -85,7 +90,12 @@ class Limits(BaseSettings):
     region_km2_max: Optional[float] = Field(
         None, gt=0, description="largest bounding box of a --within box or of a named OSM area (osm:<name>, "
                                 "from Nominatim), km²; checked before OSM is asked for coastline or cliffs in it")
-    area_km2_max: Optional[float] = Field(None, gt=0, description="largest search area (--area or drawn), km²")
+    area_km2_max: Optional[float] = Field(
+        None, gt=0, description="largest search area (--area, drawn, or a circle: π × --radius²), km²")
+    bbox_km_max: Optional[float] = Field(
+        None, gt=0, description="longest side of the bounding box (WGS84) of a search, km: of its area, and of its "
+                                "grid with the margin; checked before any service is asked for data in it (sheet "
+                                "indexes and Overpass are asked per 0.25° tile of the box)")
     grid_mpx_max: Optional[float] = Field(
         None, gt=0, description="most pixels of a grid (a circle) or of a tile of an area with its overlap, millions "
                                 "(about 100 bytes of memory each); tiles are made smaller to fit")

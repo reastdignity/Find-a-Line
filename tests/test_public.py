@@ -1620,6 +1620,75 @@ def test_search_limits_before_requests(tmp_path, monkeypatch):
     search.check_estimate(plan, search.Estimate(download_mb=5000, work_gb=1))
 
 
+def _square(lon, lat, d=0.01):
+    return [[lon, lat], [lon + d, lat], [lon + d, lat + d], [lon, lat + d], [lon, lat]]
+
+
+# Review B: two 1 km² squares about 560 km apart (Gdańsk, Kraków), and a circle of 100 km at 40 m
+FAR_APART = {"type": "MultiPolygon", "coordinates": [[_square(18.6, 54.35)], [_square(20.0, 49.3)]]}
+HUGE_CIRCLE = {"lat": 52.0, "lon": 19.0, "radius": 100_000, "resolution": 40, "source": "geoportal"}
+
+
+def test_bounding_box_limits_before_requests(tmp_path, monkeypatch, settings, account_settings, providers):
+    """Under the public limits a huge circle (radius, resolution, area) and two small areas far apart
+    (the bounding box) are refused by the web, by plan_search, by the quick lane's estimate and by
+    the download phase, before a single request (each would have asked the sheet index and
+    Overpass for every 0.25° tile of the box); without limits they are planned as before."""
+    import requests
+
+    import jobs as jb
+    import search
+    from settings import Limits
+    sent = []
+
+    def no_network(self, method, url, *args, **kwargs):
+        sent.append(url)
+        raise AssertionError(f"a request was sent: {url}")
+    monkeypatch.setattr(requests.Session, "request", no_network)
+    limits = Limits.load(public=True)
+    assert (limits.radius_max, limits.resolution_max, limits.bbox_km_max) == (3500, 30, 75)
+    far = {"params": {"resolution": 30, "source": "geoportal"}, "geometry": FAR_APART}
+    huge = {"params": HUGE_CIRCLE, "geometry": None}
+    with pytest.raises(ValueError) as error:
+        web.check_request(huge, limits)
+    assert "radius: at most 3500" in str(error.value) and "resolution: at most 30" in str(error.value)
+    web.check_request(far, limits)  # its values pass: its box is the plan's to refuse
+    paths = search.Paths(str(tmp_path), str(tmp_path / "work"))
+    for request, text in ((huge, "radius: at most 3500"), (far, "bounding box"),
+                          ({"params": {**HUGE_CIRCLE, "radius": 3500, "resolution": 30}}, None)):
+        params = jb.search_params(request)
+        if text is None:  # within the bounds: planned (its estimate asks the index)
+            search.plan_search(params, paths, lambda k, t: None, limits=limits)
+            continue
+        with pytest.raises(search.SearchError) as error:
+            search.plan_search(params, paths, lambda k, t: None, limits=limits)
+        assert text in str(error.value), error.value
+        with pytest.raises(search.SearchError):
+            jb.quick_estimate(str(tmp_path), request, limits)
+    with pytest.raises(search.SearchError) as error:  # the area limit applies to circles too
+        search.plan_search(jb.search_params({"params": {**HUGE_CIRCLE, "radius": 3000, "resolution": 30}}), paths,
+                           lambda k, t: None, limits=limits.model_copy(update={"area_km2_max": 20}))
+    assert "The circle covers 28.3 km², at most 20 km²" in str(error.value)
+    jobs = jb.Jobs(str(tmp_path), public=True)
+    _phase_in_this_process(monkeypatch)
+    for request in (far, huge):
+        job = jobs.add(request, "far apart", user_id=7)
+        jobs.claim("queued", "downloading", "w1")
+        jb.run_phase(str(tmp_path), job, "download", limits, True)
+        assert jobs.get(job)["status"] == "failed", jobs.get(job)
+    app = _public_app(tmp_path, settings, account_settings, providers)
+    a = _clients(app, tmp_path, account_settings, ("a",))["a"]
+    for path in ("/api/jobs", "/api/estimate"):
+        answer = a.post(path, json=huge)
+        assert answer.status_code == 400 and "radius: at most 3500" in answer.text
+    fields = {f["name"]: f for f in a.get("/api/schema").json()["fields"]}
+    assert fields["radius"]["max"] == 3500 and fields["resolution"]["max"] == 30
+    a.close()
+    assert sent == []
+    plan = search.plan_search(jb.search_params(far), paths, lambda k, t: None, limits=Limits())  # locally
+    assert plan.grid.height * plan.resolution > 500_000
+
+
 def test_search_limits_of_anchors_and_lines(tmp_path):
     """Too many anchors or lines stop the search with a hint, before the profiles."""
     import search
