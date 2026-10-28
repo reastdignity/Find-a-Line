@@ -1,8 +1,12 @@
-"""OpenStreetMap extracts without the network: which theme tiles they can build."""
+"""OpenStreetMap without the network: which theme tiles the extracts can build, the Nominatim cache,
+the shared rate limits of Nominatim and Overpass (against a local fake server), the User-Agent."""
 
+import contextlib
 import json
 import os
 import sys
+import threading
+import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import osmextract  # noqa: E402
@@ -137,3 +141,95 @@ def test_nominatim_large_answers_are_simplified(tmp_path, monkeypatch):
     assert len(json.dumps(first)) <= osm.MAX_ANSWER_BYTES
     assert first["name"] == "Big" and len(first["geojson"]["coordinates"][0]) < 5000
     assert osm.search("Big", cache_dir) == first and asked == ["Big"]
+
+
+@contextlib.contextmanager
+def _fake_server(body: bytes, seconds: float = 0.0):
+    """A local HTTP server answering every GET with `body` after `seconds`; yields its URL and the
+    list of (start, end) times of the requests it served."""
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+    served = []
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            start = time.time()
+            time.sleep(seconds)
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            served.append((start, time.time()))
+
+        def log_message(self, *args):
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield f"http://127.0.0.1:{server.server_address[1]}/", served
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def _in_turn(kind: str, url: str, cache_dir: str, names, start: float):
+    """Run in a spawned process: Nominatim searches or Overpass tiles against the fake server."""
+    os.environ["NO_PROXY"] = "127.0.0.1"
+    import osm
+    import osmextract
+    osmextract.build_tile = lambda *args: False  # no extracts: Overpass
+    osm.SEARCH_URL = osm.OVERPASS_URLS[0] = url
+    time.sleep(max(0.0, start - time.time()))  # both processes begin together
+    for name in names:
+        if kind == "nominatim":
+            osm.search(name, cache_dir)
+        else:
+            osm.fetch_tile("cliff", name, 10.0, cache_dir)
+
+
+def _two_processes(kind: str, url: str, cache_dir: str, names):
+    import multiprocessing
+    context = multiprocessing.get_context("spawn")
+    start = time.time() + 5  # time to start both
+    processes = [context.Process(target=_in_turn, args=(kind, url, cache_dir, names[i::2], start)) for i in range(2)]
+    for process in processes:
+        process.start()
+    for process in processes:
+        process.join(120)
+        assert process.exitcode == 0
+
+
+def test_nominatim_one_request_per_second_across_processes(tmp_path):
+    """Two processes searching at once: the requests reach Nominatim at least a second apart."""
+    with _fake_server(b"[]") as (url, served):
+        _two_processes("nominatim", url, str(tmp_path), [f"place {i}" for i in range(6)])
+    starts = sorted(start for start, _ in served)
+    assert len(starts) == 6
+    assert min(b - a for a, b in zip(starts, starts[1:])) >= 1.0
+
+
+def test_overpass_one_query_at_a_time_across_processes(tmp_path):
+    """Two processes building theme tiles at once: their Overpass queries never overlap."""
+    with _fake_server(b'{"elements": []}', seconds=0.5) as (url, served):
+        _two_processes("overpass", url, str(tmp_path), [50.0, 50.25, 50.5, 50.75])
+    served.sort()
+    assert len(served) == 4
+    assert all(end <= next_start for (_, end), (next_start, _) in zip(served, served[1:]))
+
+
+def test_overpass_busy(tmp_path, monkeypatch):
+    """A query that cannot get its turn fails with a readable requests error (callers handle those)."""
+    import pytest
+    import requests
+    from filelock import FileLock
+
+    import osm
+    import osmextract
+    monkeypatch.setattr(osmextract, "build_tile", lambda *args: False)
+    monkeypatch.setattr(osm, "OVERPASS_WAIT_S", 0.2)
+    (tmp_path / "osm").mkdir()
+    with FileLock(str(tmp_path / "osm" / "overpass.lock")):  # another search's query
+        with pytest.raises(requests.Timeout, match="Overpass is busy"):
+            osm.fetch_tile("cliff", 50.0, 10.0, str(tmp_path))

@@ -371,6 +371,7 @@ dependencies = [
     { name = "affine" },
     { name = "contextily" },
     { name = "fastapi" },
+    { name = "filelock" },
     { name = "geojson-pydantic" },
     { name = "geopandas" },
     { name = "matplotlib" },
@@ -382,6 +383,7 @@ dependencies = [
     { name = "pydantic" },
     { name = "pydantic-settings" },
     { name = "pyproj" },
+    { name = "pyrate-limiter" },
     { name = "rasterio" },
     { name = "requests" },
     { name = "scipy" },
@@ -405,6 +407,7 @@ requires-dist = [
     { name = "affine", specifier = ">=2.4" },
     { name = "contextily", specifier = ">=1.6" },
     { name = "fastapi", specifier = ">=0.162.0" },
+    { name = "filelock", specifier = ">=4.2.4" },
     { name = "geojson-pydantic", specifier = ">=2.2" },
     { name = "geopandas", specifier = ">=1.1" },
     { name = "matplotlib", specifier = ">=3.10" },
@@ -416,6 +419,7 @@ requires-dist = [
     { name = "pydantic", specifier = ">=2.11" },
     { name = "pydantic-settings", specifier = ">=2.16.1" },
     { name = "pyproj", specifier = ">=3.7" },
+    { name = "pyrate-limiter", specifier = ">=4.5.1" },
     { name = "rasterio", specifier = ">=1.4" },
     { name = "requests", specifier = ">=2.32" },
     { name = "scipy", specifier = ">=1.18" },
@@ -1481,6 +1485,15 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/ed/7a/faad58c948947b217fcf06f80d308fff27bab5730ad6c9cd4c35bcf8bc90/pyproj-3.8.0-cp315-cp315t-win32.whl", hash = "sha256:0ff22ad49d1f59e18a57384926aabcb0ee8bbe9213e5abe375fd18b1b6ace194", size = 6471511, upload-time = "2026-09-05T20:05:04.113Z" },
     { url = "https://files.pythonhosted.org/packages/cf/a8/5ed4f4042031e13a0fede12e81af1e4143102221c373f966a24f38b0d284/pyproj-3.8.0-cp315-cp315t-win_amd64.whl", hash = "sha256:d5a408b215ef98c9ae19e58ec512360b8ad9b25f8792138f983a58d159ac7157", size = 6940114, upload-time = "2026-09-05T20:05:05.737Z" },
     { url = "https://files.pythonhosted.org/packages/12/14/9c291ad92b565629cf4eacee72cbc8071ca8d93c9d719b47f304b1b2ea76/pyproj-3.8.0-cp315-cp315t-win_arm64.whl", hash = "sha256:bbf8a786ebfa9a904802dfde0e95e1325df8efbb573a19686c1937499a8f04e8", size = 6843958, upload-time = "2026-09-05T20:05:07.527Z" },
+]
+
+[[package]]
+name = "pyrate-limiter"
+version = "4.5.1"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/2b/0b/f69f1614940f29d51e31d4fe8de69b2b4d411094ba3c77f50da34dfb63c6/pyrate_limiter-4.5.1.tar.gz", hash = "sha256:7f03c6a9235b00a4ba3c7b1e8cb6b23fbacc9d40b09f326220917a12ef22cc09", size = 129966, upload-time = "2026-10-20T13:51:27.935Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/bc/72/bf7279ae5799e1b54cf137859c17755446b2d2b6194606bda41753a43f76/pyrate_limiter-4.5.1-py3-none-any.whl", hash = "sha256:bb8dd2926b0679e4ada6629a865e85daa5599268f930c61a8992dafa8bf3ba0d", size = 57873, upload-time = "2026-10-20T13:51:26.584Z" },
 ]
 
 [[package]]

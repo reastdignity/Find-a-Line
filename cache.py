@@ -14,6 +14,7 @@ Cache layout: <country or global dataset>/<dataset>/<edition>/<tiling>/<tile>, e
     spain/mdt05/live/epsg25830-5m-2000px-asc/1_2.tif   ("live": the current state of a service)
     copernicus30/2021/dem/N50E019.tif
     osm/water-polygons/<date>/..., osm/themes/<theme>/<tile>.geojson, osm/nominatim.sqlite
+    (osm/nominatim-rate.sqlite and osm/overpass.lock: the shared limits of those services, osm.py)
 Deleting a top-level folder (a country or a global dataset) removes everything about it,
 its index included. cache/LAYOUT holds the layout version; a cache of another layout
 is not read (delete it: everything is downloaded again when needed).

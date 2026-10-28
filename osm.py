@@ -10,14 +10,19 @@ OpenStreetMap data kept in the cache (cache/osm, see cache.py).
   (osmextract.py) when they cover it whole; such tiles are rebuilt when the extracts
   are updated.
 - Nominatim answers (cache/osm/nominatim.sqlite): place names and countries, so the
-  same point is not asked twice (Nominatim allows one request per second).
+  same point is not asked twice.
+
+The public servers ask for moderation, and every process of the app (the CLI, the web
+worker, its phase processes) shares them: Nominatim gets at most one request per second
+through a rate limiter kept in cache/osm/nominatim-rate.sqlite (pyrate-limiter), Overpass
+one query at a time through a lock file, cache/osm/overpass.lock (filelock).
 """
 
+import contextlib
 import json
 import math
 import os
 import sqlite3
-import time
 from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional, Tuple
 
@@ -30,6 +35,7 @@ OVERPASS_URL = "https://overpass-api.de/api/interpreter"
 # Tried in turn when a server is overloaded (502, 504, timeouts); both serve the whole planet
 OVERPASS_URLS = [OVERPASS_URL, "https://maps.mail.ru/osm/tools/overpass/api/interpreter"]
 NOMINATIM_URL = "https://nominatim.openstreetmap.org/reverse"
+OVERPASS_WAIT_S = 600  # how long a query waits for the one of another process (each server takes up to 120 s)
 TILE_DEG = 0.25
 # What each theme holds: (OSM type, key, value); the Overpass queries and the
 # extracts (osmextract.py) use the same list
@@ -75,6 +81,25 @@ def write_tile(path: str, features: List[Dict]):
         json.dump({"type": "FeatureCollection", "features": features}, f)
 
 
+@contextlib.contextmanager
+def _overpass_turn(cache_dir: str):
+    """One Overpass query at a time across all processes of this data folder."""
+    from filelock import FileLock, Timeout
+    path = os.path.join(cache_dir, "osm", "overpass.lock")
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    lock = FileLock(path)
+    try:
+        lock.acquire(timeout=OVERPASS_WAIT_S)
+    except Timeout:
+        raise requests.Timeout(f"Overpass is busy with the queries of another search (waited {OVERPASS_WAIT_S // 60} "
+                               "min); try again later, or download the OpenStreetMap extract of the country "
+                               "(findaline.py osm download)") from None
+    try:
+        yield
+    finally:
+        lock.release()
+
+
 def fetch_tile(theme: str, lat: float, lon: float, cache_dir: str):
     """Build one theme tile: from the extracts when they cover it, else from Overpass."""
     import osmextract
@@ -84,15 +109,16 @@ def fetch_tile(theme: str, lat: float, lon: float, cache_dir: str):
     bbox = f"{lat},{lon},{lat + TILE_DEG},{lon + TILE_DEG}"
     query = f"[out:json][timeout:90];({THEMES[theme].format(bbox=bbox)});out geom;"
     error = None
-    for url in OVERPASS_URLS:
-        try:
-            response = requests.get(url, params={"data": query}, headers=cache.http_headers(), timeout=120)
-            response.raise_for_status()
-            break
-        except requests.RequestException as e:
-            error = e
-    else:
-        raise error
+    with _overpass_turn(cache_dir):
+        for url in OVERPASS_URLS:
+            try:
+                response = requests.get(url, params={"data": query}, headers=cache.http_headers(), timeout=120)
+                response.raise_for_status()
+                break
+            except requests.RequestException as e:
+                error = e
+        else:
+            raise error
     features = []
     for element in response.json().get("elements", []):
         geometry = _geometry(element)
@@ -134,6 +160,11 @@ SEARCH_URL = "https://nominatim.openstreetmap.org/search"
 FAILED_DAYS = 30  # a search without a match (or a reverse lookup without an answer) is asked again after it
 # Answers larger than this (an outline of a country) are stored with their outline simplified
 MAX_ANSWER_BYTES = 5_000_000
+# Nominatim's usage policy allows one request per second; the limiter admits one per 1.1 s,
+# a margin for the way from the permit to the server
+NOMINATIM_INTERVAL_MS = 1100
+NOMINATIM_WAIT_S = 300  # how long a request waits for its turn
+_limiters: Dict[str, object] = {}  # pyrate_limiter.Limiter per data folder, made once per process
 # The schema of nominatim.sqlite, one step per version (cache.migrate; never change a released step).
 # Version 1 is the schema the database had before it had versions, so an old one keeps its rows.
 MIGRATIONS = [
@@ -203,11 +234,27 @@ def _store(cache_dir: str, table: str, key: str, answer: Dict) -> Dict:
     return json.loads(text)
 
 
+def _nominatim_turn(cache_dir: str):
+    """Wait until this process may send a request to Nominatim (all processes of the data folder
+    share one limit: a pyrate-limiter SQLite bucket, its writes serialised by a file lock)."""
+    path = os.path.join(cache_dir, "osm", "nominatim-rate.sqlite")
+    limiter = _limiters.get(path)
+    if limiter is None:
+        from pyrate_limiter import Limiter, Rate, SQLiteBucket
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        bucket = SQLiteBucket.init_from_file([Rate(1, NOMINATIM_INTERVAL_MS)], table="nominatim", db_path=path,
+                                             use_file_lock=True)
+        limiter = _limiters[path] = Limiter(bucket)
+    if not limiter.try_acquire("nominatim", timeout=NOMINATIM_WAIT_S):
+        raise requests.Timeout(f"Nominatim is busy with the requests of other searches (waited "
+                               f"{NOMINATIM_WAIT_S // 60} min); try again later")
+
+
 def _ask(url: str, params: Dict, timeout: int, cache_dir: str):
-    """One request to Nominatim; its JSON."""
+    """One request to Nominatim, in its turn (_nominatim_turn); its JSON."""
+    _nominatim_turn(cache_dir)
     response = requests.get(url, headers=cache.http_headers(), timeout=timeout, params=params)
     response.raise_for_status()
-    time.sleep(1)  # Nominatim usage policy: at most one request per second
     return response.json()
 
 
