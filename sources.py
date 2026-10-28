@@ -1280,8 +1280,9 @@ def choose_source(name: str, lat: float, lon: float, cache_dir: str, elevation_f
     if elevation_file or name == "files":
         if not elevation_file:
             raise ValueError("--source files needs --elevation-file")
-        source = Source(id="files", name="local files", description=f"local files: {elevation_file}"
-                        + (f", {surface_file}" if surface_file else ""),
+        # File names only: the description goes into the run's files (runs.js, lines.geojson, ATTRIBUTION.txt)
+        source = Source(id="files", name="local files", description=f"local files: {os.path.basename(elevation_file)}"
+                        + (f", {os.path.basename(surface_file)}" if surface_file else ""),
                         nmt=FileLayer("Terrain file", elevation_file),
                         nmpt=FileLayer("Surface file", surface_file) if surface_file else None)
         with rio.open(elevation_file) as src:

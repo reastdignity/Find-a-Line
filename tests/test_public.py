@@ -1706,6 +1706,55 @@ def test_web_process_keeps_off_the_workers_files(tmp_path, settings, account_set
     assert json.loads(result.stdout.strip().splitlines()[-1]) == []
 
 
+def test_names_paths_and_profiles(run_people, clip_run, tmp_path, account_settings, capsys):
+    """Display names lose control and bidi characters; the files of a run made from a local file name
+    it, not its server path (run.json keeps the path for profiles); Redact takes a path after a
+    colon (review B, poc_redact); profiles of a demo run from nasadem or malta2012 are for
+    administrators (the server's OpenTopography key); the public worker warns without cgroup v2."""
+    import jobs as jb
+    import runs as rn
+    assert ac.clean_name("Ann‮A​ B ") == "AnnA B" and ac.clean_name("‮") is None
+    users = ac.Accounts(str(tmp_path), account_settings)
+    assert users.sign_in("github", "99", "Eve‮gnp.exe").name == "Evegnp.exe"
+
+    folder = os.path.join(REPO, "tests", "data")
+    for name in ("lines.geojson", "ATTRIBUTION.txt", "data.js", "map.html"):
+        text = (clip_run / name).read_text("utf-8")
+        for form in (folder, folder.replace("\\", "/"), json.dumps(folder)[1:-1]):
+            assert form not in text, (name, form)
+    meta = json.loads((clip_run / "run.json").read_text("utf-8"))
+    assert meta["source"]["description"] == "local files: zabi_kon_nmt.tif"
+    assert os.path.isabs(meta["data"][0]["file"])  # profile_of_line reads it
+    old = {**meta, "source": {**meta["source"], "description": f"local files: {meta['data'][0]['file']}"}}
+    listed = json.dumps(rn._listed({**old, "has_map": True}))
+    assert folder not in listed and json.dumps(folder)[1:-1] not in listed and "zabi_kon_nmt.tif" in listed
+
+    redact = jb.Redact(str(tmp_path))
+    assert redact("error at path:/tmp/tmpq1/x.part") == "error at path:<path>"
+    assert redact("see https://a.example/b/c and http://x/y") == "see https://a.example/b/c and http://x/y"
+
+    a, admin = run_people["a"], run_people["admin"]
+    run_json = tmp_path / "runs" / RUN_B / "run.json"
+    meta = json.loads(run_json.read_text("utf-8"))
+    run_json.write_text(json.dumps({**meta, "source": {**meta["source"], "id": "nasadem"}}), "utf-8")
+    run_people["jobs"].set_visibility(RUN_B, "demo")
+    lat, lon = meta["area"]["lat"], meta["area"]["lon"]
+    path = f"/api/profile?run={RUN_B}&line={lat},{lon},{lat + 0.0003},{lon}"
+    answer = a.get(path, headers={"x-findaline-profile": "1"})
+    assert answer.status_code == 400 and "administrators only" in answer.text
+    assert admin.get(path, headers={"x-findaline-profile": "1"}).status_code == 503  # on to the (missing) worker
+
+    capsys.readouterr()
+    assert jb.warn_without_cgroup(str(tmp_path / "no-cgroup"))
+    assert "no cgroup v2" in capsys.readouterr().err
+    cgroup = tmp_path / "cgroup"
+    cgroup.mkdir()
+    for name, value in (("cgroup.controllers", "cpu memory"), ("memory.max", "8000000000"),
+                        ("memory.current", "1000"), ("cpu.max", "400000 100000")):
+        (cgroup / name).write_text(value)
+    assert not jb.warn_without_cgroup(str(cgroup))
+
+
 def test_request_limits(monkeypatch, tmp_path):
     """The public site's limits on request values (each overridable, `none` for no limit) refuse
     values over them and fields it does not allow, and give the form its min/max; locally, and for

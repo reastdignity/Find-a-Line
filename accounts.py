@@ -93,6 +93,15 @@ class User:
 LOCAL = User(None, "local", "", "local", "approved", True)
 
 
+def clean_name(name: Optional[str]) -> Optional[str]:
+    """A display name from a provider as the site shows it: without control, format (bidi overrides,
+    zero-width) and other invisible characters (Unicode categories C*, Zl, Zp), at most 100
+    characters; None when nothing is left."""
+    import unicodedata
+    kept = "".join(c for c in name or "" if unicodedata.category(c)[0] != "C" and unicodedata.category(c) not in ("Zl", "Zp"))
+    return kept.strip()[:100] or None
+
+
 def digest(token: str) -> str:
     """sha256 of a token (sessions and share links are stored as it)."""
     return hashlib.sha256(token.encode()).hexdigest()
@@ -126,7 +135,7 @@ class Accounts:
 
     def _user(self, row) -> User:
         admin = (row["provider"], row["subject"]) in self.admins
-        return User(row["id"], row["provider"], row["subject"], row["name"] or f"{row['provider']}:{row['subject']}",
+        return User(row["id"], row["provider"], row["subject"], clean_name(row["name"]) or f"{row['provider']}:{row['subject']}",
                     "approved" if admin else row["status"], admin, bool(row["unlimited"]))
 
     def user(self, user_id: int) -> Optional[User]:
@@ -174,7 +183,7 @@ class Accounts:
             raise ValueError("unknown identity")
         now = datetime.now().isoformat(timespec="seconds")
         admin = (provider, subject) in self.admins
-        name = (name or "").strip()[:100] or None
+        name = clean_name(name)
         with self._db() as db:
             row = db.execute("SELECT * FROM users WHERE provider = ? AND subject = ?", (provider, subject)).fetchone()
             if row is None:

@@ -102,8 +102,9 @@ MIGRATIONS = [
 ]
 
 
-# An absolute path on the server: C:\... (or C:/...), or /dir/... not in a URL (http://host/...)
-ABSOLUTE_PATH = re.compile(r"""(?:\b[A-Za-z]:[\\/]|(?<![\w:/.~-])/(?=[\w.-]))[^\s"'<>|]*""")
+# An absolute path on the server: C:\... (or C:/...), or /dir/... not in a URL (http://host/...: the
+# slash after "host" follows a letter, the first of "//" another slash); after a colon too (path:/x)
+ABSOLUTE_PATH = re.compile(r"""(?:\b[A-Za-z]:[\\/]|(?<![\w/.~-])/(?=[\w.-]))[^\s"'<>|]*""")
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 
 
@@ -1068,6 +1069,22 @@ class Scheduler:
                                                   "the OSM extract job" if osm else f"the {phase} phase")
 
 
+def warn_without_cgroup(root: Optional[str] = None) -> bool:
+    """The public worker sizes tiles and threads from the limits of its container (search.cgroup_limits,
+    cgroup v2 only): a warning on stderr when it finds none (cgroup v1, or no mem_limit / cpus).
+    Whether it warned."""
+    import search
+    found = search.cgroup_limits(root)
+    if found.memory is not None and found.cpus is not None:
+        return False
+    v2 = os.path.exists(os.path.join(root or search.CGROUP_ROOT, "cgroup.controllers"))
+    print("WARNING: " + ("no memory or CPU limit of the container found (cgroup v2: memory.max, cpu.max)" if v2 else
+                         "no cgroup v2 found (cgroup v1 is not read)") + ": tiles and threads are sized from the "
+          "whole machine; run the worker in a container with mem_limit and cpus on a host with cgroup v2",
+          file=sys.stderr, flush=True)
+    return True
+
+
 def main(argv: List[str]) -> int:
     """findaline.py worker: the worker of the web app as its own process."""
     import argparse
@@ -1086,6 +1103,8 @@ def main(argv: List[str]) -> int:
         os.environ["FINDALINE_CONTACT"] = PublicSettings.load().contact
     data = cache.data_dir(args.data_dir)
     cache.check_layout(os.path.join(data, "cache"))
+    if args.public:
+        warn_without_cgroup()
     scheduler = Scheduler(Jobs(data, public=args.public), public=args.public)
     # SIGTERM (docker stop, systemd) stops it like Ctrl+C: the running phases are killed and
     # their jobs marked interrupted (a tiled area resumes when it is started again)

@@ -161,20 +161,24 @@ def checked_request(request: Dict, limits: Optional[Limits] = None, hidden_sourc
     return request, p
 
 
-def profile_problem(folder: str, points: List[float]) -> Optional[str]:
+def profile_problem(folder: str, points: List[float], admin: bool = False) -> Optional[str]:
     """Why a profile of a run may not be computed on the public site (None: it may): both points in
     the box of the run's area grown by its --max-length, and at most --max-length apart (1% and
-    2 m of slack for the projection)."""
+    2 m of slack for the projection). A run from a source of ADMIN_SOURCES (a demo run any user may
+    open) only for administrators: its profile may download a tile with the server's key."""
     import runs as rn
     try:
         with open(os.path.join(folder, "run.json"), encoding="utf-8") as f:
             meta = json.load(f)
         max_length = float(meta["params"]["max_length"])
         box = rn._bbox(meta)
-    except (OSError, ValueError, KeyError, TypeError):
+        source = meta.get("source", {}).get("id")
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
         box = None
     if box is None:
         return "this run has no profiles"
+    if source in ADMIN_SOURCES and not admin:
+        return f"profiles of runs from {source} are computed for administrators only"
     lat1, lon1, lat2, lon2 = points
     west, south, east, north = box
     dlat = max_length / 111320
@@ -966,7 +970,7 @@ def create_app(data_dir: str, token: Optional[str] = None, port: int = PORT, sta
         if len(points) != 4 or not all(math.isfinite(v) for v in points):
             raise HTTPException(400, "line: lat1,lon1,lat2,lon2")
         if public:
-            problem = await run_in_threadpool(profile_problem, os.path.join(runs_dir, run), points)
+            problem = await run_in_threadpool(profile_problem, os.path.join(runs_dir, run), points, user.admin)
             if problem:
                 raise HTTPException(400, problem)
         await run_in_threadpool(within_rate, "profile", user)

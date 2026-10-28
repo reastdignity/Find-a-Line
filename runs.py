@@ -113,9 +113,39 @@ def folder_bytes(path: str) -> int:
     return total
 
 
+def without_paths(meta: Dict) -> Dict:
+    """run.json without the paths of the computer that made it: local files (--elevation-file and
+    --surface-file, --slope-file, an --area file) by their names only, also in the description of
+    the source of a run from before this rule. run.json keeps the paths (profiles read the files)."""
+    meta = dict(meta)
+    if isinstance(meta.get("data"), list):
+        meta["data"] = [{**entry, "file": os.path.basename(entry["file"])} if entry.get("file") else entry
+                        for entry in meta["data"]]
+    source = meta.get("source")
+    if isinstance(source, dict) and source.get("id") == "files" and meta.get("data"):
+        names = [entry["file"] for entry in meta["data"] if entry.get("file")]
+        meta["source"] = {**source, "description": "local files: " + ", ".join(names)}
+    params = meta.get("params")
+    if isinstance(params, dict):
+        params = dict(params)
+        if params.get("slope_file"):
+            params["slope_file"] = os.path.basename(params["slope_file"])
+        area = params.get("area")
+        if isinstance(area, dict) and _is_file(area.get("area")):
+            params["area"] = {**area, "area": os.path.basename(area["area"])}
+        meta["params"] = params
+    return meta
+
+
+def _is_file(area) -> bool:
+    """Whether an --area is a file (not coast, cliffs, osm:<name> or a drawn area)."""
+    return isinstance(area, str) and area not in ("coast", "cliffs", "drawn area") and not area.startswith("osm:")
+
+
 def public_meta(meta: Dict) -> Dict:
     """The part of run.json that goes into lines.geojson, a file meant to be passed on:
-    without the list of cache files each data layer used."""
+    without the list of cache files each data layer used, and without server paths."""
+    meta = without_paths(meta)
     if "data" not in meta:
         return meta
     return {**meta, "data": [{k: v for k, v in entry.items() if k != "paths"} for entry in meta["data"]]}
@@ -250,7 +280,8 @@ def params_summary(meta: Dict) -> str:
     nmpt = f"NMPT {p['nmpt']}" if p["nmpt"] else "no NMPT"
     if p.get("area"):
         a = p["area"]
-        where = (a["area"] if a["area"] == "drawn area" else f"area {a['area']}") + (f" ±{a['buffer']:g} m" if a["area"] in ("coast", "cliffs") else "") \
+        where = (a["area"] if a["area"] == "drawn area" else
+                 f"area {os.path.basename(a['area']) if _is_file(a['area']) else a['area']}") + (f" ±{a['buffer']:g} m" if a["area"] in ("coast", "cliffs") else "") \
             + (f" within {a['within']}" if a.get("within") else "")
     else:
         where = f"radius {p['radius']:g} m"
@@ -290,7 +321,7 @@ def _bbox(run: Dict) -> Optional[List[float]]:
 
 def _listed(run: Dict) -> Dict:
     """A run as runs.js lists it: without the data files, their credits and the area outline, with its box."""
-    listed = {k: v for k, v in run.items() if k not in ("data", "area", "attribution")}
+    listed = {k: v for k, v in without_paths(run).items() if k not in ("data", "area", "attribution")}
     listed["bbox"] = _bbox(run)
     return listed
 
