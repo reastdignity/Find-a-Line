@@ -1665,6 +1665,47 @@ def test_cache_control(run_people, tmp_path):
             assert answer.status_code == 200 and answer.headers["cache-control"] == value, path
 
 
+def test_web_process_keeps_off_the_workers_files(tmp_path, settings, account_settings, providers, monkeypatch,
+                                                 run_people):
+    """FINDALINE_ACCOUNTS_DIR moves accounts.sqlite off the data folder (default: the data folder);
+    the public site serves the viewer from the code, not from runs/_viewer (which the worker
+    writes); the web process never imports numba (no compiling, no numba cache)."""
+    import subprocess
+    anonymous = run_people["anonymous"]
+    viewer = tmp_path / "runs" / "_viewer"
+    viewer.mkdir(exist_ok=True)
+    (viewer / "viewer.js").write_text("window.EVIL = 1;")
+    with open(os.path.join(REPO, "viewer", "dist", "viewer.js"), "rb") as f:
+        assert anonymous.get("/runs/_viewer/viewer.js").content == f.read()
+    assert anonymous.get("/s/_viewer/viewer.js").content != b"window.EVIL = 1;"
+    assert anonymous.get("/runs/_viewer/missing.js").status_code == 404
+
+    elsewhere = tmp_path / "accounts"
+    monkeypatch.setenv("FINDALINE_ACCOUNTS_DIR", str(elsewhere))
+    moved = AccountSettings.load()
+    data = tmp_path / "data"
+    data.mkdir()
+    with TestClient(_public_app(data, settings, moved, providers), base_url=URL) as client:
+        assert client.get("/").status_code == 200
+    assert (elsewhere / "accounts.sqlite").exists() and not (data / "accounts.sqlite").exists()
+    assert ac.Accounts(str(data), account_settings).path == str(data / "accounts.sqlite")
+
+    (tmp_path / "local").mkdir()
+    code = (f"import json, sys; sys.path.insert(0, {REPO!r}); import web\n"
+            "from fastapi.testclient import TestClient\n"
+            f"c = TestClient(web.create_app({str(tmp_path / 'local')!r}, token='t', start_scheduler=False), "
+            "base_url='http://127.0.0.1:8765')\n"
+            "h = {'x-findaline-token': 't'}\n"
+            "c.get('/api/schema'); c.get('/api/runs'); c.post('/api/estimate', json={'params': {'lat': 50, 'lon': 19}}, "
+            "headers=h)\n"
+            "c.post('/api/jobs', json={'params': {}, 'geometry': {'type': 'Polygon', 'coordinates': "
+            "[[[19, 50], [19.01, 50], [19.01, 50.01], [19, 50]]]}}, headers=h)\n"
+            "print(json.dumps(sorted(m for m in sys.modules if m.split('.')[0] in ('numba', 'linesearch', 'search'))))")
+    result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=120)
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout.strip().splitlines()[-1]) == []
+
+
 def test_request_limits(monkeypatch, tmp_path):
     """The public site's limits on request values (each overridable, `none` for no limit) refuse
     values over them and fields it does not allow, and give the form its min/max; locally, and for

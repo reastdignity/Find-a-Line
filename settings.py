@@ -16,9 +16,9 @@ Settings and limits of the web app, from environment variables (pydantic-setting
   secrets (/run/secrets/findaline_<name>) when that folder exists.
 - AccountSettings: the sign-in of the public site (`web --public` only; accounts.py):
   FINDALINE_SESSION_SECRET, FINDALINE_GITHUB_CLIENT_ID / _SECRET, FINDALINE_GOOGLE_CLIENT_ID /
-  _SECRET, FINDALINE_ADMINS, FINDALINE_SIGNUP; secrets from the same Docker secrets folder
-  (file names as the variables, in any case). A provider without its client id and secret
-  is not offered.
+  _SECRET, FINDALINE_ADMINS, FINDALINE_SIGNUP, FINDALINE_ACCOUNTS_DIR; secrets from the same
+  Docker secrets folder (file names as the variables, in any case). A provider without its
+  client id and secret is not offered.
 - ServiceKeys: API keys of data services (OPENTOPOGRAPHY_API_KEY), from the environment or a
   Docker secret of the same name; params.SearchParams.opentopo_key defaults to it.
 """
@@ -286,6 +286,9 @@ class AccountSettings(BaseSettings):
     admins: str = Field("", description="administrators as <provider>:<id>, comma-separated (github:12345 with "
                                         "the numeric GitHub user id, google:<sub>); the first one owns the runs "
                                         "from before the public mode")
+    accounts_dir: Optional[str] = Field(
+        None, description="folder of accounts.sqlite (default: the data folder); only the web process opens it, so "
+                          "it may live outside the volume the worker writes")
     signup: Literal["approval", "open", "closed"] = Field(
         "approval", description="new accounts: approval (they wait for an administrator), open (approved at "
                                 "once) or closed (only the administrators can sign in)")

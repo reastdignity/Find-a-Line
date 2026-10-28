@@ -1,6 +1,7 @@
 """
 Accounts of the public site (`findaline.py web --public`): sign-in with GitHub or Google,
-the users and their sessions (accounts.sqlite in the data folder). The local app has no
+the users and their sessions (accounts.sqlite in the data folder, or in FINDALINE_ACCOUNTS_DIR:
+only the web process opens it). The local app has no
 accounts: its one user is LOCAL, an administrator.
 
 - Sign-in: OAuth 2 through Authlib's Starlette client. The state, the OpenID nonce and the
@@ -107,7 +108,9 @@ class Accounts:
     def __init__(self, data_dir: str, settings: AccountSettings):
         self.settings = settings
         self.admins = set(settings.admin_ids)
-        self.path = os.path.join(data_dir, "accounts.sqlite")
+        folder = settings.accounts_dir or data_dir  # FINDALINE_ACCOUNTS_DIR: off the worker's volume
+        os.makedirs(folder, exist_ok=True)
+        self.path = os.path.join(folder, "accounts.sqlite")
         db = self._db()
         try:
             cache.migrate(db, MIGRATIONS)

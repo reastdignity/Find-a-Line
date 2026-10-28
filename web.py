@@ -235,12 +235,15 @@ SAFE_PART = re.compile(r"[A-Za-z0-9_-][A-Za-z0-9_.-]{0,199}")
 class RunFiles(StaticFiles):
     """The run folders of the public site, with access control (never a plain StaticFiles):
     <first>/<file> serves a file of RUN_FILES of the run `resolve(request, first)` gives (None:
-    404, whether the run exists or not), _viewer/<asset> anyone. Starlette's StaticFiles does the
-    rest: the path within the folder (symbolic links out of it are refused), ETag, Range."""
+    404, whether the run exists or not), _viewer/<asset> anyone, from the code's viewer/dist (not
+    runs/_viewer, which the worker writes: it cannot change the viewer of everyone). Starlette's
+    StaticFiles does the rest: the path within the folder (symbolic links out of it are refused),
+    ETag, Range."""
 
     def __init__(self, directory: str, resolve: Callable):
         super().__init__(directory=directory)
         self.resolve = resolve  # (request, first part of the path) -> the run's id, or None
+        self.viewer = StaticFiles(directory=APP_DIST)
 
     async def get_response(self, path: str, scope):
         from starlette.concurrency import run_in_threadpool
@@ -251,12 +254,13 @@ class RunFiles(StaticFiles):
         if not route.startswith("/") or len(parts) != 2 or not all(SAFE_PART.fullmatch(part) or part == VIEWER for part in parts):
             raise StarletteHTTPException(404)
         first, name = parts
-        if first != VIEWER:
-            if name not in RUN_FILES:
-                raise StarletteHTTPException(404)
-            first = await run_in_threadpool(self.resolve, Request(scope), first)
-            if first is None:
-                raise StarletteHTTPException(404)
+        if first == VIEWER:
+            return await self.viewer.get_response(name, scope)
+        if name not in RUN_FILES:
+            raise StarletteHTTPException(404)
+        first = await run_in_threadpool(self.resolve, Request(scope), first)
+        if first is None:
+            raise StarletteHTTPException(404)
         return await super().get_response(os.path.join(first, name), scope)
 
 
@@ -569,9 +573,7 @@ def create_app(data_dir: str, token: Optional[str] = None, port: int = PORT, sta
     if public:
         # Runs from before the public mode (no row, or no owner) belong to the first administrator,
         # as private runs; nothing is deleted. Made before anyone signs in, so the id stays.
-        jobs.adopt_runs(runs_dir, users.first_admin())
-        import mapping
-        mapping.install_viewer(runs_dir)  # the viewer of share links, also before the first run
+        jobs.adopt_runs(runs_dir, users.first_admin())  # (the viewer comes from the code: RunFiles)
 
     streams: Dict[Optional[int], int] = {}  # open event streams per user
 
