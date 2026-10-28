@@ -219,6 +219,9 @@ SHARE_BYTES = 32  # the random part of a share link
 # malta2012's licence is not settled (sources.MALTA_CREDITS)
 ADMIN_SOURCES = ("nasadem", "malta2012")
 SSE_PER_USER = 3  # open event streams of one user (the public mode)
+# A refusal by a rate or a quota is one row of the audit log per user and kind in this many seconds;
+# the others are counted, and the next row says how many there were ("repeated")
+REFUSAL_WINDOW = 600
 RATE_NAMES = {"estimate": "estimates", "profile": "profiles", "job": "searches started"}  # Limits.<kind>_rate
 # The files of a run the public site serves (what mapping.save_map and runs.save_results write, without
 # run.json: its parameters and data files are the owner's); never progress.json, tiles or other files
@@ -283,9 +286,31 @@ def create_app(data_dir: str, token: Optional[str] = None, port: int = PORT, sta
     audit = Audit(data_dir) if public else None  # the local app keeps no audit log
 
     def record(action: str, user: Optional[ac.User] = None, target=None, detail: Optional[Dict] = None):
-        """An event of the audit log (the public site only; audit.py)."""
+        """An event of the audit log (the public site only; audit.py). It writes to a database: from
+        an async endpoint call it in the thread pool."""
         if audit is not None:
             audit.log(action, user.id if user else None, None if target is None else str(target), detail)
+
+    refusals: Dict[tuple, list] = {}  # (user id, kind) -> [start of its window, refusals not recorded]
+    refusals_lock = threading.Lock()
+
+    def refused(user: ac.User, kind: str, reason: str, status: int):
+        """A refusal by a rate, a quota or a safeguard in the audit log: the first of a user and kind
+        in REFUSAL_WINDOW seconds; the others only counted, their number goes with the next row."""
+        if audit is None:
+            return
+        now = time.monotonic()
+        with refusals_lock:
+            seen = refusals.get((user.id, kind))
+            if seen is not None and now - seen[0] < REFUSAL_WINDOW:
+                seen[1] += 1
+                return
+            refusals[(user.id, kind)] = [now, 0]
+            if len(refusals) > 10000:  # forget the windows that ended (their counts are lost)
+                for key in [k for k, (start, _) in refusals.items() if now - start >= REFUSAL_WINDOW]:
+                    del refusals[key]
+        record("refused", user, None, {"reason": reason, "status": status,
+                                       **({"repeated": seen[1]} if seen and seen[1] else {})})
 
     @contextlib.asynccontextmanager
     async def lifespan(_):
@@ -357,8 +382,10 @@ def create_app(data_dir: str, token: Optional[str] = None, port: int = PORT, sta
                            session_cookie=ac.OAUTH_COOKIE, max_age=ac.OAUTH_SECONDS, path="/", same_site="lax",
                            https_only=True)
         oauth = ac.oauth_clients(accounts, oauth_transport)
-        login_limiter = strategies.MovingWindowRateLimiter(storage.MemoryStorage())
+        # A sliding window counter: its keys expire (MemoryStorage keeps every key of a moving window)
+        login_limiter = strategies.SlidingWindowCounterRateLimiter(storage.MemoryStorage())
         login_rates = parse_many(ac.LOGIN_RATE)
+        app.state.limiters = {"login": login_limiter}
 
     # Only our own host names (DNS rebinding; behind the proxy the public host), before the guard
     app.add_middleware(TrustedHostMiddleware, allowed_hosts=hosts, www_redirect=False)
@@ -368,7 +395,7 @@ def create_app(data_dir: str, token: Optional[str] = None, port: int = PORT, sta
         client = oauth.create_client(provider) if public and provider in accounts.providers else None
         if client is None:
             raise HTTPException(404, "no such sign-in")
-        address = request.client.host if request.client else "?"
+        address = client_key(request.client.host if request.client else "?")
         if not all([login_limiter.hit(rate, "login", address) for rate in login_rates]):
             raise HTTPException(429, "too many sign-in attempts: try again later")
         return client
@@ -549,7 +576,8 @@ def create_app(data_dir: str, token: Optional[str] = None, port: int = PORT, sta
         return ADMIN_SOURCES if public and not user.admin else ()
 
     rates = {}  # kind -> the parsed rates of Limits.<kind>_rate (requests of a user)
-    rate_limiter = strategies.MovingWindowRateLimiter(storage.MemoryStorage())
+    rate_limiter = strategies.SlidingWindowCounterRateLimiter(storage.MemoryStorage())
+    app.state.limiters = {**getattr(app.state, "limiters", {}), "rate": rate_limiter}
     if public:
         for kind in ("estimate", "profile", "job"):
             if getattr(limits, f"{kind}_rate"):
@@ -559,7 +587,7 @@ def create_app(data_dir: str, token: Optional[str] = None, port: int = PORT, sta
         """429 when a limited user asks for more estimates, profiles or searches than Limits allows (the
         limits library, in the memory of this process)."""
         if user.limited and kind in rates and not all([rate_limiter.hit(r, kind, str(user.id)) for r in rates[kind]]):
-            record("refused", user, None, {"reason": f"{kind} rate", "status": 429})
+            refused(user, f"{kind} rate", f"{kind} rate", 429)
             raise HTTPException(429, f"too many {RATE_NAMES[kind]}: try again in a minute")
 
     def admitted(user: ac.User):
@@ -568,7 +596,7 @@ def create_app(data_dir: str, token: Optional[str] = None, port: int = PORT, sta
         try:
             jobs.precheck(jobs.admission(user.id, limits, user.limited))
         except QuotaExceeded as e:
-            record("refused", user, None, {"reason": str(e), "status": e.status})
+            refused(user, "quota", str(e), e.status)
             raise HTTPException(e.status, str(e))
 
     def queue(request: Dict, title: str, user: ac.User, again: Optional[str] = None) -> str:
@@ -577,7 +605,7 @@ def create_app(data_dir: str, token: Optional[str] = None, port: int = PORT, sta
             job_id = jobs.add(request, title, user.id, check=jobs.admission(user.id, limits, user.limited),
                               unlimited=unlimited(user))
         except QuotaExceeded as e:
-            record("refused", user, None, {"reason": str(e), "status": e.status})
+            refused(user, "quota", str(e), e.status)
             raise HTTPException(e.status, str(e))
         record("job_add", user, job_id, {"title": title, **({"again": again} if again else {})})
         return job_id
@@ -640,13 +668,13 @@ def create_app(data_dir: str, token: Optional[str] = None, port: int = PORT, sta
     @app.post("/api/estimate")
     async def estimate(body: Dict, client: Request, user: ac.User = Depends(current_user)):
         request, _ = await run_in_threadpool(parse, body, user)
-        within_rate("estimate", user)
+        await run_in_threadpool(within_rate, "estimate", user)
         return await quick("estimate", request, user, client)
 
     @app.post("/api/jobs")
     async def add_job(body: Dict, user: ac.User = Depends(current_user)):
         """Queue a search: the rate of the user's requests and the quotas first, then the request."""
-        within_rate("job", user)
+        await run_in_threadpool(within_rate, "job", user)
         await run_in_threadpool(admitted, user)
         request, params = await run_in_threadpool(parse, body, user)
         return {"id": await run_in_threadpool(queue, request, title(params), user)}
@@ -899,7 +927,7 @@ def create_app(data_dir: str, token: Optional[str] = None, port: int = PORT, sta
             problem = await run_in_threadpool(profile_problem, os.path.join(runs_dir, run), points)
             if problem:
                 raise HTTPException(400, problem)
-        within_rate("profile", user)
+        await run_in_threadpool(within_rate, "profile", user)
         return await quick("profile", {"run": run, "line": points}, user, request)  # one at a time in the quick lane
 
     if public:
@@ -1125,6 +1153,19 @@ async def _disconnect(receive):
     """Wait until the client of a request goes away (its body, if any, is read already)."""
     while (await receive())["type"] != "http.disconnect":
         pass
+
+
+def client_key(address: str) -> str:
+    """The key of a client's address for the rates of sign-ins: an IPv6 address by its /64 (one
+    connection usually has a whole /64), anything else as it is."""
+    import ipaddress
+    try:
+        ip = ipaddress.ip_address(address)
+    except ValueError:
+        return address
+    if ip.version == 6:
+        return str(ip.ipv4_mapped) if ip.ipv4_mapped else str(ipaddress.ip_network(f"{ip}/64", strict=False))
+    return str(ip)
 
 
 def is_loopback(host: str) -> bool:

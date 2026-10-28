@@ -1482,6 +1482,60 @@ def test_new_jobs_rate_and_quota_before_validation(tmp_path, settings, account_s
         client.close()
 
 
+def test_refusals_in_the_audit_log_once_per_window(tmp_path, settings, account_settings, providers,
+                                                    monkeypatch):
+    """A refusal by a rate is one audit row per user and kind in REFUSAL_WINDOW seconds; the next row
+    after the window says how many were not recorded (review A, 5)."""
+    import audit
+    from settings import Limits
+    limits = Limits.load(public=True).model_copy(update={"estimate_rate": "1/hour"})
+    app = _public_app(tmp_path, settings, account_settings, providers, limits=limits)
+    people = _clients(app, tmp_path, account_settings, ("a", "b"))
+    a, b = people["a"], people["b"]
+    assert a.post("/api/estimate", json={"params": POINT}).status_code == 503  # the one allowed (no worker)
+    assert {a.post("/api/estimate", json={"params": POINT}).status_code for _ in range(200)} == {429}
+    assert [b.post("/api/estimate", json={"params": POINT}).status_code for _ in range(3)] == [503, 429, 429]
+    rows = lambda who: [e for e in audit.Audit(str(tmp_path)).entries(who.user_id)  # noqa: E731
+                        if e["action"] == "refused"]
+    assert len(rows(a)) == 1 and len(rows(b)) == 1 and rows(a)[0]["detail"] == {"reason": "estimate rate",
+                                                                                 "status": 429}
+    monkeypatch.setattr(web, "REFUSAL_WINDOW", 0)  # the window ended: the next refusal is recorded
+    assert a.post("/api/estimate", json={"params": POINT}).status_code == 429
+    assert rows(a)[-1]["detail"] == {"reason": "estimate rate", "status": 429, "repeated": 199}
+    for client in people.values():
+        client.close()
+
+
+def test_rate_limiters_forget(tmp_path, settings, account_settings, providers, monkeypatch):
+    """The sign-in limiter keys a client by its address, an IPv6 one by its /64, and forgets the keys
+    after their window (the moving window of limits' MemoryStorage kept every key; review A, 6)."""
+    monkeypatch.setattr(ac, "LOGIN_RATE", "4/second")
+    app = _public_app(tmp_path, settings, account_settings, providers)
+
+    async def from_address(scope, receive, send):  # what uvicorn's proxy headers set
+        if scope["type"] == "http":
+            for name, value in scope["headers"]:
+                if name == b"x-test-ip":
+                    scope = {**scope, "client": (value.decode(), 1234)}
+        await app(scope, receive, send)
+    client = TestClient(from_address, base_url=URL)
+    login = lambda ip: client.get("/login/github", headers={"x-test-ip": ip},  # noqa: E731
+                                  follow_redirects=False).status_code
+    assert [login(f"2001:db8:1:2::{i}") for i in range(6)].count(429) >= 1  # one /64: one counter
+    assert login("2001:db8:1:3::1") == 302 and login("192.0.2.1") == 302
+    for i in range(300):
+        login(f"2001:db8:{i:x}::1")
+    limiter = app.state.limiters["login"]
+    assert len(limiter.storage.storage) > 300
+    time.sleep(2.5)  # two windows: the sliding counter's keys expire
+    login("192.0.2.2")  # runs the expiry
+    time.sleep(0.5)
+    assert len(limiter.storage.storage) <= 2 and not limiter.storage.events
+    assert web.client_key("2001:db8:1:2:aaaa::1") == "2001:db8:1:2::/64"
+    assert web.client_key("::ffff:192.0.2.7") == "192.0.2.7" and web.client_key("?") == "?"
+    client.close()
+
+
 def test_request_limits(monkeypatch, tmp_path):
     """The public site's limits on request values (each overridable, `none` for no limit) refuse
     values over them and fields it does not allow, and give the form its min/max; locally, and for
