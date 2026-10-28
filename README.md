@@ -171,6 +171,14 @@ Each is an environment variable `FINDALINE_LIMIT_<NAME>`; nothing is limited by 
 | `SLOPE_THRESHOLD_MIN` | 30 | Smallest `--slope-threshold`, degrees |
 | `GROUP_DISTANCE_MIN_RES` | 2 | Smallest `--group-distance`, in multiples of the resolution |
 | `ORTHO_DETAIL_MAX` | 50 | Largest `--ortho-detail` |
+| `REGION_KM2_MAX` | 2500 | Largest bounding box of a `--within` box or of a named OpenStreetMap area, km² (checked before OpenStreetMap is asked for the coastline or cliffs in it) |
+| `AREA_KM2_MAX` | 50 | Largest search area, km² |
+| `GRID_MPX_MAX` | 36 | Most pixels of the grid of a circle, or of a tile of an area with its overlap, in millions (about 100 bytes of memory each; the tiles are made smaller to fit) |
+| `TILES_MAX` | 300 | Most tiles over the bounding box of an area |
+| `ANCHORS_MAX` | 3000000 | Most anchors of a grid or a tile |
+| `LINES_MAX` | 3000000 | Most lines of a search, before their profiles (a higher `--min-prominence` or a coarser `--resolution` finds fewer) |
+| `DOWNLOAD_MB_MAX` | 3000 | Largest download of a search (its estimate), MB |
+| `ORTHO_MINUTES` | 10 | Orthophoto that would take longer to download is not cached (the map loads it online) |
 | `NOT_ALLOWED` | `["ortho=always", "update", "coastline=world", "threads", "tile_size"]` | Options (or values of them) the page may not set, a JSON list |
 
 Several places at once: give `--point LAT,LON` (WGS84) once per place, optionally with a name for the run, `--point LAT,LON,NAME`. They are searched one after another with the same options, and each is saved as its own run. Example: `--point 50.15595,19.75627,"Żabi Koń" --point 50.17332,19.74092`

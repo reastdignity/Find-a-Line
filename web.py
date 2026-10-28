@@ -173,7 +173,7 @@ def create_app(data_dir: str, token: Optional[str] = None, port: int = PORT, sta
     limits = limits if limits is not None else Limits.load(public is not None)
     start_scheduler = start_scheduler and public is None
     jobs = Jobs(data_dir)
-    scheduler = Scheduler(jobs)
+    scheduler = Scheduler(jobs, limits=limits)
 
     @contextlib.asynccontextmanager
     async def lifespan(_):

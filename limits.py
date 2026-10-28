@@ -27,6 +27,8 @@ PUBLIC = {
     "buffer_max": 500, "max_length_max": 2000, "prominence_span_max": 1000, "drop_radius_max": 1000,
     "slope_threshold_min": 30, "group_distance_min_res": 2, "ortho_detail_max": 50,
     "not_allowed": ["ortho=always", "update", "coastline=world", "threads", "tile_size"],
+    "region_km2_max": 2500, "area_km2_max": 50, "grid_mpx_max": 36, "tiles_max": 300, "anchors_max": 3_000_000,
+    "lines_max": 3_000_000, "download_mb_max": 3000, "ortho_minutes": 10,
 }
 # Limits on request values: field of Limits -> (parameter of SearchParams, "min" or "max")
 BOUNDS = {"buffer_max": ("buffer", "max"), "max_length_max": ("max_length", "max"),
@@ -65,6 +67,22 @@ class Limits(BaseSettings):
     not_allowed: List[str] = Field(
         default_factory=list, description="parameters the web may not set (\"threads\"), or values of them "
                                           "(\"ortho=always\"); a JSON list")
+
+    # The cost of a search (search.plan_search, check_estimate, _lines; refused before the work)
+    region_km2_max: Optional[float] = Field(
+        None, gt=0, description="largest bounding box of a --within box or of a named OSM area (osm:<name>, "
+                                "from Nominatim), km²; checked before OSM is asked for coastline or cliffs in it")
+    area_km2_max: Optional[float] = Field(None, gt=0, description="largest search area (--area or drawn), km²")
+    grid_mpx_max: Optional[float] = Field(
+        None, gt=0, description="most pixels of a grid (a circle) or of a tile of an area with its overlap, millions "
+                                "(about 100 bytes of memory each); tiles are made smaller to fit")
+    tiles_max: Optional[int] = Field(None, gt=0, description="most tiles over the bounding box of an area")
+    anchors_max: Optional[int] = Field(None, gt=0, description="most anchors of a grid or a tile")
+    lines_max: Optional[int] = Field(None, gt=0, description="most lines of a search (all its tiles)")
+    download_mb_max: Optional[float] = Field(None, gt=0, description="largest download of a search, MB (its estimate)")
+    ortho_minutes: Optional[float] = Field(
+        None, ge=0, description="orthophoto tiles of a run that would take longer to download than this many "
+                                "minutes are not cached: the map loads them online (--ortho auto)")
 
     @classmethod
     def load(cls, public: bool = False) -> "Limits":

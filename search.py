@@ -18,6 +18,12 @@ Messages go to on_event(kind, text) with kind "info" or "warning"; progress goes
 through progress.py (progress.subscribe). Questions (an expensive run, orthophoto
 downloads) go to confirm(kind, text) -> bool; without it the answer is yes.
 A search that cannot go on raises SearchError with the message for the user.
+
+Optional limits (limits.Limits, the web worker's; None, as on the command line, checks
+nothing) refuse a search before its costly work: plan_search checks the size of the
+`within` box and of a Nominatim area before OpenStreetMap is asked for their themes, the
+area, the pixels of the grid or of a tile, and the tiles; check_estimate the download;
+_lines the anchors and lines found.
 """
 
 import dataclasses
@@ -52,6 +58,7 @@ import runs as rn
 import sag as sg
 import sources as src
 import terrain
+from limits import Limits
 from params import SearchParams
 from progress import progress
 
@@ -107,6 +114,7 @@ class Plan:
     emit: OnEvent
     crs: str
     center_xy: tuple
+    limits: Optional["Limits"] = None  # what the web worker allows; None: no limits
     # Large areas: (core bounds, tile grid) per tile, with cores of tile_core metres; None: one grid
     tiles: Optional[List[Tuple[tuple, gd.Grid]]] = None
     tile_core: Optional[float] = None
@@ -160,20 +168,26 @@ def _print(kind: str, text: str):
 
 
 def plan_search(params: SearchParams, paths: Paths, on_event: Optional[OnEvent] = None,
-                with_margin: bool = True) -> Plan:
+                with_margin: bool = True, limits: Optional[Limits] = None) -> Plan:
     """Choose the source and the grid, and describe the search. The grid covers the area
-    and _margin around it, unless with_margin is False (a profile needs no anchor values)."""
+    and _margin around it, unless with_margin is False (a profile needs no anchor values).
+    With limits, a search over them is refused (SearchError) before anything costly."""
     emit = on_event or _print
     src.used_data.clear()  # several searches may run in one process
     cache.check_layout(paths.cache)
+    region_km2 = limits.region_km2_max if limits else None
     if params.area is not None or params.geometry is not None:
         try:
             if params.geometry is not None:  # drawn or uploaded in the web app
-                area = ar.from_geometry(params.geometry, params.buffer, params.within, paths.cache)
+                area = ar.from_geometry(params.geometry, params.buffer, params.within, paths.cache, region_km2)
             else:
-                area = ar.from_spec(params.area, params.buffer, params.within, paths.cache, params.max_length)
+                area = ar.from_spec(params.area, params.buffer, params.within, paths.cache, params.max_length,
+                                    region_km2)
         except (ValueError, requests.RequestException) as e:
             raise SearchError(f"Area: {cache.clean_error(e)}")
+        if limits and limits.area_km2_max and ar.size_km2(area.geometry) > limits.area_km2_max:
+            raise SearchError(f"The area covers {ar.size_km2(area.geometry):.1f} km², at most "
+                              f"{limits.area_km2_max:g} km² on this site: draw a smaller one, or a smaller --buffer")
         center_lat, center_lon = area.center
     else:
         if params.lat is not None:
@@ -194,6 +208,9 @@ def plan_search(params: SearchParams, paths: Paths, on_event: Optional[OnEvent] 
         nmpt = None
     resolution = params.resolution or source.default_resolution
     group_distance = params.group_distance or max(20.0, 2 * resolution)
+    if limits and limits.group_distance_min_res and group_distance < limits.group_distance_min_res * resolution:
+        raise SearchError(f"--group-distance: at least {limits.group_distance_min_res * resolution:g} m "
+                          f"({limits.group_distance_min_res:g} × the resolution) on this site")
     native = source.nmt.native_res
     if isinstance(source.nmt, src.WcsTiles) and source.nmt.fetch_res is None and resolution < native:
         raise SearchError(f"--resolution cannot be finer than the {source.name} data ({native:g} m)")
@@ -205,10 +222,17 @@ def plan_search(params: SearchParams, paths: Paths, on_event: Optional[OnEvent] 
     grid = gd.make_grid((left - margin, bottom - margin, right + margin, top + margin), resolution, crs,
                         source.grid_origin)
     tiles = core = None
+    max_px = limits.grid_mpx_max * 1e6 if limits and limits.grid_mpx_max else None
     if isinstance(area, ar.Polygon):
         grid.area_shape = ar.project(area.geometry, "EPSG:4326", crs)
-        core = tile_core_size(params, resolution)
+        core = tile_core_size(params, resolution, max_px)
+        if limits:
+            _check_tiles(grid, params, resolution, core, limits)
         tiles = _tiles(grid, params, resolution, source.grid_origin, core)
+    elif max_px and grid.width * grid.height > max_px:
+        raise SearchError(f"The grid would have {grid.width * grid.height / 1e6:.0f} million pixels, at most "
+                          f"{limits.grid_mpx_max:g} million on this site: a smaller --radius or a coarser "
+                          f"--resolution")
     rigging = sg.Rigging(params.pretension, params.stretch, params.webbing_weight,
                          params.athlete_mass, params.fall_zone)
     layers = [source.nmt] + ([source.nmpt] if nmpt else [])
@@ -243,7 +267,33 @@ def plan_search(params: SearchParams, paths: Paths, on_event: Optional[OnEvent] 
     for note in getattr(area, "notes", []):
         emit("warning", note)
     return Plan(params, paths, area, source, grid, resolution, group_distance, nmpt, rigging, layers,
-                emit, crs, (x, y), tiles, core)
+                emit, crs, (x, y), limits, tiles, core)
+
+
+def _check_tiles(grid: gd.Grid, params: SearchParams, res: float, core: float, limits: Limits):
+    """Refuse an area whose tiles (with their overlap) would be over the pixel limit, or that would
+    take more tiles than allowed; the tiles over the bounding box are counted, before _tiles. An
+    area within one core is one grid (_tiles): its own pixels count."""
+    margin = _margin(params, res)
+    width, height = grid.width * res - 2 * margin, grid.height * res - 2 * margin
+    count = 1 if max(width, height) <= core else math.ceil(width / core) * math.ceil(height / core)
+    side = (core + 2 * _overlap(params, res)) / res
+    pixels = grid.width * grid.height if count == 1 else side * side
+    if limits.grid_mpx_max and pixels > limits.grid_mpx_max * 1e6:
+        raise SearchError(f"A {'grid' if count == 1 else 'tile'} would have {pixels / 1e6:.0f} million pixels with "
+                          f"its overlap, at most {limits.grid_mpx_max:g} million on this site: a shorter "
+                          f"--max-length, a smaller --prominence-span or a coarser --resolution")
+    if limits.tiles_max and count > limits.tiles_max:
+        raise SearchError(f"The area spans {count} tiles of {core:g} m, at most {limits.tiles_max} on this site: "
+                          f"a smaller area or a coarser --resolution")
+
+
+def check_estimate(plan: Plan, estimate: Estimate):
+    """Refuse a search whose download is over the limit of plan.limits."""
+    limits = plan.limits
+    if limits and limits.download_mb_max and estimate.download_mb > limits.download_mb_max:
+        raise SearchError(f"About {estimate.download_mb:.0f} MB to download, at most {limits.download_mb_max:g} MB "
+                          f"on this site: a smaller area or a coarser --resolution (or --nmpt off)")
 
 
 def _area_text(params: SearchParams) -> str:
@@ -335,13 +385,16 @@ def line_threads(params: SearchParams) -> Optional[int]:
     return max(1, min(cpus, numba.config.NUMBA_NUM_THREADS - 1))
 
 
-def tile_core_size(params: SearchParams, res: float) -> float:
-    """Side of a tile core in metres: --tile-size, or what the free memory allows
-    (in steps of 500 m, so the tiles stay the same when the free memory changes a little)."""
+def tile_core_size(params: SearchParams, res: float, max_px: Optional[float] = None) -> float:
+    """Side of a tile core in metres: --tile-size, or what the free memory allows (and max_px,
+    the pixels a tile may have with its overlap; in steps of 500 m, so the tiles stay the same
+    when the free memory changes a little)."""
     if params.tile_size:
         core = params.tile_size
     else:
         side_px = math.sqrt(available_memory() * TILE_MEMORY_SHARE / TILE_BYTES_PER_PIXEL)
+        if max_px:
+            side_px = min(side_px, math.sqrt(max_px))
         core = max(500.0, math.floor((side_px * res - 2 * _overlap(params, res)) / 500) * 500)
     return max(res, math.floor(max(core, 10 * res) / res) * res)
 
@@ -505,6 +558,9 @@ def _lines(plan: Plan, data: Data, core: Optional[tuple] = None) -> Tuple[List[D
             ~ndimage.binary_erosion(gaps, structure=np.ones((3, 3)))
         anchors = anchors[~unreliable[anchors[:, 0], anchors[:, 1]]]
     emit("info", f"Found {len(anchors)} potential anchors to evaluate")
+    if plan.limits and plan.limits.anchors_max and len(anchors) > plan.limits.anchors_max:
+        raise SearchError(f"{len(anchors)} anchors, at most {plan.limits.anchors_max} on this site: a higher "
+                          f"--slope-threshold, a coarser --resolution or a smaller area")
     if len(anchors) < 2:
         if core is not None:  # a tile of a large area: nothing here
             return [], []
@@ -549,6 +605,7 @@ def _lines(plan: Plan, data: Data, core: Optional[tuple] = None) -> Tuple[List[D
                                       p.high_above, sh.LineLimits(p.min_height, p.min_mean_height,
                                                                   p.min_high_share, p.max_wall_angle),
                                       np.column_stack([prom, drop]), strong)
+    _check_lines(plan, len(valid_lines))
     if not valid_lines and core is None:
         raise SearchError("No lines found matching elevation requirements.")
 
@@ -583,6 +640,13 @@ def _lines(plan: Plan, data: Data, core: Optional[tuple] = None) -> Tuple[List[D
         progress.compute.update(1)
     progress.compute.finish()
     return results, groups
+
+
+def _check_lines(plan: Plan, count: int):
+    """Refuse more lines than plan.limits allows (before their profiles, groups and files)."""
+    if plan.limits and plan.limits.lines_max and count > plan.limits.lines_max:
+        raise SearchError(f"{count} lines, at most {plan.limits.lines_max} on this site: a higher --min-prominence "
+                          f"(or --min-height, --min-drop), a coarser --resolution or a smaller area")
 
 
 def _run_name(plan: Plan) -> str:
@@ -706,6 +770,7 @@ def search_lines(plan: Plan) -> Tuple[Lines, Optional[Dict]]:
             del found
         progress.set_step(f"Step 4/{STEPS}: loading tile {k + 1}/{len(plan.tiles)}")
         results += _load_tile(path)
+        _check_lines(plan, len(results))
     if not results:
         raise SearchError("No lines found matching elevation requirements.")
     progress.set_step(f"Step 4/{STEPS}: groups of all tiles")

@@ -9,7 +9,7 @@ and its shape for the maps and the orthophoto cache.
 """
 
 import math
-from typing import Dict, Tuple
+from typing import Dict, Optional, Tuple
 
 import numpy as np
 import shapely
@@ -135,8 +135,9 @@ def box_bounds(text: str) -> Bounds:
     return south, west, north, east
 
 
-def region(text: str, cache_dir: str):
-    """A WGS84 polygon from "osm:<name>" (Nominatim) or "S,W,N,E" (a box in degrees)."""
+def region(text: str, cache_dir: str, max_km2: Optional[float] = None):
+    """A WGS84 polygon from "osm:<name>" (Nominatim) or "S,W,N,E" (a box in degrees); with
+    max_km2, refused when its bounding box is larger (a box before any request)."""
     from shapely.geometry import box, shape
     import osm
     if text.startswith("osm:"):
@@ -144,9 +145,14 @@ def region(text: str, cache_dir: str):
         geometry = found and shape(found["geojson"])
         if not geometry or geometry.geom_type not in ("Polygon", "MultiPolygon"):
             raise ValueError(f"{text}: no area of that name in OpenStreetMap")
-        return geometry
-    south, west, north, east = box_bounds(text)
-    return box(west, south, east, north)
+    else:
+        south, west, north, east = box_bounds(text)
+        geometry = box(west, south, east, north)
+    if max_km2 is not None:
+        km2 = size_km2(box(*geometry.bounds))
+        if km2 > max_km2:
+            raise ValueError(f"{text}: its bounding box covers {km2:.0f} km², at most {max_km2:g} km² on this site")
+    return geometry
 
 
 def _buffered(geometries, metres: float, within=None):
@@ -291,11 +297,13 @@ def geometry_shapes(value) -> list:
     return flat
 
 
-def from_geometry(value, buffer: float, within: str, cache_dir: str) -> "Polygon":
+def from_geometry(value, buffer: float, within: str, cache_dir: str,
+                  max_region_km2: Optional[float] = None) -> "Polygon":
     """The search area of a geometry drawn or uploaded in the web app (checked by
     check_geometry): polygons as they are, points and lines grown by `buffer`, clipped to
-    the box or OSM area `within` if given, as for a file of --area."""
-    limit = region(within, cache_dir) if within else None
+    the box or OSM area `within` if given (at most max_region_km2, see region), as for a
+    file of --area."""
+    limit = region(within, cache_dir, max_region_km2) if within else None
     geometry = from_shapes(geometry_shapes(value), buffer, limit, DRAWN)
     if geometry.is_empty:
         raise ValueError(f"{DRAWN}: the area is empty")
@@ -305,7 +313,8 @@ def from_geometry(value, buffer: float, within: str, cache_dir: str) -> "Polygon
     return area
 
 
-def from_spec(spec: str, buffer: float, within: str, cache_dir: str, reach: float = 0.0) -> "Polygon":
+def from_spec(spec: str, buffer: float, within: str, cache_dir: str, reach: float = 0.0,
+              max_region_km2: Optional[float] = None) -> "Polygon":
     """The search area of --area (with --buffer and --within):
     coast    land and sea within `buffer` of the OSM coastline
     cliffs   within `buffer` of OSM cliffs (natural=cliff) and crags (climbing=crag)
@@ -314,10 +323,12 @@ def from_spec(spec: str, buffer: float, within: str, cache_dir: str, reach: floa
     For coast and cliffs, `within osm:<name>` takes the coastline or cliffs within `reach`
     metres of that area (the longest line: islets off its coast, its sea side and cliff
     edges stay in); a box S,W,N,E clips the band. Notes for the user are in area.notes.
+    With max_region_km2, a `within` or osm:<name> larger than that (its bounding box) is
+    refused before the OSM themes in it are fetched.
     """
     import os
     import osm
-    limit = region(within, cache_dir) if within else None
+    limit = region(within, cache_dir, max_region_km2) if within else None
     notes = []
     if spec in ("coast", "cliffs"):
         if limit is None:
@@ -329,7 +340,7 @@ def from_spec(spec: str, buffer: float, within: str, cache_dir: str, reach: floa
             features = osm.theme(theme, *limit.bounds, cache_dir)
             geometry = _buffered([f["geometry"] for f in features], buffer, limit)
     elif spec.startswith("osm:"):
-        geometry = region(spec, cache_dir)
+        geometry = region(spec, cache_dir, max_region_km2)
         if limit is not None:
             geometry = geometry.intersection(limit)
     elif os.path.exists(spec):

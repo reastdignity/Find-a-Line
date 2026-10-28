@@ -355,9 +355,27 @@ def search_params(request: Dict) -> pm.SearchParams:
     return pm.SearchParams(**values)
 
 
-def run_phase(data_dir: str, job_id: str, phase: str):
+def ortho_confirm(limits: Limits, on_event):
+    """search.Confirm of the worker: yes, except to orthophoto over Limits.ortho_minutes (the map
+    loads it online then); sets search.CONFIRM_MINUTES to that limit."""
+    import search
+    if limits.ortho_minutes is None:
+        return lambda kind, text: True
+    search.CONFIRM_MINUTES = limits.ortho_minutes
+
+    def confirm(kind: str, text: str) -> bool:
+        if kind != "ortho":
+            return True
+        on_event("info", f"The orthophoto would take more than {limits.ortho_minutes:g} min to download: the map "
+                         f"loads it online")
+        return False
+    return confirm
+
+
+def run_phase(data_dir: str, job_id: str, phase: str, limits: Optional[Limits] = None):
     """A worker process: download the data of a job, or compute it. It ends the phase only if the
-    job is still in it (not cancelled or failed by the worker meanwhile)."""
+    job is still in it (not cancelled or failed by the worker meanwhile). With limits, a search
+    over them fails before its costly work (search.plan_search, check_estimate)."""
     import requests
 
     import progress as pg
@@ -404,8 +422,10 @@ def run_phase(data_dir: str, job_id: str, phase: str):
             if params.tile_size is None and os.path.exists(tile_file):
                 with open(tile_file, encoding="utf-8") as f:
                     params = params.model_copy(update={"tile_size": json.load(f)})
-        plan = search.plan_search(params, paths, on_event)
+        plan = search.plan_search(params, paths, on_event, limits=limits)
         if phase == "download":
+            if limits and limits.download_mb_max:  # the estimate costs index requests
+                search.check_estimate(plan, search.estimate_search(plan))
             search.download_data(plan)
             if plan.tile_core:
                 os.makedirs(jobs.folder(job_id), exist_ok=True)
@@ -414,7 +434,7 @@ def run_phase(data_dir: str, job_id: str, phase: str):
             jobs.set(job_id, "ready", when=working)
         else:
             lines, run = search.search_lines(plan)
-            result = search.save_run(plan, lines, lambda kind, text: True, run)
+            result = search.save_run(plan, lines, ortho_confirm(limits or Limits(), on_event), run)
             jobs.set(job_id, "done", when=working, run_id=result.run["id"], error=None)
         failed = False
     except (search.SearchError, ValueError, RuntimeError, requests.RequestException) as e:  # ValueError: parameters
@@ -433,8 +453,8 @@ def run_phase(data_dir: str, job_id: str, phase: str):
                 shutil.rmtree(jobs.folder(job_id), ignore_errors=True)
 
 
-def quick_estimate(data_dir: str, request: Dict) -> Dict:
-    """The estimate of a search request (/api/estimate)."""
+def quick_estimate(data_dir: str, request: Dict, limits: Optional[Limits] = None) -> Dict:
+    """The estimate of a search request (/api/estimate); a request over the limits is refused."""
     import search
     from area import Polygon, size_km2
     messages = []
@@ -442,8 +462,9 @@ def quick_estimate(data_dir: str, request: Dict) -> Dict:
     folder = os.path.join(data_dir, "work", "estimates", uuid.uuid4().hex)  # one per request
     try:
         paths = search.Paths(data_dir, folder)
-        plan = search.plan_search(params, paths, lambda kind, text: messages.append([kind, text]))
+        plan = search.plan_search(params, paths, lambda kind, text: messages.append([kind, text]), limits=limits)
         result = search.estimate_search(plan)
+        search.check_estimate(plan, result)
     finally:
         shutil.rmtree(folder, ignore_errors=True)
     return {"messages": messages, "reasons": result.reasons, "download_mb": round(result.download_mb),
@@ -453,7 +474,7 @@ def quick_estimate(data_dir: str, request: Dict) -> Dict:
             "area": plan.area.shape_wgs84().__geo_interface__}  # drawn on the map before the start
 
 
-def quick_profile(data_dir: str, request: Dict) -> Dict:
+def quick_profile(data_dir: str, request: Dict, limits: Optional[Limits] = None) -> Dict:
     """The profile of a line of a saved run (/api/profile): {"run": id, "line": [lat1, lon1, lat2, lon2]}."""
     import search
     with open(os.path.join(data_dir, "runs", request["run"], "run.json"), encoding="utf-8") as f:
@@ -470,7 +491,7 @@ def quick_profile(data_dir: str, request: Dict) -> Dict:
 QUICK = {"estimate": quick_estimate, "profile": quick_profile}
 
 
-def run_quick(data_dir: str, worker_id: str, parent: int):
+def run_quick(data_dir: str, worker_id: str, parent: int, limits: Optional[Limits] = None):
     """The process of the quick lane: serves the tasks of the table `quick` one after another, until
     its worker (`parent`) is gone. One process and one thread, so the state of search and sources
     (caches of sheet indexes, sag tables) is never shared between threads."""
@@ -492,7 +513,7 @@ def run_quick(data_dir: str, worker_id: str, parent: int):
             time.sleep(QUICK_POLL)
             continue
         try:
-            jobs.quick_answer(task["id"], 200, QUICK[task["kind"]](data_dir, json.loads(task["request"])))
+            jobs.quick_answer(task["id"], 200, QUICK[task["kind"]](data_dir, json.loads(task["request"]), limits))
         except (ValueError, search.SearchError, requests.RequestException) as e:  # ValueError: parameters
             jobs.quick_answer(task["id"], 400, cache.clean_error(e))
         except Exception as e:
@@ -541,7 +562,7 @@ class Scheduler:
                  public: bool = False):
         self.jobs = jobs
         self.public = public  # the worker of the public site
-        self.limits = limits or Limits()  # time limits (FINDALINE_LIMIT_*; none locally)
+        self.limits = limits or Limits.load(public)  # FINDALINE_LIMIT_* (none locally), for its processes too
         self.quick = None  # the process of the quick lane
         self.worker_id = worker_id or f"{socket.gethostname()}-{os.getpid()}-{uuid.uuid4().hex[:6]}"
         self.running: Dict[str, Running] = {}  # phase -> the job running in it
@@ -645,8 +666,8 @@ class Scheduler:
                 self.quick = None
                 self.jobs.quick_answer(task["id"], 504, f"time limit: stopped after {self.limits.quick_seconds:g} s")
         if self.quick is None:
-            self.quick = self.context.Process(target=run_quick, args=(self.jobs.data_dir, self.worker_id, os.getpid()),
-                                              daemon=True)
+            self.quick = self.context.Process(target=run_quick, daemon=True,
+                                              args=(self.jobs.data_dir, self.worker_id, os.getpid(), self.limits))
             self.quick.start()
 
     def _kill(self, phase: str):
@@ -680,8 +701,8 @@ class Scheduler:
             if phase not in self.running:
                 job = self.jobs.claim(waiting, status, self.worker_id)
                 if job:
-                    process = self.context.Process(target=run_phase, args=(self.jobs.data_dir, job["id"], phase),
-                                                   daemon=True)
+                    process = self.context.Process(target=run_phase, daemon=True,
+                                                   args=(self.jobs.data_dir, job["id"], phase, self.limits))
                     process.start()
                     osm = "osm" in json.loads(job["request"])  # an OSM extract: its own limit
                     self.running[phase] = Running(job["id"], process, time.time(),

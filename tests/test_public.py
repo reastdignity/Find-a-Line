@@ -159,3 +159,100 @@ def test_request_limits(monkeypatch, tmp_path):
         assert "threads" not in names
     with TestClient(web.create_app(str(tmp_path), token=TOKEN, start_scheduler=False)) as client:
         assert "threads" in {f["name"] for f in client.get("/api/schema").json()["fields"]}  # locally all
+
+
+DATA = os.path.join(REPO, "tests", "data")
+CLIP = {"elevation_file": os.path.join(DATA, "zabi_kon_nmt.tif"), "water": "off", "fill_gaps": "off",
+        "ortho": "never", "nmpt": "off"}
+SQUARE = {"type": "Polygon", "coordinates": [[[19.7522, 50.1546], [19.7590, 50.1546], [19.7590, 50.1580],
+                                              [19.7522, 50.1580], [19.7522, 50.1546]]]}
+
+
+def _plan(tmp_path, limits, **values):
+    import search
+    from params import SearchParams
+    paths = search.Paths(str(tmp_path), str(tmp_path / "work"))
+    return search.plan_search(SearchParams(**{**CLIP, **values}), paths, lambda kind, text: None, limits=limits)
+
+
+def test_search_limits_before_requests(tmp_path, monkeypatch):
+    """A `within` box or a Nominatim area over the limit is refused before OpenStreetMap is asked
+    for its coastline or cliffs (a fake Nominatim counts the calls); the area, the pixels of a circle
+    or a tile and the tiles before any data; nothing is checked without limits."""
+    import osm
+    import search
+    from limits import Limits
+    from shapely.geometry import box, mapping
+    calls = {"search": 0, "theme": 0}
+
+    def fake_search(name, cache_dir):
+        calls["search"] += 1
+        return {"geojson": mapping(box(14.0, 35.7, 15.0, 36.5))}  # about 8000 km²
+
+    def fake_theme(*args, **kwargs):
+        calls["theme"] += 1
+        return []
+    monkeypatch.setattr(osm, "search", fake_search)
+    monkeypatch.setattr(osm, "theme", fake_theme)
+    limits = Limits(region_km2_max=2500)
+    for values in ({"area": "coast", "within": "osm:Big island"}, {"area": "osm:Big island"},
+                   {"geometry": SQUARE, "within": "osm:Big island"}):
+        with pytest.raises(search.SearchError) as error:
+            _plan(tmp_path, limits, **values)
+        assert "at most 2500 km²" in str(error.value), error.value
+    assert calls == {"search": 3, "theme": 0}
+    with pytest.raises(search.SearchError):
+        _plan(tmp_path, limits, area="cliffs", within="35.0,14.0,36.5,15.0")  # a box: no request at all
+    assert calls == {"search": 3, "theme": 0}
+
+    point = {"northing": 254608, "easting": 553966, "radius": 150}
+    with pytest.raises(search.SearchError) as error:
+        _plan(tmp_path, Limits(grid_mpx_max=0.1), **point)
+    assert "million pixels" in str(error.value) and "--resolution" in str(error.value)
+    assert _plan(tmp_path, Limits(grid_mpx_max=1), **point).grid.width < 1000
+    with pytest.raises(search.SearchError) as error:
+        _plan(tmp_path, Limits(area_km2_max=0.1), geometry=SQUARE)
+    assert "km²" in str(error.value)
+    with pytest.raises(search.SearchError) as error:
+        _plan(tmp_path, Limits(tiles_max=2), geometry=SQUARE, max_length=150, tile_size=150)
+    assert "tiles" in str(error.value)
+    with pytest.raises(search.SearchError):  # the overlap alone is over the pixels
+        _plan(tmp_path, Limits(grid_mpx_max=0.5), geometry=SQUARE, max_length=1000)
+    with pytest.raises(search.SearchError) as error:
+        _plan(tmp_path, Limits(group_distance_min_res=2), **point, resolution=5, group_distance=8)
+    assert "at least 10 m" in str(error.value)
+    plan = _plan(tmp_path, Limits(grid_mpx_max=3), geometry=SQUARE, max_length=150)
+    assert plan.grid.width * plan.grid.height <= 3e6
+    plan.limits = Limits(download_mb_max=3000)
+    with pytest.raises(search.SearchError) as error:
+        search.check_estimate(plan, search.Estimate(download_mb=5000, work_gb=1))
+    plan.limits = Limits(download_mb_max=6000)
+    search.check_estimate(plan, search.Estimate(download_mb=5000, work_gb=1))
+
+
+def test_search_limits_of_anchors_and_lines(tmp_path):
+    """Too many anchors or lines stop the search with a hint, before the profiles."""
+    import search
+    from limits import Limits
+    point = {"northing": 254608, "easting": 553966, "radius": 150}
+    for limits, text in ((Limits(anchors_max=10), "anchors, at most 10"), (Limits(lines_max=5), "lines, at most 5")):
+        plan = _plan(tmp_path, limits, **point)
+        with pytest.raises(search.SearchError) as error:
+            search.find_lines(plan, search.prepare_data(plan))
+        assert text in str(error.value) and "--resolution" in str(error.value), error.value
+        import gc
+        gc.collect()
+
+
+def test_worker_orthophoto_limit(monkeypatch):
+    """The worker answers no to orthophoto over Limits.ortho_minutes (the map loads it online), yes
+    to everything without the limit."""
+    import jobs
+    import search
+    from limits import Limits
+    monkeypatch.setattr(search, "CONFIRM_MINUTES", search.CONFIRM_MINUTES)
+    said = []
+    assert jobs.ortho_confirm(Limits(), lambda kind, text: said.append(text))("ortho", "?")
+    confirm = jobs.ortho_confirm(Limits(ortho_minutes=10), lambda kind, text: said.append(text))
+    assert search.CONFIRM_MINUTES == 10 and not confirm("ortho", "?") and confirm("expensive", "?")
+    assert "online" in said[0]
