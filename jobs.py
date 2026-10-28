@@ -315,6 +315,12 @@ class Jobs:
         with self._db() as db:
             db.execute("UPDATE runs SET share_hash = ? WHERE run_id = ?", (share_hash, run_id))
 
+    def shared_runs(self, user_id: int) -> Set[str]:
+        """The ids of a user's runs that have a share link."""
+        with self._db() as db:
+            return {r[0] for r in db.execute("SELECT run_id FROM runs WHERE user_id = ? AND share_hash IS NOT NULL",
+                                             (user_id,))}
+
     def shared_run(self, share_hash: str) -> Optional[str]:
         """The run of a share link's sha256 (None if no run has it)."""
         with self._db() as db:

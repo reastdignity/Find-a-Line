@@ -21,15 +21,39 @@ delete (L.Icon.Default.prototype as any)._getIconUrl;
 type Tab = "search" | "jobs" | "runs" | "osm";
 const LOG_KEEP = 500;  // messages kept per job
 
+/** Share link of a run (the public site): made, renewed or revoked by its owner; a new link is shown
+ *  once (the server keeps only its hash). */
+function Share({run, onChange}: {run: RunListed; onChange(shared: boolean): void}) {
+  const [url, setUrl] = useState("");
+  const [error, setError] = useState("");
+  const share = () => api.share(run.id).then((r) => { setUrl(r.url); setError(""); onChange(true); },
+                                              (e) => setError(e.message));
+  const stop = () => api.unshare(run.id).then(() => { setUrl(""); setError(""); onChange(false); },
+                                              (e) => setError(e.message));
+  return <div class="fa-share">
+    {run.shared ? <span>
+      <span class="fa-hint">shared by a link </span>
+      <button class="fa-small" title="a new link; the old one stops working" onClick={share}>new link</button>{" "}
+      <button class="fa-small" title="the link stops working" onClick={stop}>stop sharing</button>
+    </span> : <button class="fa-small" title="a link that opens this map for anyone who has it"
+                      onClick={share}>share link</button>}
+    {url && <input class="fa-share-url" readOnly value={url} onFocus={(e) => e.currentTarget.select()} />}
+    {error && <span class="fa-error"> {error}</span>}
+  </div>;
+}
+
 function Runs() {
   const [runs, setRuns] = useState<RunListed[] | null>(null);
-  useEffect(() => { api.runs().then((r) => setRuns(r.runs)); }, []);
+  const [sharing, setSharing] = useState(false);
+  useEffect(() => { api.runs().then((r) => { setRuns(r.runs); setSharing(r.public); }); }, []);
   if (!runs) return <p class="fa-hint">Loading…</p>;
   if (!runs.length) return <p class="fa-hint">No saved runs yet.</p>;
-  return <div>{runs.map((r) => <div class="fa-run">
+  const changed = (id: string, shared: boolean) => setRuns(runs.map((r) => r.id === id ? {...r, shared} : r));
+  return <div>{runs.map((r) => <div class="fa-run" key={r.id}>
     <div><b>{r.name}</b> <span class="fa-hint">{r.created.slice(0, 16).replace("T", " ")}</span></div>
     <div class="fa-hint">{r.summary.spots} spots, {r.summary.lines} lines · {r.description}</div>
     {r.has_map && <a href={`/runs/${encodeURIComponent(r.id)}/map.html`} target="_blank">open map</a>}
+    {sharing && r.has_map && <Share run={r} onChange={(shared) => changed(r.id, shared)} />}
   </div>)}</div>;
 }
 

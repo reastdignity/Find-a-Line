@@ -51,6 +51,7 @@ export interface RunListed {
   description: string;
   summary: {lines: number; spots: number};
   has_map: boolean;
+  shared: boolean;   // has a share link (the public site)
 }
 
 export interface OsmRegion { id: string; name: string; depth: number; downloaded: boolean }
@@ -93,7 +94,9 @@ export const api = {
   cancel: (id: string) => call<{ok: boolean}>("DELETE", `/api/jobs/${encodeURIComponent(id)}`),
   job: (id: string) => call<Job & {request: SearchRequest & {osm?: unknown}}>("GET", `/api/jobs/${encodeURIComponent(id)}`),
   again: (id: string) => call<{id: string}>("POST", `/api/jobs/${encodeURIComponent(id)}/again`),
-  runs: () => call<{runs: RunListed[]}>("GET", "/api/runs"),
+  runs: () => call<{runs: RunListed[]; public: boolean}>("GET", "/api/runs"),
+  share: (id: string) => call<{url: string}>("POST", `/api/runs/${encodeURIComponent(id)}/share`),
+  unshare: (id: string) => call<{ok: boolean}>("DELETE", `/api/runs/${encodeURIComponent(id)}/share`),
   osm: (lat: number, lon: number) => call<OsmState>("GET", `/api/osm?lat=${lat}&lon=${lon}`),
   osmJob: (action: "download" | "update", region: string) =>
     call<{id: string}>("POST", "/api/osm", {action, region}),

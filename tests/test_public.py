@@ -40,8 +40,9 @@ class FakeProviders:
 
     ISSUER = "https://accounts.google.com"
 
-    def __init__(self):
+    def __init__(self, url: str = URL):
         from joserfc.jwk import RSAKey
+        self.url = url  # the site's address (FINDALINE_PUBLIC_URL)
         self.key = RSAKey.generate_key(2048, parameters={"kid": "k1"})
         self.codes, self.tokens, self.calls = {}, {}, []
         self.transport = httpx2.MockTransport(self.handle)
@@ -53,7 +54,7 @@ class FakeProviders:
         query = {k: v[0] for k, v in parse_qs(url.query).items()}
         assert query["code_challenge_method"] == "S256" and len(query["code_challenge"]) == 43
         provider = "google" if url.hostname == "accounts.google.com" else "github"
-        assert query["redirect_uri"] == f"{URL}/auth/{provider}"
+        assert query["redirect_uri"] == f"{self.url}/auth/{provider}"
         if provider == "google":
             assert query["scope"] == "openid profile" and query["nonce"]
         else:
@@ -192,7 +193,7 @@ def test_public_guards(public, providers):
     assert page.status_code == 200 and "Sign in with GitHub" in page.text and "Sign in with Google" in page.text
     assert TOKEN not in page.text and "<script" not in page.text
     assert public.get("/app/app.js").status_code == 200
-    for path in ("/api/schema", "/api/jobs", "/api/events", "/api/runs", "/runs/runs.js", "/cache/x/wm256/1.jpg",
+    for path in ("/api/schema", "/api/jobs", "/api/events", "/api/runs", "/runs/runs.js",
                  "/api/profile?run=x&line=1,2,3,4"):
         assert public.get(path).status_code == 401, path
     assert public.get("/docs").status_code == public.get("/nothing").status_code == 404
@@ -504,7 +505,7 @@ def test_authorization_of_jobs(public, people, tmp_path):
     routes = [("get", "/api/schema"), ("get", "/api/jobs"), ("get", "/api/runs"), ("post", "/api/jobs"),
               ("post", "/api/estimate"), ("get", f"/api/jobs/{job_a}"), ("get", f"/api/jobs/{job_a}/events"),
               ("post", f"/api/jobs/{job_a}/again"), ("delete", f"/api/jobs/{job_a}"), ("get", "/api/events"),
-              ("get", "/api/osm?lat=50&lon=19"), ("post", "/api/osm"), ("get", "/cache/x/wm256/1/2/3.jpg"),
+              ("get", "/api/osm?lat=50&lon=19"), ("post", "/api/osm"),
               ("get", "/api/profile?run=x&line=1,2,3,4"), ("get", "/runs/runs.js")]
     for who, code in DENIED.items():
         for method, path in routes:
@@ -748,6 +749,170 @@ def test_run_file_path_tricks(run_people, tmp_path):
         pytest.skip("no symbolic links here")
     answer = a.get(f"/runs/{RUN_A}/lines.geojson")
     assert answer.status_code == 404 and "secret" not in answer.text
+
+
+def test_share_links(run_people, tmp_path):
+    """The owner makes, renews and revokes the share link of a run; the link opens the run's files
+    (RUN_FILES only) for anyone, and nothing of other runs; only its sha256 is stored; a blocked
+    owner's links stop working; orthophoto tiles stay reachable from a shared map."""
+    import hashlib as hl
+    from urllib.parse import urljoin
+    a, b, anonymous = run_people["a"], run_people["b"], run_people["anonymous"]
+    jobs = run_people["jobs"]
+    assert a.get("/api/runs").json()["public"] is True
+    assert b.post(f"/api/runs/{RUN_A}/share").status_code == 404           # not B's run
+    assert run_people["admin"].post(f"/api/runs/{RUN_A}/share").status_code == 404  # the owner only
+    assert anonymous.post(f"/api/runs/{RUN_A}/share").status_code == 401
+    assert a.post(f"/api/runs/{RUN_A}/share", headers={"origin": "https://evil.example"}).status_code == 403
+    url = a.post(f"/api/runs/{RUN_A}/share").json()["url"]
+    assert url.startswith(f"{URL}/s/") and url.endswith("/map.html")
+    token = url.split("/")[-2]
+    assert len(token) >= 43 and jobs.run(RUN_A)["share_hash"] == hl.sha256(token.encode()).hexdigest()
+    assert [r["shared"] for r in a.get("/api/runs").json()["runs"]] == [True]
+    for name in web.RUN_FILES:
+        assert anonymous.get(f"/s/{token}/{name}").status_code == 200, name
+    page = anonymous.get(f"/s/{token}/map.html").text
+    assert '<script src="../runs.js">' in page and "../_viewer/viewer.js" in page
+    for path in (f"/s/{token}/run.json", f"/s/{token}/progress.json", f"/s/{token}/tiles/0.pkl.gz",
+                 f"/s/{token}/%2e%2e/{RUN_B}/map.html", f"/s/{token}%2f..%2f{RUN_B}/map.html",
+                 f"/s/{RUN_A}/map.html", f"/s/{RUN_B}/lines.js", f"/s/{token[:-1]}/map.html", "/s/x/map.html",
+                 f"/s/{token}/../../jobs.sqlite", "/s/%2e%2e/jobs.sqlite"):
+        assert anonymous.get(path).status_code == 404, path
+    shared_js = anonymous.get("/s/runs.js")
+    assert shared_js.status_code == 200 and "FINDALINE_RUNS" not in shared_js.text
+    assert 'window.FINDALINE_APP = {"profiles": false};' in shared_js.text
+    assert anonymous.get("/s/_viewer/viewer.js").status_code == 200
+    redirect = anonymous.get("/s/index.html", follow_redirects=False)
+    assert redirect.status_code == 303 and redirect.headers["location"] == "/"
+    # The map's orthophoto tiles (../../cache/... from the map) are /cache/..., open to anyone
+    assert urljoin(f"{URL}/s/{token}/map.html", "../../cache/poland/wm256/18/1/2.jpg") == \
+        f"{URL}/cache/poland/wm256/18/1/2.jpg"
+    tile = tmp_path / "cache" / "poland" / "wm256" / "18" / "1" / "2.jpg"
+    tile.parent.mkdir(parents=True)
+    tile.write_bytes(b"\xff\xd8jpeg")
+    assert anonymous.get("/cache/poland/wm256/18/1/2.jpg").status_code == 200
+    assert anonymous.get("/cache/poland/index.sqlite").status_code == 404
+
+    renewed = a.post(f"/api/runs/{RUN_A}/share").json()["url"].split("/")[-2]
+    assert anonymous.get(f"/s/{token}/map.html").status_code == 404 and renewed != token
+    assert anonymous.get(f"/s/{renewed}/map.html").status_code == 200
+    assert b.delete(f"/api/runs/{RUN_A}/share").status_code == 404
+    assert a.delete(f"/api/runs/{RUN_A}/share").status_code == 200
+    assert anonymous.get(f"/s/{renewed}/map.html").status_code == 404 and jobs.run(RUN_A)["share_hash"] is None
+    again = a.post(f"/api/runs/{RUN_A}/share").json()["url"].split("/")[-2]
+    users = ac.Accounts(str(tmp_path), a.app.state.account_settings)
+    users.set_status(run_people["ids"]["a"], "blocked")
+    assert anonymous.get(f"/s/{again}/map.html").status_code == 404
+
+
+def _edge(url: str, profile) -> str:
+    """The DOM of a page after headless Edge ran its scripts (its own profile folder)."""
+    import subprocess
+    return subprocess.run(
+        [EDGE, "--headless", "--disable-gpu", f"--user-data-dir={profile}", "--no-first-run",
+         "--virtual-time-budget=60000", "--dump-dom", url],
+        capture_output=True, text=True, encoding="utf-8", timeout=180).stdout
+
+
+EDGE = r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe"
+
+APP_CHECK = """
+(function () {
+  const out = document.createElement("pre");
+  out.id = "result";
+  document.body.appendChild(out);
+  setTimeout(() => {
+    const user = document.querySelector(".fa-user");
+    out.textContent = JSON.stringify({user: user ? user.textContent : null,
+      tabs: [...document.querySelectorAll(".fa-tabs button")].map((b) => b.textContent)});
+  }, 3000);
+})();
+"""
+
+SHARE_CHECK = """
+(function () {
+  const out = document.createElement("pre");
+  out.id = "result";
+  document.body.appendChild(out);
+  setTimeout(() => {
+    out.textContent = JSON.stringify({map: !!window.FINDALINE_MAP, runs: window.FINDALINE_RUNS === undefined,
+      app: window.FINDALINE_APP, measure: !!document.querySelector(".fal-measure"),
+      others: document.querySelectorAll(".fal-other input").length,
+      lines: Object.values(window.FINDALINE_MAP._layers).filter((l) => l.getLatLngs).length});
+  }, 3000);
+})();
+"""
+
+
+@pytest.mark.skipif(not os.path.exists(EDGE), reason="needs Microsoft Edge")
+def test_signed_in_app_and_shared_map_in_edge(tmp_path, clip_run, account_settings, monkeypatch):
+    """Headless Edge signs in through a fake GitHub (its authorize page is a route of the test app,
+    tokens and the user come from FakeProviders), gets the app with its user and no CSP violation;
+    a share link opens the map without the list of runs, measuring or violations."""
+    import re
+    import socket
+    import threading
+
+    import uvicorn
+    from fastapi import Request
+    from starlette.staticfiles import StaticFiles
+
+    from jobs import Jobs
+    from test_web import APP_STUBS, CSP_STUB, _violations
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        port = sock.getsockname()[1]
+    site = f"http://localhost:{port}"
+    providers = FakeProviders(site)
+    monkeypatch.setitem(ac.GITHUB, "authorize_url", f"{site}/test-provider/authorize")
+    stubs = tmp_path / "stubs"
+    stubs.mkdir()
+    (stubs / "app_stubs.js").write_text(APP_STUBS, encoding="utf-8")
+    (stubs / "app_check.js").write_text(APP_CHECK, encoding="utf-8")
+    (stubs / "csp_stub.js").write_text(CSP_STUB, encoding="utf-8")
+    (stubs / "share_check.js").write_text(SHARE_CHECK, encoding="utf-8")
+    monkeypatch.setattr(web, "APP_HTML", web.APP_HTML.replace(
+        '<script src="/app/app.js"></script>',
+        '<script src="/test/app_stubs.js"></script><script src="/app/app.js"></script>'
+        '<script src="/test/app_check.js"></script>'))
+
+    data = tmp_path / "data"
+    data.mkdir()
+    copy_run(clip_run, data, RUN_A, "A's run")
+    map_html = data / "runs" / RUN_A / "map.html"
+    map_html.write_text(map_html.read_text("utf-8").replace("<head>", '<head><script src="/test/csp_stub.js"></script>')
+                        .replace("</body>", '<script src="/test/share_check.js"></script></body>'), "utf-8")
+    user_id, _, _ = session_of(data, account_settings, "a")
+    Jobs(str(data)).add_run(RUN_A, user_id, 1)
+    token = "edge-share-token-" + "x" * 30
+    Jobs(str(data)).set_share(RUN_A, ac.digest(token))
+
+    settings = PublicSettings(public_url=site, trusted_proxy="127.0.0.1", contact="admin@example.org")
+    app = web.create_app(str(data), public=settings, accounts=account_settings, oauth_transport=providers.transport)
+
+    @app.get("/test-provider/authorize")
+    def authorize(request: Request):  # the provider's page: the user agrees at once
+        from fastapi.responses import RedirectResponse
+        return RedirectResponse(providers.authorize(str(request.url), {"id": 11, "login": "a"}), 302)
+    app.mount("/test", StaticFiles(directory=str(stubs)))
+    server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning"))
+    thread = threading.Thread(target=server.run, daemon=True)
+    thread.start()
+    try:
+        while not server.started:
+            time.sleep(0.1)
+        dom = _edge(f"{site}/login/github?next=/", tmp_path / "edge")
+        result = json.loads(re.search(r'<pre id="result">(.*?)</pre>', dom, re.S).group(1).replace("&quot;", '"'))
+        assert result["user"] and result["user"].startswith("a") and "sign out" in result["user"], result
+        assert _violations(dom) == []
+        dom = _edge(f"{site}/s/{token}/map.html", tmp_path / "edge-anonymous")
+        result = json.loads(re.search(r'<pre id="result">(.*?)</pre>', dom, re.S).group(1).replace("&quot;", '"'))
+        assert result["map"] and result["runs"] and result["app"] == {"profiles": False}, result
+        assert not result["measure"] and result["others"] == 0 and result["lines"] > 0, result
+        assert _violations(dom) == []
+    finally:
+        server.should_exit = True
+        thread.join(10)
 
 
 def test_jobs_database_gets_owners(tmp_path):

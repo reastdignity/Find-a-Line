@@ -160,7 +160,9 @@ def title(p: pm.SearchParams) -> str:
 # The routes anyone may request in the public mode (signing in and out, the page, which shows a
 # sign-in page to visitors, and its assets); every other route depends on current_user,
 # require_admin or run_access (tests/test_public.py checks it)
-PUBLIC_ROUTES = {"/", "/login/{provider}", "/auth/{provider}", "/logout", "/app", "/runs/index.html"}
+PUBLIC_ROUTES = {"/", "/login/{provider}", "/auth/{provider}", "/logout", "/app", "/runs/index.html",
+                 "/s/runs.js", "/s/index.html", "/cache/{path:path}"}
+SHARE_BYTES = 32  # the random part of a share link
 SSE_PER_USER = 3  # open event streams of one user (the public mode)
 # The files of a run the public site serves (what mapping.save_map and runs.save_results write, without
 # run.json: its parameters and data files are the owner's); never progress.json, tiles or other files
@@ -410,7 +412,7 @@ def create_app(data_dir: str, token: Optional[str] = None, port: int = PORT, sta
             raise HTTPException(404, "no such run")
         return run
 
-    def own_run(run: str, user: ac.User = Depends(run_access)) -> str:
+    def own_run(run: str = Depends(run_access), user: ac.User = Depends(current_user)) -> str:
         """A run its user owns (sharing it): run_access, and the owner only."""
         if public and (jobs.run(run) or {}).get("user_id") != user.id:
             raise HTTPException(404, "no such run")
@@ -420,6 +422,16 @@ def create_app(data_dir: str, token: Optional[str] = None, port: int = PORT, sta
         """RunFiles of /runs: the run, if the request's user may open it."""
         found = signed_in(request)
         return run_id if found and found[0].approved and may_open(found[0], run_id) else None
+
+    def run_of_link(request: Request, share: str) -> Optional[str]:
+        """RunFiles of /s: the run of a share link, found by the sha256 of its token (so the lookup
+        tells nothing about the token itself); none once its owner is blocked."""
+        run_id = jobs.shared_run(ac.digest(share)) if len(share) <= 100 else None
+        row = jobs.run(run_id) if run_id else None
+        owner = users.user(row["user_id"]) if row and row["user_id"] is not None else None
+        if owner is None or owner.status == "blocked" or not os.path.isdir(os.path.join(runs_dir, run_id)):
+            return None
+        return run_id
 
     if public:
         # Runs from before the public mode (no row, or no owner) belong to the first administrator,
@@ -548,8 +560,27 @@ def create_app(data_dir: str, token: Optional[str] = None, port: int = PORT, sta
     @app.get("/api/runs")
     def list_runs(user: ac.User = Depends(current_user)):
         """The user's runs (locally all)."""
-        return {"runs": [{k: r.get(k) for k in ("id", "name", "created", "summary", "has_map")}
-                         | {"description": rn.params_summary(r)} for r in runs_of(user)]}
+        shared = jobs.shared_runs(user.id) if public else set()
+        return {"public": bool(public),  # whether runs can be shared (by a link)
+                "runs": [{k: r.get(k) for k in ("id", "name", "created", "summary", "has_map")}
+                         | {"description": rn.params_summary(r), "shared": r["id"] in shared}
+                         for r in runs_of(user)]}
+
+    @app.post("/api/runs/{run}/share")
+    def share_run(run: str = Depends(own_run)):
+        """A share link of an own run (the map for anyone who has the link); a new one replaces the old.
+        Only its sha256 is kept, so the link is shown this once."""
+        if not public:
+            raise HTTPException(404, "share links are for the public site")
+        token = secrets.token_urlsafe(SHARE_BYTES)
+        jobs.set_share(run, ac.digest(token))
+        return {"url": f"{public.public_url}/s/{token}/map.html"}
+
+    @app.delete("/api/runs/{run}/share")
+    def unshare_run(run: str = Depends(own_run)):
+        """Revoke the share link of an own run."""
+        jobs.set_share(run, None)
+        return {"ok": True}
 
     @app.get("/api/osm")
     async def osm_regions(lat: float, lon: float, user: ac.User = Depends(current_user)):
@@ -617,14 +648,29 @@ def create_app(data_dir: str, token: Optional[str] = None, port: int = PORT, sta
         def runs_index():
             return RedirectResponse("/", 303)  # the app lists the runs
 
+        # Share links: /s/<token>/map.html and its files; the map's ../runs.js and ../_viewer/ land here
+        @app.get("/s/runs.js")
+        def share_runs_js():
+            """No list of runs (FINDALINE_RUNS stays undefined: the map shows its own run only) and no
+            profiles or measuring."""
+            return Response(f"window.FINDALINE_APP = {json.dumps({'profiles': False})};\n",
+                            media_type="text/javascript")
+
+        @app.get("/s/index.html")
+        def share_index():
+            return RedirectResponse("/", 303)
+
+        app.mount("/s", RunFiles(runs_dir, run_of_link), name="shared")
+
     app.mount("/app", StaticFiles(directory=APP_DIST), name="app")
     # Locally the runs folder as before; on the public site only the files of RUN_FILES of one's own runs
     app.mount("/runs", RunFiles(runs_dir, run_of_session) if public else StaticFiles(directory=runs_dir),
               name="runs")
 
-    # Cached orthophoto tiles only (maps reach them as ../../cache/<folder>/wm256/...)
+    # Cached orthophoto tiles only (maps reach them as ../../cache/<folder>/wm256/..., also from share
+    # links: /s/<token>/map.html). Open to anyone: copies of the tiles of public services, no user data
     @app.get("/cache/{path:path}")
-    def ortho_tile(path: str, user: ac.User = Depends(current_user)):
+    def ortho_tile(path: str):
         from fastapi.responses import FileResponse
         parts = path.split("/")
         full = os.path.normpath(os.path.join(cache_dir, *parts))
