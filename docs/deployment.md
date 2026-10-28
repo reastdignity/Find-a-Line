@@ -378,6 +378,11 @@ python3 -c "import secrets; print(secrets.token_urlsafe(48))" > secrets/findalin
   its computing and for an OpenStreetMap extract, two minutes for an estimate or a profile
   (`FINDALINE_LIMIT_DOWNLOAD_SECONDS=3600`, `..._COMPUTE_SECONDS=7200`, `..._OSM_SECONDS=7200`,
   `..._QUICK_SECONDS=120`); set one in `findaline.env` only to change it (`none` removes it).
+  The size of a search and each user's quotas have public values the same way: the largest
+  radius, resolution, area and bounding box (`..._RADIUS_MAX=3500`, `..._RESOLUTION_MAX=30`,
+  `..._AREA_KM2_MAX=50`, `..._BBOX_KM_MAX=75`), searches, km² and MB a day per user
+  (`..._DOWNLOAD_MB_DAY_MAX=10000`) and the request rates (`..._JOB_RATE=10/minute;60/hour`);
+  README's table lists all of them.
 - `.env` (compose itself): `WORKER_CPUS` (the number of cores minus one; `nproc` tells them),
   `WORKER_MEMORY`, `FINDALINE_MIRROR_DIR` (section 10), `CONTAINER_DNS_1`/`_2` (section 5).
 - `secrets/` (secrets/README.md): the client secrets into their files (`nano
