@@ -163,7 +163,7 @@ The files are in `deploy/swag/` of the checkout.
    - SWAG's own `error.log` gets what nginx logs before a request is matched to this site
      (TLS handshakes, malformed requests), as for any of your sites.
 
-   **Slow clients.** The 10 s timeouts of this server block were measured with SWAG 1.30
+   **Slow clients.** The 10 s timeouts of this server block were measured with SWAG's nginx 1.30
    (TLS, SNI): they apply over HTTP/2 to the headers and the body of a request (10 s instead of
    60 s), and over HTTP/1.1 to the body. The headers of an HTTP/1.1 request, though, are read
    under the timeout of the default server of port 443 (nginx chooses this site only once it
