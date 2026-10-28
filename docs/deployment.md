@@ -376,14 +376,21 @@ in `.env` and `docker compose up -d`. The worker sees it read-only at `/mirror`;
 
 ## 11. Backups
 `deploy/backup.sh` (run as root):
-1. copies each database with `sqlite3`'s `.backup` (consistent while the site runs) into
-   `/var/backups/findaline/` and checks each copy (`PRAGMA integrity_check`): `jobs.sqlite`,
-   `accounts.sqlite`, `audit.sqlite` and `cache/osm/nominatim.sqlite` (its answers save
-   requests to Nominatim), with `cache/LAYOUT`; it runs `sqlite3` as uid 10001, so no file of
-   the volume ends up owned by root;
-2. backs up these copies and `runs/` with [restic](https://restic.net/) (encrypted,
-   deduplicated) to a repository outside the house, then forgets old snapshots (7 daily, 5
-   weekly, 12 monthly) and checks the repository.
+1. copies each database with SQLite's backup API (consistent while the site runs) into
+   `/var/backups/findaline/` and checks each copy (`PRAGMA integrity_check`): from the data
+   volume `jobs.sqlite`, `audit.sqlite` and `cache/osm/nominatim.sqlite` (its answers save
+   requests to Nominatim), with `cache/LAYOUT`, into `data/`; from the accounts volume
+   `accounts.sqlite`, into `accounts/`. The copies are made in a throwaway container of the
+   site's image (`findaline:local`) that mounts both volumes, runs as uid 10001 and has no
+   network: on the host that uid cannot even enter Docker's root folder (`/var/lib/docker` is
+   `0710 root`), and SQLite run as root could leave `-wal`/`-shm` files in the volumes that the
+   site can no longer open;
+2. backs up these copies and `runs/` (read by root from the data volume's folder) with
+   [restic](https://restic.net/) (encrypted, deduplicated) to a repository outside the house,
+   then forgets old snapshots (7 daily, 5 weekly, 12 monthly) and checks the repository.
+
+Any failure (a copy that fails its check, restic) ends the script with an error before the next
+step, and the systemd unit below reports it.
 
 The cache is not backed up (it is downloaded again), nor the Slovak mirror.
 
@@ -410,14 +417,27 @@ cannot be read. A first run by hand:
 sudo bash -c 'set -a; . /etc/findaline-backup.env; /srv/find-a-line/deploy/backup.sh'
 ```
 
-**Daily, with a systemd timer**:
+**Daily, with a systemd timer**, and a message when it fails: a backup that stops working is
+noticed only when it is needed, so `OnFailure=` starts another unit when a run fails. The
+example sends it with [ntfy](https://ntfy.sh) (a push message to your phone; pick a topic name
+nobody can guess, or use your own ntfy server, and `sudo apt install curl`); any command works
+the same way in its `ExecStart` (`mail` if the host can send mail, a webhook of your chat):
 
 ```sh
+sudo tee /etc/systemd/system/notify-failure@.service >/dev/null <<'EOF'
+[Unit]
+Description=Report the failure of %i
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/curl -fsS -m 30 -H "Title: %H: %i failed" -d "journalctl -u %i on %H" https://ntfy.sh/<your secret topic>
+EOF
 sudo tee /etc/systemd/system/findaline-backup.service >/dev/null <<'EOF'
 [Unit]
-Description=Find-a-Line backup (sqlite3 .backup + restic)
+Description=Find-a-Line backup (SQLite copies + restic)
 Wants=network-online.target
 After=network-online.target docker.service
+OnFailure=notify-failure@%N.service
 
 [Service]
 Type=oneshot
@@ -437,20 +457,25 @@ Persistent=true
 WantedBy=timers.target
 EOF
 sudo systemctl daemon-reload
+sudo systemctl start notify-failure@findaline-backup.service   # a test message
 sudo systemctl enable --now findaline-backup.timer
 systemctl list-timers findaline-backup.timer
 ```
 
-`journalctl -u findaline-backup` shows each run. (With cron instead: `30 3 * * * root set -a;
-. /etc/findaline-backup.env; /srv/find-a-line/deploy/backup.sh` in `/etc/cron.d/findaline-backup`.)
+`journalctl -u findaline-backup` shows each run. The same `OnFailure=` line fits any other unit
+of yours. (With cron instead: `30 3 * * * root set -a; . /etc/findaline-backup.env;
+/srv/find-a-line/deploy/backup.sh` in `/etc/cron.d/findaline-backup`; cron mails a failed run's
+output to root only if the host can send mail.)
 
 **Test a restore** (once now, then every few months):
 
 ```sh
 sudo bash -c 'set -a; . /etc/findaline-backup.env; restic snapshots; restic restore latest --target /tmp/findaline-restore'
-for db in /tmp/findaline-restore/var/backups/findaline/*.sqlite; do echo "$db: $(sudo sqlite3 "$db" 'PRAGMA integrity_check')"; done
+sudo find /tmp/findaline-restore/var/backups/findaline -name '*.sqlite' -exec sh -c 'echo "$1: $(sqlite3 "$1" "PRAGMA integrity_check")"' _ {} \;
 sudo ls /tmp/findaline-restore/var/lib/docker/volumes/findaline_data/_data/runs | head
 ```
+
+Each database must say `ok`, and `runs` must list the runs.
 
 **Restore for real** (the site stops meanwhile):
 
@@ -458,17 +483,24 @@ sudo ls /tmp/findaline-restore/var/lib/docker/volumes/findaline_data/_data/runs 
 cd /srv/find-a-line
 docker compose stop
 V=/var/lib/docker/volumes/findaline_data/_data
+A=/var/lib/docker/volumes/findaline_accounts/_data
 R=/tmp/findaline-restore
-sudo rm -f $V/jobs.sqlite* $V/accounts.sqlite* $V/audit.sqlite*   # with their -wal/-shm
-sudo cp $R/var/backups/findaline/*.sqlite $V/
+B=$R/var/backups/findaline
+sudo rm -f $V/jobs.sqlite* $V/audit.sqlite* $A/accounts.sqlite*   # with their -wal/-shm
+sudo cp $B/data/jobs.sqlite $B/data/audit.sqlite $V/
+sudo cp $B/accounts/accounts.sqlite $A/
 sudo mkdir -p $V/cache/osm
 sudo rm -f $V/cache/osm/nominatim.sqlite*
-sudo cp $R/var/backups/findaline/cache/osm/nominatim.sqlite $V/cache/osm/
-sudo cp -n $R/var/backups/findaline/cache/LAYOUT $V/cache/
+sudo cp $B/data/cache/osm/nominatim.sqlite $V/cache/osm/
+sudo cp -n $B/data/cache/LAYOUT $V/cache/
 sudo rsync -a $R$V/runs/ $V/runs/
-sudo chown -R 10001:10001 $V
+sudo chown -R 10001:10001 $V $A
+sudo chmod 644 $V/*.sqlite $V/cache/osm/nominatim.sqlite $A/accounts.sqlite
 docker compose up -d
 ```
+
+(Paths of a Docker root other than `/var/lib/docker`: `docker volume inspect findaline_data
+--format '{{.Mountpoint}}'`.)
 
 Remove the old `-wal`/`-shm` files before copying a database in: SQLite would apply them to the
 restored file.
@@ -563,5 +595,8 @@ bans.
 - **A search ends as killed, `OOMKilled` true**: raise `WORKER_MEMORY` in `.env` (and
   `docker compose up -d`), or lower the limits of searches.
 - **You banned yourself**: `docker exec swag fail2ban-client set findaline unbanip <address>`.
-- **`sqlite3: unable to open database` in the backup**: the volume's path (`FINDALINE_VOLUME` in
-  `/etc/findaline-backup.env` if your Docker root is not `/var/lib/docker`).
+- **`no Docker volume findaline_...` in the backup**: the volumes are named after the folder of
+  compose.yaml's project (`name: findaline`); `docker volume ls` lists them, and
+  `FINDALINE_DATA_VOLUME`/`FINDALINE_ACCOUNTS_VOLUME` in `/etc/findaline-backup.env` name others.
+  **`Unable to find image 'findaline:local'`**: the site was never built on this host
+  (section 9), or `FINDALINE_IMAGE` names another image.
