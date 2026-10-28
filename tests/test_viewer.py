@@ -118,3 +118,218 @@ def test_bundle_is_built_from_sources(tmp_path):
     for name in os.listdir(os.path.join(VIEWER, "dist")):
         with open(os.path.join(VIEWER, "dist", name), "rb") as a, open(tmp_path / name, "rb") as b:
             assert a.read() == b.read(), f"viewer/dist/{name} is out of date: run `npm run build` in viewer/"
+
+
+@pytest.fixture(scope="module")
+def clip_data(tmp_path_factory):
+    """data.js of a run of the Żabi Koń clip with the surface model (clear lines and lines over trees),
+    computed once, offline: (its JSON text, the value)."""
+    data = tmp_path_factory.mktemp("clip")
+    env = {**os.environ, "HTTP_PROXY": "http://127.0.0.1:9", "HTTPS_PROXY": "http://127.0.0.1:9", "NO_PROXY": "",
+           "PYTHONIOENCODING": "utf-8"}
+    tests_data = os.path.join(REPO, "tests", "data")
+    result = subprocess.run(
+        [sys.executable, "findaline.py", "--elevation-file", os.path.join(tests_data, "zabi_kon_nmt.tif"),
+         "--surface-file", os.path.join(tests_data, "zabi_kon_nmpt.tif"), "--northing", "254608",
+         "--easting", "553966", "--radius", "150", "--water", "off", "--fill-gaps", "off", "--no-plot", "--yes",
+         "--ortho", "never", "--data-dir", str(data)],
+        cwd=REPO, capture_output=True, text=True, encoding="utf-8", timeout=600, env=env)
+    assert result.returncode == 0, result.stdout + result.stderr
+    path = next((data / "runs").glob("*/data.js"))
+    text = path.read_text(encoding="utf-8").partition(" = ")[2].rstrip().rstrip(";")
+    return text, json.loads(text)
+
+
+def _js_number(v) -> str:
+    """A number as JavaScript's String() writes it (the anchors in keys.lineCoords)."""
+    return str(int(v)) if float(v).is_integer() else repr(float(v))
+
+
+def _key(row) -> str:
+    """keys.lineCoords of a data.js row."""
+    return ",".join(_js_number(v) for v in row[:4])
+
+
+def _python_groups(rows, distance, by, keep=lambda r: True):
+    """mapping.group_lines over the data.js rows that `keep` passes, as lists of the members' keys."""
+    results = [{"a1_xy": (r[4], r[5]), "a2_xy": (r[6], r[7]), "length": r[8], "clearance": r[9],
+                "over_obstacles": r[13], "height_max": r[16], "key": _key(r)} for r in rows if keep(r)]
+    return [[m["key"] for m in g["members"]] for g in mapping.group_lines(results, distance, by)]
+
+
+# Run with model.ts bundled as `m`: the model over a run's data (argv[2]) with a fake server
+MODEL_SCRIPT = r"""
+const data = JSON.parse(require("fs").readFileSync(process.argv[2], "utf-8"));
+const keys = (g) => g.members.map((l) => [l.lat1, l.lon1, l.lat2, l.lon2].join(","));
+const tick = () => new Promise((r) => setTimeout(r, 0));
+const out = {};
+(async () => {
+  let favourites = [], refuse = false;
+  const api = {loadFavourites: async () => favourites,
+               saveFavourite: async () => { if (refuse) throw new Error("refused"); },
+               profile: async () => ({d: [0, 1], z: [1, 2], min: [0, 3], water_m: 0, filled_m: 0})};
+  let model = new m.ResultModel(data, {favourites: true, api});
+  let notified = 0;
+  model.subscribe(() => notified++);
+  await tick();
+  out.groups = model.groups.map(keys);
+  out.rows = model.rows.map((r) => keys(r.group)[0]);
+  out.rowLen = model.rows.map((r) => r.line.len);
+  out.shown = model.shown;
+  out.ranges = {len: model.ranges.len, group: model.ranges.group, favourites: model.ranges.favourites};
+  model.setState({...model.state, by: "longest", distance: 7});
+  out.longest = model.groups.map(keys);
+  model.setState({...model.state, by: data.by, distance: data.distance});
+  model.setList({...model.list, sort: "clr", desc: false});
+  out.byClr = model.rows.map((r) => r.line.clr);
+  model.setList({...model.list, sort: "len", desc: true});
+  // Filters before grouping, the group size after it
+  const lenMin = out.rowLen[Math.floor(out.rowLen.length / 2)];
+  model.setFilters({...model.filters, lenMin});
+  out.filtered = model.groups.map(keys);
+  model.setFilters({...m.NO_FILTERS, groupMin: 3});
+  out.groupMin = model.groups.map(keys);
+  model.clearFilters();
+  model.setState({...model.state, showOver: false});
+  out.clearOnly = model.groups.map(keys);
+  model.setState({...model.state, showOver: true, group: false});
+  out.ungrouped = model.rows.map((r) => keys(r.group)[0]);
+  model.setState({...model.state, group: true});
+  // next / prev walk the rows
+  const walk = [];
+  model.next(); walk.push(model.position);
+  model.next(); walk.push(model.position);
+  model.prev(); walk.push(model.position);
+  walk.push(model.prev(), model.position);
+  out.walk = walk;
+  out.first = model.selected.group === model.rows[0].group;
+  // Choosing a line of a group keeps the groups; the selection follows it
+  const big = model.rows.findIndex((r) => r.n >= 3);
+  const group = model.rows[big].group, before = JSON.stringify(model.groups.map(keys));
+  model.select(group);
+  model.choose(group, group.members[2]);
+  out.choose = {same: JSON.stringify(model.groups.map(keys)) === before, variant: model.variantIndex(),
+                selected: model.selected.line === group.members[2], row: model.rows[big].line === group.members[2]};
+  // A link to a line: found, chosen and selected in its group; hidden by filters: a note, its action clears them
+  const multi = model.groups.filter((g) => g.members.length > 1)[1];
+  const linked = multi.members[1], link = "#line=" + model.lineLink(linked);
+  model.select(null);
+  const found = model.openLinked(link);
+  out.link = {found: found === linked, selected: model.selected.line === linked, variant: model.variantIndex(),
+              unknown: model.openLinked("#line=1,2,3,4"), unknownNote: model.note.text};
+  model.setFilters({...model.filters, lenMin: linked.len + 0.5});
+  out.hidden = {found: model.openLinked(link), note: model.note.text};
+  model.note.onAction();
+  out.hidden.after = model.selected.line === linked && model.filters.lenMin === null;
+  // Favourites: the favourite of a group is shown, "only favourites", a refused change rolled back
+  const fav = model.groups.find((g) => g.members.length > 1).members[1];
+  favourites = [model.lineLink(fav)];
+  model = new m.ResultModel(data, {favourites: true, api});
+  await tick();
+  const g0 = model.groupOf(fav);
+  out.fav = {on: model.favouritesOn, shown: model.shownOf(g0) === fav, isFav: model.isFavourite(fav),
+             asFav: model.shownAsFavourite(g0)};
+  model.setFilters({...model.filters, favOnly: true});
+  out.favOnly = model.groups.map(keys);
+  model.setFilters({...model.filters, favOnly: false});
+  const other = model.groups.find((g) => !g.members.includes(fav)).rep;
+  refuse = true;
+  const saving = model.toggleFavourite(other);
+  out.optimistic = model.isFavourite(other);
+  await saving;
+  out.rolledBack = {fav: model.isFavourite(other), note: model.note.text};
+  refuse = false;
+  await model.toggleFavourite(fav);
+  out.unmarked = {fav: model.isFavourite(fav), stillShown: model.shownOf(model.groupOf(fav)) === fav};
+  // Profiles: saved ones as they are, others from the server
+  const noProfile = model.lines.find((l) => !l.prof);
+  out.profile = noProfile ? (await model.profile(noProfile)).min[1] : null;
+  out.notified = notified;
+  console.log(JSON.stringify(out));
+})();
+"""
+
+
+def test_result_model(tmp_path, clip_data):
+    """result/model.ts on a real run: its groups and rows are those of main.tsx's drawLines (Python's grouping,
+    clear groups first), filters before grouping and the group size after, next/prev, choosing a variant,
+    links to lines, favourites (shown in their group, only favourites, a refused change rolled back)."""
+    text, data = clip_data
+    rows = data["lines"]
+    assert any(r[13] for r in rows) and not all(r[13] for r in rows)  # clear lines and lines over trees
+    data_path = tmp_path / "data.json"
+    data_path.write_text(text, encoding="utf-8")
+    bundle = tmp_path / "model.cjs"
+    subprocess.run(["node", "-e", "require('esbuild').buildSync({entryPoints: ['src/result/model.ts'], bundle: true, "
+                                  f"format: 'cjs', platform: 'node', outfile: {json.dumps(str(bundle))}}})"],
+                   cwd=VIEWER, check=True)
+    script = tmp_path / "model-test.cjs"
+    script.write_text(f"const m = require({json.dumps(str(bundle))});\n{MODEL_SCRIPT}", encoding="utf-8")
+    result = subprocess.run(["node", str(script), str(data_path)], capture_output=True, text=True,
+                            encoding="utf-8", timeout=120)
+    assert result.returncode == 0, result.stderr
+    out = json.loads(result.stdout)
+    distance, by = data["distance"], data["by"]
+    groups = _python_groups(rows, distance, by)
+    assert out["groups"] == groups
+    # The list sorted by length (the default), stable: equal lengths keep the groups' order
+    length = {_key(r): r[8] for r in rows}
+    assert out["rows"] == [g[0] for g in sorted(groups, key=lambda g: -length[g[0]])]
+    assert out["shown"] == {"spots": len(groups), "lines": len(rows)}
+    assert out["ranges"] == {"len": {"min": min(length.values()), "max": max(length.values())},
+                             "group": {"min": 1, "max": max(len(g) for g in groups)}, "favourites": False}
+    assert out["longest"] == _python_groups(rows, 7, "longest")
+    assert out["byClr"] == sorted(out["byClr"])
+    len_min = out["rowLen"][len(out["rowLen"]) // 2]
+    assert out["filtered"] == _python_groups(rows, distance, by, lambda r: r[8] >= len_min) != groups
+    assert out["groupMin"] == [g for g in groups if len(g) >= 3] and out["groupMin"]
+    assert out["clearOnly"] == _python_groups(rows, distance, by, lambda r: not r[13])
+    assert out["ungrouped"] == [_key(r) for r in rows if not r[13]] + [_key(r) for r in rows if r[13]]
+    assert out["walk"] == [0, 1, 0, False, 0] and out["first"]
+    assert out["choose"] == {"same": True, "variant": 2, "selected": True, "row": True}
+    assert out["link"] == {"found": True, "selected": True, "variant": 1, "unknown": None,
+                           "unknownNote": "The line of the link is not in this run."}
+    assert out["hidden"] == {"found": None, "note": "The line of the link is hidden by the filters.", "after": True}
+    assert out["fav"] == {"on": True, "shown": True, "isFav": True, "asFav": True}
+    assert len(out["favOnly"]) == 1 and len(out["favOnly"][0]) == 1
+    assert out["optimistic"] is True
+    assert out["rolledBack"] == {"fav": False, "note": "The favourite was not saved: refused"}
+    assert out["unmarked"] == {"fav": False, "stillShown": True}
+    assert out["profile"] in (None, 3)
+    assert out["notified"] > 10
+
+
+EDGE = r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe"
+
+
+@pytest.mark.skipif(not os.path.exists(EDGE), reason="needs Microsoft Edge")
+def test_result_map_in_edge(tmp_path, clip_data):
+    """result/ResultMap and loadRun in headless Edge, on a test page of a run served by the app (its CSP):
+    the run loaded as a script, lines drawn, a selection with its variants, a click on a variant shows it,
+    measuring (two clicks, Esc cancels), and destroy() leaves the map without a layer of it."""
+    import re
+    import test_web  # the app on a real server, its CSP stubs
+    text, data = clip_data
+    run_id = data["run"]["id"]
+    folder = tmp_path / "runs" / run_id
+    folder.mkdir(parents=True)
+    (folder / "data.js").write_text(f"window.FINDALINE_RUN = {text};\n", encoding="utf-8")
+    subprocess.run(["node", "-e", "require('esbuild').buildSync({entryPoints: ['test/resultmap_page.ts'], "
+                                  "bundle: true, format: 'iife', target: 'es2020', loader: {'.png': 'dataurl'}, "
+                                  f"outdir: {json.dumps(str(folder))}}})"], cwd=VIEWER, check=True)
+    (folder / "csp_stub.js").write_text(test_web.CSP_STUB, encoding="utf-8")
+    (folder / "resultmap_test.html").write_text(
+        '<!doctype html><html><head><meta charset="utf-8"><link rel="stylesheet" href="resultmap_page.css">'
+        '<script src="csp_stub.js"></script></head><body><script src="resultmap_page.js"></script></body></html>',
+        encoding="utf-8")
+    dom = test_web._edge_page(tmp_path, f"runs/{run_id}/resultmap_test.html")
+    found = re.search(r'<pre id="result">(.*?)</pre>', dom, re.S)
+    assert found, dom[-2000:]
+    out = json.loads(found.group(1).replace("&quot;", '"').replace("&amp;", "&"))
+    assert "error" not in out, out["error"]
+    assert out["load"] == {"failed": True, "lines": len(data["lines"]), "cleared": True, "cached": True}
+    assert out["drawn"] > 0 and out["selectedLayers"] > out["drawn"]
+    assert out["clicked"] == ["variant"] and out["variantShown"] is True
+    assert out["measured"] is True and out["escaped"] is True
+    assert out["after"] == 0
+    assert test_web._violations(dom) == []
