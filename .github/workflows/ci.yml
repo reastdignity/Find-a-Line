@@ -87,6 +87,8 @@ jobs:
       - name: Example settings and secrets
         run: |
           cp findaline.env.example findaline.env
+          # web --public starts only with a sign-in provider; the ids (and secrets below) are dummies
+          printf 'FINDALINE_GITHUB_CLIENT_ID=ci-dummy\nFINDALINE_GOOGLE_CLIENT_ID=ci-dummy\n' >> findaline.env
           printf 'WORKER_CPUS=2\nWORKER_MEMORY=4g\n' > .env
           cp compose.override.example.yaml compose.override.yaml
           for name in findaline_session_secret findaline_github_client_secret findaline_google_client_secret; do
