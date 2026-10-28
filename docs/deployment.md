@@ -106,15 +106,45 @@ The files are in `deploy/swag/` of the checkout.
    It answers `server_name findaline.*`; with another subdomain change that line. It proxies to
    `findaline-web:8765` (the web service's alias in `findaline-proxy`) through SWAG's
    `resolver.conf` (Docker's DNS, `127.0.0.11`), so SWAG starts even while the site is down.
-   What it sets: `client_max_body_size 2m`; per client address 20 requests/s with a burst of 200
+   What it sets: `client_max_body_size 2m`; 10 s instead of nginx's 60 s for a slow client's
+   request headers and body (below); 400 for any request with an `Upgrade` header (the app has
+   no WebSockets; SWAG's `proxy.conf` would pass the header on, and the app would log a warning
+   for each); per client address 20 requests/s with a burst of 200
    (a map view loads dozens of orthophoto tiles at once) and 40 connections, 10 requests/minute
    with a burst of 10 for `/login/` and `/auth/` (beyond them: 429); `/api/events` (the live
    event stream) without buffering and with a read timeout of an hour; gzip for scripts, JSON,
    CSS and CSV (a run's `data.js` shrinks about 4.7 times); HSTS; its own access log,
    `/config/log/nginx/findaline.access.log`, where the token of a share link and the query of a
    sign-in callback are replaced (`/s/<token>/map.html`, `/auth/github?<query>`), also in the
-   Referer. Requests refused by the limits are not written to the error log (it would show the
-   request unmasked). SWAG's logrotate rotates both logs weekly and keeps 14.
+   Referer. SWAG's logrotate rotates both logs weekly and keeps 14.
+
+   **What the logs of this site contain**:
+   - `findaline.access.log`, one line per request: the client's address, the time, the request
+     line with the token of a share link replaced by `<token>` and the query of `/auth/...`
+     replaced by `<query>` (other queries stay: the app's own carry no secrets), the status, the
+     size, the Referer masked the same way and the User-Agent. No cookies, no other headers.
+   - `findaline.error.log`, level `error` and above (not nginx's default `warn`): failures of the
+     upstream (the web service down, refusing, timing out, an invalid answer), with the
+     client's address, the request line and the Referer **unmasked**. Requests under `/s/` (share
+     links), `/login/` and `/auth/` (sign-in), and `/cache/` (orthophoto tiles: a shared map asks
+     for them with its own address, token included, as the Referer) log only `crit`, which a
+     proxied request never reaches, so their addresses never appear there. A request of another
+     path made from a shared map's page would show the token in the Referer; the viewer makes
+     none, but a browser may ask for `/favicon.ico` with it. Warnings (an answer buffered to a
+     temporary file) and the refusals of the limits (`info`) are not logged.
+   - SWAG's own `error.log` gets what nginx logs before a request is matched to this site
+     (TLS handshakes, malformed requests), as for any of your sites.
+
+   **Slow clients.** The 10 s timeouts of this server block were measured with SWAG 1.30
+   (TLS, SNI): they apply over HTTP/2 to the headers and the body of a request (10 s instead of
+   60 s), and over HTTP/1.1 to the body. The headers of an HTTP/1.1 request, though, are read
+   under the timeout of the default server of port 443 (nginx chooses this site only once it
+   has read them): 60 s, whatever this file says. Hundreds of connections that send their
+   headers slowly are held that long (the per-address `limit_conn` counts a connection only
+   once its headers are read). If you want 10 s there too, it is a setting for all your sites:
+   add `client_header_timeout 10s;` to the `http` block of `/srv/swag/nginx/nginx.conf` (or to
+   the `server_name _` block of `site-confs/default.conf`), then `nginx -t` and restart SWAG.
+   It is optional; this repository does not change SWAG's shared files.
 3. **Security headers.** The app sends its own (Content-Security-Policy, X-Frame-Options,
    Referrer-Policy, X-Content-Type-Options, Permissions-Policy, Cross-Origin-Opener-Policy and
    -Resource-Policy). SWAG's `ssl.conf` (shared by all your sites) may add headers too: the
