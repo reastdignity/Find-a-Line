@@ -36,6 +36,11 @@ FROM ${PYTHON_IMAGE}
 # uid 10001; its home, numba's cache and matplotlib's settings live in the data volume (the root
 # filesystem is read-only). /data is created here owned by the user, so a new named volume takes
 # that owner when it is first mounted.
+# libexpat1: the wheels of rasterio (its GDAL) and osmium link to the system's libexpat.so.1,
+# which the slim image no longer has
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends libexpat1 \
+    && rm -rf /var/lib/apt/lists/*
 RUN groupadd --gid 10001 findaline \
     && useradd --uid 10001 --gid 10001 --no-create-home --home-dir /data/home --shell /usr/sbin/nologin findaline \
     && mkdir -p /data/home \
