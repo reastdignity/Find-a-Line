@@ -58,6 +58,11 @@ PORT = 8765
 PING = 15           # seconds between the keep-alive comments of the event stream
 SEND_TIMEOUT = 30   # seconds a client may take to accept a message of the event stream
 QUICK_POLL = 0.1    # seconds between looks for the answer of an estimate or a profile
+# How long the server waits for an answer of the quick lane: the lane's time limit for each task ahead
+# and this one, plus QUICK_SLACK, at most QUICK_WAIT_MAX; without a time limit (locally) QUICK_WAIT_LOCAL
+QUICK_SLACK = 30
+QUICK_WAIT_MAX = 600
+QUICK_WAIT_LOCAL = 3600
 NO_WORKER = "the worker is not running (findaline.py worker, or findaline.py web without --no-worker)"
 APP_DIST = os.path.join(os.path.dirname(os.path.abspath(__file__)), "viewer", "dist")
 LOCAL_HOSTS = ["127.0.0.1", "localhost", "testserver"]  # testserver: FastAPI's TestClient
@@ -575,29 +580,54 @@ def create_app(data_dir: str, token: Optional[str] = None, port: int = PORT, sta
         except ValueError as e:
             raise HTTPException(400, str(e))
 
-    async def quick(kind: str, request: Dict, user: ac.User):
+    async def quick(kind: str, request: Dict, user: ac.User, client: Request):
         """The answer of the worker's quick lane (jobs.QUICK) to a task: added to the table `quick`
-        and awaited without holding a thread, so the server does no search work itself."""
+        and awaited without holding a thread, so the server does no search work itself. On the
+        public site a user has one waiting task at most (429). The wait ends (504) after the lane's
+        time limit for each task ahead and this one (QUICK_WAIT_MAX at most), or when the client
+        goes away; the task is deleted then, unless the lane works on it already."""
         if not await run_in_threadpool(jobs.worker_alive):
             raise HTTPException(503, NO_WORKER)
-        task = await run_in_threadpool(jobs.quick_add, kind, request, user.id, unlimited(user))
-        looked = time.monotonic()
-        while (answer := await run_in_threadpool(jobs.quick_take, task)) is None:
-            await asyncio.sleep(QUICK_POLL)
-            if time.monotonic() - looked > 5:
-                looked = time.monotonic()
-                if not await run_in_threadpool(jobs.worker_alive):
-                    await run_in_threadpool(jobs.quick_forget, task)
-                    raise HTTPException(503, NO_WORKER)
+        try:
+            task = await run_in_threadpool(jobs.quick_add, kind, request, user.id, unlimited(user), public is not None)
+        except QuotaExceeded as e:
+            raise HTTPException(e.status, str(e))
+        gone = None
+        try:
+            if limits.quick_seconds:
+                ahead = await run_in_threadpool(jobs.quick_ahead, task)
+                wait = min(QUICK_WAIT_MAX, limits.quick_seconds * (ahead + 1) + QUICK_SLACK)
+            else:
+                wait = QUICK_WAIT_LOCAL
+            started = looked = time.monotonic()
+            # Request.is_disconnected never sees the disconnect behind the guard (a BaseHTTPMiddleware
+            # cancels its receive): a task waits for that message instead
+            gone = asyncio.ensure_future(_disconnect(client.receive))
+            while (answer := await run_in_threadpool(jobs.quick_take, task)) is None:
+                await asyncio.sleep(QUICK_POLL)
+                if gone.done():
+                    raise HTTPException(503, "the client went away")  # nobody reads it
+                if time.monotonic() - started > wait:
+                    raise HTTPException(504, f"no answer within {wait:g} s: the worker is busy, try again later")
+                if time.monotonic() - looked > 5:
+                    looked = time.monotonic()
+                    if not await run_in_threadpool(jobs.worker_alive):
+                        raise HTTPException(503, NO_WORKER)
+        except BaseException:  # also a cancelled request (the server stops): nobody waits for the task
+            jobs.quick_forget(task)
+            raise
+        finally:
+            if gone is not None:
+                gone.cancel()
         if answer["code"] != 200:
             raise HTTPException(answer["code"], answer["body"])
         return answer["body"]
 
     @app.post("/api/estimate")
-    async def estimate(body: Dict, user: ac.User = Depends(current_user)):
+    async def estimate(body: Dict, client: Request, user: ac.User = Depends(current_user)):
         request, _ = await run_in_threadpool(parse, body, user)
         within_rate("estimate", user)
-        return await quick("estimate", request, user)
+        return await quick("estimate", request, user, client)
 
     @app.post("/api/jobs")
     async def add_job(body: Dict, user: ac.User = Depends(current_user)):
@@ -631,7 +661,8 @@ def create_app(data_dir: str, token: Optional[str] = None, port: int = PORT, sta
 
     @app.get("/api/jobs/{job_id}/events")
     def job_events(job: Dict = Depends(visible_job)):
-        return {"events": jobs.events(0, job["id"])}
+        """The history of a job: its newest JOB_EVENTS_MAX messages and its last progress."""
+        return jobs.job_events(job["id"])
 
     @app.delete("/api/jobs/{job_id}")
     def cancel(job: Dict = Depends(visible_job), user: ac.User = Depends(current_user)):
@@ -852,7 +883,7 @@ def create_app(data_dir: str, token: Optional[str] = None, port: int = PORT, sta
             if problem:
                 raise HTTPException(400, problem)
         within_rate("profile", user)
-        return await quick("profile", {"run": run, "line": points}, user)  # one at a time in the quick lane
+        return await quick("profile", {"run": run, "line": points}, user, request)  # one at a time in the quick lane
 
     if public:
         @app.get("/runs/runs.js")
@@ -1071,6 +1102,12 @@ def signin_page(providers: List[str], user=None, csrf: Optional[str] = None, not
                      "<button type='submit'>Sign out</button></form>")
     parts.append(demo_list(demos or []))
     return SIGNIN_HTML.format(body="\n".join(parts))
+
+
+async def _disconnect(receive):
+    """Wait until the client of a request goes away (its body, if any, is read already)."""
+    while (await receive())["type"] != "http.disconnect":
+        pass
 
 
 def is_loopback(host: str) -> bool:

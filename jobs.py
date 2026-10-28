@@ -51,6 +51,10 @@ HOUSEKEEPING = 6 * 3600   # seconds between clean-ups of the data folder (and at
 QUICK_POLL = 0.05         # seconds between looks of the quick lane at its table
 KEEP_WORK_DAYS = 7        # days the work folder of a job that failed unexpectedly is kept (to look at)
 KEEP_QUICK_SECONDS = 3600  # an answer of the quick lane nobody took (the page was closed) is deleted after it
+# A waiting task of the quick lane is deleted by the web process that waits for it when it gives up
+# (web.quick); one left by a web process that stopped is deleted after this (longer than any wait)
+KEEP_WAITING_QUICK_SECONDS = 86400
+JOB_EVENTS_MAX = 1000  # messages of a job its page gets at once (the newest; and the last progress)
 LEASE = 30.0              # seconds a lease lasts without a renewal
 # What a job is doing; "ready" means its data is downloaded and it waits to compute
 ACTIVE = ("downloading", "computing")
@@ -342,6 +346,19 @@ class Jobs:
             db.execute("INSERT INTO events (job, kind, data) VALUES (?, ?, ?)",
                        (job_id, kind, json.dumps(self.redact(data))))
 
+    def job_events(self, job_id: str, limit: int = JOB_EVENTS_MAX) -> Dict:
+        """The history of one job for its page: its newest `limit` events other than progress, and
+        its last progress event, oldest first; "omitted": how many older messages were left out."""
+        with self._db() as db:
+            rows = db.execute("SELECT * FROM (SELECT * FROM events WHERE job = ? AND kind != 'progress' ORDER BY "
+                              "seq DESC LIMIT ?) UNION ALL SELECT * FROM (SELECT * FROM events WHERE job = ? AND "
+                              "kind = 'progress' ORDER BY seq DESC LIMIT 1) ORDER BY seq",
+                              (job_id, limit, job_id)).fetchall()
+            count = db.execute("SELECT COUNT(*) FROM events WHERE job = ? AND kind != 'progress'",
+                               (job_id,)).fetchone()[0]
+        return {"events": [{"seq": r["seq"], "job": r["job"], "kind": r["kind"], "data": json.loads(r["data"])}
+                           for r in rows], "omitted": max(0, count - limit)}
+
     def events(self, since: int, job_id: Optional[str] = None, user_id: Optional[int] = None) -> List[Dict]:
         """The events after `since`: of one job, or of all jobs (of one user's jobs with user_id)."""
         with self._db() as db:
@@ -506,13 +523,25 @@ class Jobs:
 
     # --- The quick lane ---
 
-    def quick_add(self, kind: str, request: Dict, user_id: Optional[int] = None, unlimited: bool = False) -> int:
+    def quick_add(self, kind: str, request: Dict, user_id: Optional[int] = None, unlimited: bool = False,
+                  one_waiting: bool = False) -> int:
         """A task for the quick lane ("estimate" or "profile") of a user (`unlimited`: without the
-        worker's Limits); its id."""
-        with self._db() as db:
+        worker's Limits); its id. With `one_waiting` (the public site), QuotaExceeded while another
+        task of the same user waits (checked in the insert's transaction)."""
+        with self._write() as db:
+            if one_waiting and user_id is not None and db.execute(
+                    "SELECT 1 FROM quick WHERE user_id = ? AND status = 'waiting' LIMIT 1", (user_id,)).fetchone():
+                raise QuotaExceeded("another estimate or profile of yours is still waiting: try again when it "
+                                    "is answered")
             return db.execute("INSERT INTO quick (kind, request, status, created, user_id, unlimited) "
                               "VALUES (?, ?, 'waiting', ?, ?, ?)",
                               (kind, json.dumps(request), time.time(), user_id, int(unlimited))).lastrowid
+
+    def quick_ahead(self, task_id: int) -> int:
+        """Tasks of the quick lane waiting or running before this one."""
+        with self._db() as db:
+            return db.execute("SELECT COUNT(*) FROM quick WHERE id < ? AND status IN ('waiting', 'running')",
+                              (task_id,)).fetchone()[0]
 
     def quick_take(self, task_id: int) -> Optional[Dict]:
         """The answer of a task once it is there ({"code", "body"}), removing the task; else None."""
@@ -523,8 +552,10 @@ class Jobs:
         return json.loads(row["answer"]) if row else None
 
     def quick_forget(self, task_id: int):
+        """Delete a task nobody waits for any more; a running one stays until it is answered (the
+        lane's time limit applies to it) and is deleted with the other answers nobody took."""
         with self._db() as db:
-            db.execute("DELETE FROM quick WHERE id = ?", (task_id,))
+            db.execute("DELETE FROM quick WHERE id = ? AND status != 'running'", (task_id,))
 
     def quick_claim(self, worker_id: str) -> Optional[Dict]:
         with self._write() as db:
@@ -539,10 +570,13 @@ class Jobs:
         return dict(row) if row else None
 
     def forget_quick(self, seconds: float = KEEP_QUICK_SECONDS) -> int:
-        """Delete tasks of the quick lane nobody waits for any more (older than `seconds`, not running)."""
+        """Delete tasks of the quick lane nobody waits for any more: answers older than `seconds`
+        nobody took, waiting tasks of a web process that stopped (KEEP_WAITING_QUICK_SECONDS; a web
+        process deletes its own when it gives up). Waiting tasks someone awaits stay."""
+        now = time.time()
         with self._db() as db:
-            return db.execute("DELETE FROM quick WHERE created < ? AND status != 'running'",
-                              (time.time() - seconds,)).rowcount
+            return db.execute("DELETE FROM quick WHERE (status = 'done' AND created < ?) OR (status = 'waiting' AND "
+                              "created < ?)", (now - seconds, now - KEEP_WAITING_QUICK_SECONDS)).rowcount
 
     def forget_events(self, days: float) -> int:
         """Delete the events (messages, progress) of jobs finished more than `days` ago; the jobs stay."""

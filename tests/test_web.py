@@ -439,6 +439,56 @@ def test_quick_lane(tmp_path, monkeypatch):
     assert Jobs(str(tmp_path))._db().execute("SELECT COUNT(*) FROM quick").fetchone()[0] == 0
 
 
+def test_quick_wait_ends(tmp_path, monkeypatch):
+    """The server waits for the quick lane at most the lane's time limit per task ahead and its own
+    (plus QUICK_SLACK), and not after the client went away; either way it deletes its waiting task.
+    A running task stays for the lane's own time limit (review B, poc_quick_wait)."""
+    import requests
+    monkeypatch.setattr(web, "QUICK_SLACK", 0.5)
+    jobs = Jobs(str(tmp_path))
+    jobs.register("busy-worker")  # a worker is alive, its quick lane never answers here
+    headers = {"x-findaline-token": TOKEN}
+    point = {"params": {"lat": 50.1, "lon": 19.7}}
+    app = web.create_app(str(tmp_path), token=TOKEN, start_scheduler=False, limits=Limits(quick_seconds=0.5))
+    with TestClient(app) as client:
+        ahead = jobs.quick_add("estimate", {})  # one task ahead: 2 x 0.5 + 0.5 s
+        jobs.quick_claim("busy-worker")
+        started = time.time()
+        response = client.post("/api/estimate", json=point, headers=headers)
+        assert response.status_code == 504 and "1.5 s" in response.text, response.text
+        assert time.time() - started < 5
+    assert [r[0] for r in jobs._db().execute("SELECT id FROM quick")] == [ahead]  # the running one stays
+    jobs.quick_forget(ahead)
+    assert [r[0] for r in jobs._db().execute("SELECT id FROM quick")] == [ahead]
+    with _server(tmp_path) as port:  # the local app: no time limit, but the client goes away
+        jobs.heartbeat("busy-worker")
+        with pytest.raises(requests.Timeout):
+            requests.post(f"http://127.0.0.1:{port}/api/estimate", json=point, headers=headers, timeout=1.5)
+        deadline = time.time() + 10
+        while jobs._db().execute("SELECT COUNT(*) FROM quick WHERE status = 'waiting'").fetchone()[0] \
+                and time.time() < deadline:
+            time.sleep(0.2)
+        assert jobs._db().execute("SELECT COUNT(*) FROM quick WHERE status = 'waiting'").fetchone()[0] == 0
+
+
+def test_job_events_capped(client, tmp_path):
+    """/api/jobs/<id>/events gives the newest JOB_EVENTS_MAX messages and the last progress, not every
+    event of a long job."""
+    import jobs as jb
+    jobs = client.app.state.jobs
+    job = jobs.add({"params": {}, "geometry": None}, "long")
+    for i in range(jb.JOB_EVENTS_MAX + 50):
+        jobs.event(job, "info", f"line {i}")
+        jobs.event(job, "progress", {"done": i})
+    answer = client.get(f"/api/jobs/{job}/events").json()
+    kinds = [e["kind"] for e in answer["events"]]
+    assert kinds.count("progress") == 1 and kinds.count("info") == jb.JOB_EVENTS_MAX  # the oldest (status) left out
+    assert answer["events"][-1]["data"] == {"done": jb.JOB_EVENTS_MAX + 49}  # the last progress
+    assert answer["events"][-2]["data"] == f"line {jb.JOB_EVENTS_MAX + 49}" and answer["omitted"] == 51
+    seqs = [e["seq"] for e in answer["events"]]
+    assert seqs == sorted(seqs)
+
+
 def test_time_limits(tmp_path, monkeypatch):
     """Limits come from FINDALINE_LIMIT_* (none by default); a phase over its limit gets its processes
     killed and its folder removed, and its job fails with "time limit"."""
@@ -500,6 +550,10 @@ def test_housekeeping(tmp_path):
     with jobs._db() as db:
         db.execute("UPDATE quick SET status = 'done', created = ? WHERE id = ?", (time.time() - 7200, taken))
     fresh = jobs.quick_add("estimate", {})
+    awaited, orphan = jobs.quick_add("estimate", {}), jobs.quick_add("estimate", {})  # waiting 2 h and 2 days
+    with jobs._db() as db:
+        db.execute("UPDATE quick SET created = ? WHERE id = ?", (time.time() - 7200, awaited))
+        db.execute("UPDATE quick SET created = ? WHERE id = ?", (time.time() - 2 * 86400, orphan))
     week_ago = time.time() - 8 * 86400
     folders = {name: tmp_path / "work" / kind / name for kind, name in (
         ("jobs", old), ("jobs", running), ("jobs", "unknown"), ("estimates", "a"), ("profiles", "b"))}
@@ -511,7 +565,7 @@ def test_housekeeping(tmp_path):
     assert jobs.events(0, old) == [] and jobs.events(0, recent) and jobs.events(0, running)
     assert jobs.get(old)["status"] == "done"  # the job stays
     remaining = {r[0] for r in jobs._db().execute("SELECT id FROM quick")}
-    assert remaining == {fresh}
+    assert remaining == {fresh, awaited}  # a task someone may still wait for stays
     assert [n for n, f in folders.items() if f.exists()] == [running]
     assert (tmp_path / "work" / "estimates" / "new").exists()
 

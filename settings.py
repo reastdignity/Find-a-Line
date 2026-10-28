@@ -3,8 +3,8 @@ Settings and limits of the web app, from environment variables (pydantic-setting
 
 - Limits: each field is read from FINDALINE_LIMIT_<NAME> (e.g. FINDALINE_LIMIT_COMPUTE_SECONDS=7200).
   Nothing set means no limit: the local app (start.bat, `findaline.py web`) runs as before.
-  The public site (Limits.load(public=True)) starts from the values of PUBLIC instead, each
-  overridable the same way (`none`: no limit). The fields: time limits of the worker
+  The public site (Limits.load(public=True)) starts from the values of PUBLIC instead (time
+  limits too), each overridable the same way (`none`: no limit). The fields: time limits of the worker
   (jobs.Scheduler), how long its housekeeping keeps old events, and limits on the values
   of a request (check_request, also the min/max of the form: web.schema), the cost of a
   search, the quotas and request rates of a user, and the safeguards of the server. Users
@@ -34,6 +34,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 SECRETS_DIR = "/run/secrets"  # Docker secrets
 # The limits of the public site (--public) unless FINDALINE_LIMIT_<NAME> says otherwise
 PUBLIC = {
+    "download_seconds": 3600, "compute_seconds": 7200, "osm_seconds": 7200, "quick_seconds": 120,
     "buffer_max": 500, "max_length_max": 2000, "prominence_span_max": 1000, "drop_radius_max": 1000,
     "slope_threshold_min": 30, "group_distance_min_res": 2, "ortho_detail_max": 50,
     "not_allowed": ["ortho=always", "update", "coastline=world", "threads", "tile_size"],

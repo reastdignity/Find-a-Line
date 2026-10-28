@@ -1435,6 +1435,29 @@ def test_local_headers(tmp_path):
         assert client.get("/", headers={"host": "localhost:8765"}).status_code == 200
 
 
+def test_public_time_limits_and_one_waiting_estimate(tmp_path, settings, account_settings, providers):
+    """The public site has time limits by default (FINDALINE_LIMIT_* still override them); a user has
+    one estimate or profile waiting at most (others' tasks do not count)."""
+    from jobs import QuotaExceeded
+    from settings import Limits
+    limits = Limits.load(public=True)
+    assert (limits.download_seconds, limits.compute_seconds, limits.osm_seconds, limits.quick_seconds) == \
+        (3600, 7200, 7200, 120)
+    app = _public_app(tmp_path, settings, account_settings, providers)
+    people = _clients(app, tmp_path, account_settings, ("a", "b"))
+    jobs = app.state.jobs
+    jobs.register("busy-worker")
+    jobs.quick_add("estimate", {}, people["a"].user_id, one_waiting=True)
+    with pytest.raises(QuotaExceeded):
+        jobs.quick_add("estimate", {}, people["a"].user_id, one_waiting=True)
+    answer = people["a"].post("/api/estimate", json={"params": POINT})
+    assert answer.status_code == 429 and "still waiting" in answer.text
+    jobs.quick_add("estimate", {}, None, one_waiting=True)  # the local app: no such rule
+    jobs.quick_add("estimate", {}, people["b"].user_id, one_waiting=True)
+    for client in people.values():
+        client.close()
+
+
 def test_request_limits(monkeypatch, tmp_path):
     """The public site's limits on request values (each overridable, `none` for no limit) refuse
     values over them and fields it does not allow, and give the form its min/max; locally, and for
