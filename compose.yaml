@@ -11,7 +11,7 @@
 #   with SWAG joined to it at the fixed address FINDALINE_TRUSTED_PROXY, 172.30.0.2, outside the
 #   range the containers get their addresses from (docs/deployment.md).
 #
-# Networks (docs/deployment.md, "Networks"): SWAG reaches the web service in findaline-proxy,
+# Networks (docs/deployment.md, sections 3 and 5): SWAG reaches the web service in findaline-proxy,
 # which is internal (no way out). The web service also needs the internet (the OAuth providers'
 # token endpoints, Google's metadata and keys), through its own network `web`; the worker gets
 # out through `worker` and shares no network with the web service or SWAG. The bridges have
