@@ -45,7 +45,8 @@ export class ResultMap {
     this.model = model;
     this.options = options;
     this.area = L.geoJSON(model.data.area as any, {interactive: false,
-                                                   style: {color: "black", weight: 1, dashArray: "6", fill: false}});
+                                                   style: {renderer: this.renderer, color: "black", weight: 1,
+                                                           dashArray: "6", fill: false}});
     this.layers = [this.area, this.otherAreas, this.linesLayer, this.topLayer, this.hoverLayer, this.measureLayer];
     this.layers.forEach((layer) => layer.addTo(map));
     map.on("click", this.onMapClick);
@@ -61,6 +62,7 @@ export class ResultMap {
     this.measureLayer.clearLayers();
     this.hoverAt(null);
     this.layers.forEach((layer) => this.map.removeLayer(layer));
+    [this.renderer, this.variantRenderer].forEach((r) => { if (this.map.hasLayer(r)) this.map.removeLayer(r); });
     this.map.off("click", this.onMapClick);
     document.removeEventListener("keydown", this.onKey);
   }
@@ -98,7 +100,9 @@ export class ResultMap {
     this.topLayer.clearLayers();
     this.otherAreas.clearLayers();
     model.others.forEach((run) => {
-      L.geoJSON(run.area as any, {interactive: false, style: {color: run.color, weight: 1, dashArray: "6", fill: false}})
+      L.geoJSON(run.area as any, {interactive: false,
+                                  style: {renderer: this.renderer, color: run.color, weight: 1, dashArray: "6",
+                                          fill: false}})
         .addTo(this.otherAreas);
     });
     const opacity = selected ? DIM : 0.9;
@@ -156,7 +160,7 @@ export class ResultMap {
       if (this.marker) { this.map.removeLayer(this.marker); this.marker = null; }
     } else if (!this.marker) {
       this.marker = L.circleMarker(at, {radius: 6, color: "#000", weight: 2, fillColor: "#fff", fillOpacity: 1,
-                                        interactive: false}).addTo(this.map);
+                                        interactive: false, renderer: this.renderer}).addTo(this.map);
     } else this.marker.setLatLng(at);
   }
 
@@ -216,10 +220,11 @@ export class ResultMap {
     if (!done) return;
     this.points.push(at);
     L.circleMarker(at, {radius: 5, color: "#000", weight: 2, fillColor: "#fff", fillOpacity: 1,
-                        interactive: false}).addTo(this.measureLayer);
+                        interactive: false, renderer: this.renderer}).addTo(this.measureLayer);
     if (this.points.length < 2) return;
     const [a, b] = this.points;
-    L.polyline([a, b], {color: "#000", weight: 2, dashArray: "6 4", interactive: false}).addTo(this.measureLayer);
+    L.polyline([a, b], {color: "#000", weight: 2, dashArray: "6 4", interactive: false, renderer: this.renderer})
+      .addTo(this.measureLayer);
     this.cancelMeasure();
     done(a, b);
   }

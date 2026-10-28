@@ -193,7 +193,7 @@ const out = {};
   model.setState({...model.state, showOver: false});
   out.clearOnly = model.groups.map(keys);
   model.setState({...model.state, showOver: true, group: false});
-  out.ungrouped = model.rows.map((r) => keys(r.group)[0]);
+  out.ungrouped = model.baseRows.map((r) => keys(r.group)[0]);  // the map's order
   model.setState({...model.state, group: true});
   // next / prev walk the rows
   const walk = [];
@@ -222,10 +222,10 @@ const out = {};
   model.note.onAction();
   out.hidden.after = model.selected.line === linked && model.filters.lenMin === null;
   // Favourites: the favourite of a group is shown, "only favourites", a refused change rolled back
-  const fav = model.groups.find((g) => g.members.length > 1).members[1];
-  favourites = [model.lineLink(fav)];
-  model = new m.ResultModel(data, {favourites: true, api});
+  favourites = [model.lineLink(model.groups.find((g) => g.members.length > 1).members[1])];
+  model = new m.ResultModel(data, {favourites: true, api});  // its own lines
   await tick();
+  const fav = model.lines.find((l) => model.lineLink(l) === favourites[0]);
   const g0 = model.groupOf(fav);
   out.fav = {on: model.favouritesOn, shown: model.shownOf(g0) === fav, isFav: model.isFavourite(fav),
              asFav: model.shownAsFavourite(g0)};
@@ -277,7 +277,7 @@ def test_result_model(tmp_path, clip_data):
     assert out["rows"] == [g[0] for g in sorted(groups, key=lambda g: -length[g[0]])]
     assert out["shown"] == {"spots": len(groups), "lines": len(rows)}
     assert out["ranges"] == {"len": {"min": min(length.values()), "max": max(length.values())},
-                             "group": {"min": 1, "max": max(len(g) for g in groups)}, "favourites": False}
+                             "group": {"min": 1, "max": max(len(g) for g in groups)}, "favourites": True}
     assert out["longest"] == _python_groups(rows, 7, "longest")
     assert out["byClr"] == sorted(out["byClr"])
     len_min = out["rowLen"][len(out["rowLen"]) // 2]

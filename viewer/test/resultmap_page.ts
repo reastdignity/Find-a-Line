@@ -7,6 +7,7 @@ import "leaflet/dist/leaflet.css";
 import { loadRun } from "../src/result/load";
 import { ResultModel } from "../src/result/model";
 import { ResultMap } from "../src/result/ResultMap";
+import type { Line } from "../src/types";
 
 const out: Record<string, unknown> = {};
 const finish = () => {
@@ -32,8 +33,10 @@ const runId = decodeURIComponent(location.pathname.split("/")[2]);
     const before = Object.keys((map as any)._layers).length;
     const model = new ResultModel(data, {favourites: false, profiles: false});
     const clicked: string[] = [];
+    let last: Line | null = null;
     const view = new ResultMap(map, model, {onLine: (l, g, variant) => {
       clicked.push(variant ? "variant" : "line");
+      last = l;
       if (variant) model.choose(g, l); else model.select(l);
     }});
     view.fitArea();
@@ -47,7 +50,7 @@ const runId = decodeURIComponent(location.pathname.split("/")[2]);
     view.highlight(group.members[1]);
     view.hoverAt([group.rep.lat1, group.rep.lon1]);
     // A click on a variant (the middle of the line, in screen pixels) through Leaflet's canvas
-    const variant = group.members.find((m) => m !== model.selected!.line)!;
+    const shown = model.selected!.line, variant = group.members.find((m) => m !== shown)!;
     const p = map.latLngToContainerPoint([(variant.lat1 + variant.lat2) / 2, (variant.lon1 + variant.lon2) / 2]);
     const canvas: HTMLCanvasElement = (view as any).variantRenderer._container;  // the variants' own canvas
     const fire = (type: string, x: number, y: number) => {
@@ -58,7 +61,9 @@ const runId = decodeURIComponent(location.pathname.split("/")[2]);
     fire("mousemove", p.x, p.y);
     fire("click", p.x, p.y);
     out.clicked = clicked;
-    out.variantShown = model.selected?.line === variant;
+    // Overlapping variants: the one hit is shown (the group's other line than before)
+    out.variantShown = last !== null && last !== shown && model.selected?.line === last &&
+      model.selected?.group === group;
     // Measuring: two clicks on the map
     let measured: number[] | null = null;
     view.startMeasure((a, b) => { measured = [a.lat, b.lat]; });
