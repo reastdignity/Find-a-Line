@@ -161,9 +161,9 @@ Each is an environment variable `FINDALINE_LIMIT_<NAME>`; nothing is limited by 
 
 | Variable (`FINDALINE_LIMIT_...`) | Public site | Limits |
 | --- | --- | --- |
-| `DOWNLOAD_SECONDS` / `COMPUTE_SECONDS` | | Time of the download / computing phase of a search (it fails with "time limit") |
-| `OSM_SECONDS` | | Time of a download or update of an OpenStreetMap extract |
-| `QUICK_SECONDS` | | Time of an estimate or a profile |
+| `DOWNLOAD_SECONDS` / `COMPUTE_SECONDS` | 3600 / 7200 | Time of the download / computing phase of a search (it fails with "time limit") |
+| `OSM_SECONDS` | 7200 | Time of a download or update of an OpenStreetMap extract |
+| `QUICK_SECONDS` | 120 | Time of an estimate or a profile (the page waits at most this long for each one ahead of it and its own, plus 30 s, at most 10 min) |
 | `KEEP_EVENTS_DAYS` | 90 (also locally) | Days the messages and progress of a finished search are kept |
 | `BUFFER_MAX` | 500 | Largest `--buffer`, m |
 | `MAX_LENGTH_MAX` | 2000 | Largest `--max-length`, m |
@@ -171,8 +171,11 @@ Each is an environment variable `FINDALINE_LIMIT_<NAME>`; nothing is limited by 
 | `SLOPE_THRESHOLD_MIN` | 30 | Smallest `--slope-threshold`, degrees |
 | `GROUP_DISTANCE_MIN_RES` | 2 | Smallest `--group-distance`, in multiples of the resolution |
 | `ORTHO_DETAIL_MAX` | 50 | Largest `--ortho-detail` |
+| `RADIUS_MAX` | 3500 | Largest `--radius`, m |
+| `RESOLUTION_MAX` | 30 | Largest `--resolution` (also the data's own when none is given), m |
 | `REGION_KM2_MAX` | 2500 | Largest bounding box of a `--within` box or of a named OpenStreetMap area, km² (checked before OpenStreetMap is asked for the coastline or cliffs in it) |
-| `AREA_KM2_MAX` | 50 | Largest search area, km² |
+| `AREA_KM2_MAX` | 50 | Largest search area (a circle's too: π × radius²), km² |
+| `BBOX_KM_MAX` | 75 | Longest side of the bounding box of a search (its area, then its grid with the margin), km; checked before any service is asked for data in it |
 | `GRID_MPX_MAX` | 36 | Most pixels of the grid of a circle, or of a tile of an area with its overlap, in millions (about 100 bytes of memory each; the tiles are made smaller to fit) |
 | `TILES_MAX` | 300 | Most tiles over the bounding box of an area |
 | `ANCHORS_MAX` | 3000000 | Most anchors of a grid or a tile |
@@ -184,12 +187,14 @@ Each is an environment variable `FINDALINE_LIMIT_<NAME>`; nothing is limited by 
 | `JOBS_DAY_MAX` | 20 | Searches a user may start in 24 hours (*run again* counts too) |
 | `KM2_DAY_MAX` | 250 | km² of the search areas of a user in 24 hours (counted by the worker once it knows the area, circles too) |
 | `RUNS_GB_MAX` | 5 | GB of a user's saved runs; no new search above it (*delete* in *Runs* frees it) |
+| `DOWNLOAD_MB_DAY_MAX` | 10000 | MB a user's searches may download in 24 hours: the estimate of each (the tiles not cached yet), counted when its download starts |
 | `NOMINATIM_DAY_MAX` | 50 | Requests to Nominatim not answered from its cache (`osm:` areas, run names, countries) of a user's searches, estimates and profiles in 24 hours |
-| `ESTIMATE_RATE` / `PROFILE_RATE` | `20/minute;300/hour` / `30/minute;500/hour` | Estimates / profiles a user may ask for (the notation of the `limits` library) |
+| `ESTIMATE_RATE` / `PROFILE_RATE` | `20/minute;300/hour` / `30/minute;500/hour` | Estimates / profiles a user may ask for (the notation of the `limits` library); one estimate or profile of a user waits at a time |
+| `JOB_RATE` | `10/minute;60/hour` | Requests to start a search a user may send, refused ones too |
 | `QUEUE_MAX` | 50 | Searches waiting or running on the site at once (everyone) |
-| `FREE_DISK_GB_MIN` | 20 | No new searches while the data folder's disk has less free space, GB (everyone) |
+| `FREE_DISK_GB_MIN` | 20 | No new searches while the data folder's disk has less free space, GB (everyone); a search fails when it is short before its download or its computing |
 
-On the public site there are three kinds of accounts. A *user* has all the limits above. An administrator can make a user *without limits*: the limits on options, the search limits, the quotas and the rates do not apply to them, and they may set the options of `NOT_ALLOWED`; they still see only their own searches and runs, and have no administrator's rights. *Administrators* are without limits too. The time limits, `QUEUE_MAX` and `FREE_DISK_GB_MIN` apply to everyone. The sources `nasadem` (it uses the server's OpenTopography key) and `malta2012` (its licence is not settled) are offered to administrators only. A profile computed on a map of the public site must lie in the run's area (with a margin of its `--max-length`) and be at most `--max-length` long.
+On the public site there are three kinds of accounts. A *user* has all the limits above. An administrator can make a user *without limits*: the limits on options, the search limits, the quotas and the rates do not apply to them, and they may set the options of `NOT_ALLOWED`; they still see only their own searches and runs, and have no administrator's rights. *Administrators* are without limits too. The time limits, `QUEUE_MAX` and `FREE_DISK_GB_MIN` apply to everyone. The sources `nasadem` (it uses the server's OpenTopography key) and `malta2012` (its licence is not settled) are offered to administrators only. A profile computed on a map of the public site must lie in the run's area (with a margin of its `--max-length`) and be at most `--max-length` long; on runs from `nasadem` or `malta2012` (demo runs) only administrators compute profiles.
 
 Several places at once: give `--point LAT,LON` (WGS84) once per place, optionally with a name for the run, `--point LAT,LON,NAME`. They are searched one after another with the same options, and each is saved as its own run. Example: `--point 50.15595,19.75627,"Żabi Koń" --point 50.17332,19.74092`
 
