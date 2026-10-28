@@ -25,6 +25,7 @@ from fastapi.testclient import TestClient  # noqa: E402
 
 TOKEN = "test-token"
 URL = "https://lines.example.org"
+LOCAL = "http://127.0.0.1:8765"  # the local app's own host (it refuses TestClient's "testserver")
 SETTINGS = {"FINDALINE_PUBLIC_URL": URL, "FINDALINE_TRUSTED_PROXY": "172.30.0.2",
             "FINDALINE_CONTACT": "admin@example.org"}
 ADMIN = ("github", "1")  # FINDALINE_ADMINS=github:1
@@ -1078,7 +1079,7 @@ def test_profiles_and_deleting_runs(run_people, tmp_path):
     assert a.delete(f"/api/runs/{RUN_A}").status_code == 200
     assert not (tmp_path / "runs" / RUN_A).exists() and jobs.run(RUN_A) is None
     assert a.get(f"/runs/{RUN_A}/map.html").status_code == 404 and a.get("/api/runs").json()["runs"] == []
-    with TestClient(web.create_app(str(tmp_path), token=TOKEN, start_scheduler=False)) as local:
+    with TestClient(web.create_app(str(tmp_path), token=TOKEN, start_scheduler=False), base_url=LOCAL) as local:
         assert local.delete(f"/api/runs/{RUN_B}", headers={"x-findaline-token": TOKEN}).status_code == 404
     assert (tmp_path / "runs" / RUN_B).exists()
 
@@ -1125,7 +1126,7 @@ def test_admin_tab(run_people, tmp_path):
     assert admin.post(f"/api/runs/{RUN_A}/demo", json={"demo": True}).status_code == 200
     assert {r["run_id"]: r for r in admin.get("/api/admin/runs").json()["runs"]}[RUN_A]["visibility"] == "demo"
     assert anonymous.get(f"/runs/{RUN_A}/map.html").status_code == 200
-    with TestClient(web.create_app(str(tmp_path), token=TOKEN, start_scheduler=False)) as local:
+    with TestClient(web.create_app(str(tmp_path), token=TOKEN, start_scheduler=False), base_url=LOCAL) as local:
         assert local.get("/api/admin/users").status_code == 404 and local.get("/api/admin/status").status_code == 404
 
 
@@ -1189,7 +1190,7 @@ def test_audit_log(run_people, tmp_path, providers):
     assert len(audit.Audit(str(tmp_path)).entries()) == count - 1
     local_dir = tmp_path / "local"
     local_dir.mkdir()
-    with TestClient(web.create_app(str(local_dir), token=TOKEN, start_scheduler=False)) as local:
+    with TestClient(web.create_app(str(local_dir), token=TOKEN, start_scheduler=False), base_url=LOCAL) as local:
         local.post("/api/jobs", json=request, headers={"x-findaline-token": TOKEN})
     assert not (local_dir / "audit.sqlite").exists()
 
@@ -1427,7 +1428,7 @@ def test_databases_get_the_tiers_and_usage(tmp_path, account_settings):
 
 def test_local_headers(tmp_path):
     """The local app sends the same security headers and still takes requests without an Origin."""
-    with TestClient(web.create_app(str(tmp_path), token=TOKEN, start_scheduler=False)) as client:
+    with TestClient(web.create_app(str(tmp_path), token=TOKEN, start_scheduler=False), base_url=LOCAL) as client:
         response = client.get("/api/schema")
         assert response.status_code == 200
         assert response.headers["referrer-policy"] == "strict-origin-when-cross-origin"
@@ -1617,6 +1618,53 @@ def test_blocking_cancels_the_jobs(tmp_path, settings, account_settings, provide
         client.close()
 
 
+def test_odd_input_is_no_server_error(tmp_path, settings, account_settings, providers, run_people):
+    """A non-ASCII token (header or the logout form) is a wrong token, not a 500 (review A, 4); the
+    local app takes only its own hosts (review A, 8); /runs//<run>/... and /s//<token>/... are 404,
+    not the run with a path the logs do not mask."""
+    a = run_people["a"]
+    client = TestClient(a.app, base_url=URL, raise_server_exceptions=False)
+    client.headers["origin"] = URL
+    client.cookies.set(ac.SESSION_COOKIE, session_of(tmp_path, account_settings, "pending")[1],
+                       domain="lines.example.org")
+    answer = client.post("/api/jobs", json={"params": POINT}, headers={"x-findaline-token": b"\xe9"})
+    assert answer.status_code == 403
+    form = client.post("/logout", content="csrf=%C3%A9", headers={"content-type": "application/x-www-form-urlencoded"})
+    assert form.status_code == 403
+    client.close()
+    (tmp_path / "local").mkdir()
+    with TestClient(web.create_app(str(tmp_path / "local"), token=TOKEN, start_scheduler=False),
+                    base_url="http://testserver") as local:
+        assert local.get("/").status_code == 400
+    assert a.get(f"/runs/{RUN_A}/data.js").status_code == 200
+    assert a.get(f"/runs//{RUN_A}/data.js").status_code == 404
+    token = a.post(f"/api/runs/{RUN_A}/share").json()["url"].split("/s/")[1].split("/")[0]
+    anonymous = run_people["anonymous"]
+    assert anonymous.get(f"/s/{token}/data.js").status_code == 200
+    assert anonymous.get(f"/s//{token}/data.js").status_code == 404
+
+
+def test_cache_control(run_people, tmp_path):
+    """no-store for the answers with a user's data, private for the files of runs and share links,
+    revalidation for the rest; the local app the same way (review C, I4)."""
+    a, anonymous = run_people["a"], run_people["anonymous"]
+    token = a.post(f"/api/runs/{RUN_A}/share").json()["url"].split("/s/")[1].split("/")[0]
+    expected = [(a, "/", "no-store"), (anonymous, "/", "no-cache"), (a, "/api/jobs", "no-store"),
+                (anonymous, "/api/jobs", "no-store"), (a, "/runs/runs.js", "no-store"),
+                (a, f"/runs/{RUN_A}/map.html", "private, no-cache"), (a, f"/runs/{RUN_A}/data.js", "private, no-cache"),
+                (anonymous, f"/s/{token}/map.html", "private, no-cache"), (anonymous, "/s/runs.js", "no-cache"),
+                (anonymous, "/runs/_viewer/viewer.js", "no-cache"), (anonymous, "/app/app.js", "no-cache"),
+                (anonymous, "/privacy", "no-cache")]
+    for client, path, value in expected:
+        answer = client.get(path)
+        assert answer.headers["cache-control"] == value, (path, answer.status_code, answer.headers["cache-control"])
+    with TestClient(web.create_app(str(tmp_path), token=TOKEN, start_scheduler=False), base_url=LOCAL) as local:
+        for path, value in (("/", "no-store"), ("/api/schema", "no-store"), (f"/runs/{RUN_A}/map.html",
+                            "private, no-cache"), ("/app/app.js", "no-cache")):
+            answer = local.get(path)
+            assert answer.status_code == 200 and answer.headers["cache-control"] == value, path
+
+
 def test_request_limits(monkeypatch, tmp_path):
     """The public site's limits on request values (each overridable, `none` for no limit) refuse
     values over them and fields it does not allow, and give the form its min/max; locally, and for
@@ -1662,14 +1710,14 @@ def test_request_limits(monkeypatch, tmp_path):
     local = {f["name"]: f for f in web.schema()}
     assert local["max_length"]["max"] is None and "threads" in local
 
-    with TestClient(web.create_app(str(tmp_path), token=TOKEN, start_scheduler=False, limits=limits)) as client:
+    with TestClient(web.create_app(str(tmp_path), token=TOKEN, start_scheduler=False, limits=limits), base_url=LOCAL) as client:
         headers = {"x-findaline-token": TOKEN}
         response = client.post("/api/jobs", json={"params": {**point, "max_length": 2500}}, headers=headers)
         assert response.status_code == 400 and "at most 2000" in response.text
         assert client.post("/api/estimate", json={"params": {**point, "threads": 2}}, headers=headers).status_code == 400
         names = {f["name"] for f in client.get("/api/schema").json()["fields"]}
         assert "threads" not in names
-    with TestClient(web.create_app(str(tmp_path), token=TOKEN, start_scheduler=False)) as client:
+    with TestClient(web.create_app(str(tmp_path), token=TOKEN, start_scheduler=False), base_url=LOCAL) as client:
         assert "threads" in {f["name"] for f in client.get("/api/schema").json()["fields"]}  # locally all
 
 

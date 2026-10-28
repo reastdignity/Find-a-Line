@@ -65,7 +65,7 @@ QUICK_WAIT_MAX = 600
 QUICK_WAIT_LOCAL = 3600
 NO_WORKER = "the worker is not running (findaline.py worker, or findaline.py web without --no-worker)"
 APP_DIST = os.path.join(os.path.dirname(os.path.abspath(__file__)), "viewer", "dist")
-LOCAL_HOSTS = ["127.0.0.1", "localhost", "testserver"]  # testserver: FastAPI's TestClient
+LOCAL_HOSTS = ["127.0.0.1", "localhost"]  # tests use them too (TestClient's base_url)
 GRACEFUL_SECONDS = 5    # open event streams are closed this long after a stop
 KEEP_ALIVE_SECONDS = 5  # an idle connection is closed after it
 # Headers of every answer, in both modes. The viewer and the app need no inline scripts or
@@ -247,8 +247,8 @@ class RunFiles(StaticFiles):
         from starlette.requests import Request
         root = scope.get("root_path", "")
         route = scope["path"][len(root):] if scope["path"].startswith(root) else scope["path"]
-        parts = route.lstrip("/").split("/")
-        if len(parts) != 2 or not all(SAFE_PART.fullmatch(part) or part == VIEWER for part in parts):
+        parts = route.split("/")[1:]  # "/<first>/<file>": an empty part ("//") is no path of ours
+        if not route.startswith("/") or len(parts) != 2 or not all(SAFE_PART.fullmatch(part) or part == VIEWER for part in parts):
             raise StarletteHTTPException(404)
         first, name = parts
         if first != VIEWER:
@@ -351,7 +351,8 @@ def create_app(data_dir: str, token: Optional[str] = None, port: int = PORT, sta
     def csrf_ok(request: Request, given: Optional[str]) -> bool:
         """Whether a token sent with a change is the page's: the session's (public) or the app's (local)."""
         expected = (signed_in(request) or (None, None))[1] if public else token
-        return bool(expected) and given is not None and secrets.compare_digest(given, expected)
+        # compare_digest takes ASCII text only: anything else is not our token (and no error)
+        return bool(expected) and given is not None and given.isascii() and secrets.compare_digest(given, expected)
 
     @app.middleware("http")
     async def guard(request: Request, call_next):
@@ -370,10 +371,22 @@ def create_app(data_dir: str, token: Optional[str] = None, port: int = PORT, sta
         else:
             response = await call_next(request)
         response.headers.update(SECURITY_HEADERS)
-        # The viewer and the app change with the code, run data with every run: always revalidate
-        # (otherwise a browser may keep an old viewer.js next to a new data.js)
-        response.headers.setdefault("Cache-Control", "no-cache")
+        response.headers["Cache-Control"] = cache_control(request, path)
         return response
+
+    def cache_control(request: Request, path: str) -> str:
+        """Answers with a user's data are not stored: the API, the list of runs and the page with its
+        token (locally always; on the public site when signed in). The files of runs and share links
+        are private (no shared cache) and revalidated. The rest (the app, the viewer, the public
+        pages) is revalidated too: the viewer and the app change with the code, run data with every
+        run (a browser must not keep an old viewer.js next to a new data.js)."""
+        if path.startswith("/api/") or path == "/runs/runs.js" or (
+                path == "/" and (not public or getattr(request.state, "signed_in", None))):
+            return "no-store"
+        if path.startswith(("/runs/", "/s/")) and not path.startswith((f"/runs/{VIEWER}/", f"/s/{VIEWER}/")) \
+                and path != "/s/runs.js":
+            return "private, no-cache"
+        return "no-cache"
 
     if public:
         from starlette.middleware.sessions import SessionMiddleware

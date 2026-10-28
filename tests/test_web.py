@@ -20,12 +20,13 @@ pytest.importorskip("httpx2")
 from fastapi.testclient import TestClient  # noqa: E402
 
 TOKEN = "test-token"
+LOCAL = "http://127.0.0.1:8765"  # the local app's own host (it refuses TestClient's "testserver")
 
 
 @pytest.fixture
 def client(tmp_path):
     app = web.create_app(str(tmp_path), token=TOKEN, start_scheduler=False)
-    with TestClient(app) as c:
+    with TestClient(app, base_url=LOCAL) as c:
         yield c
 
 
@@ -300,7 +301,7 @@ def test_worker_leases(tmp_path):
     assert jobs.get(ids["alive"])["status"] == "computing"
 
     app = web.create_app(str(tmp_path), token=TOKEN)  # its own worker in a thread
-    with TestClient(app) as client:
+    with TestClient(app, base_url=LOCAL) as client:
         assert client.get("/api/jobs").json()["worker"]
         assert app.state.scheduler.worker_id in {r["id"] for r in jobs._db().execute("SELECT id FROM workers")}
         assert client.delete(f"/api/jobs/{ids['alive']}", headers={"x-findaline-token": TOKEN}).status_code == 200
@@ -377,7 +378,7 @@ def test_worker_process(tmp_path, monkeypatch):
             assert _wait(jobs, job, ("downloading",))["status"] == "downloading"
             external = jobs.get(job)["worker_id"]
             for _ in range(2):  # the web server restarted, with its own worker
-                with TestClient(web.create_app(str(tmp_path), token=TOKEN)) as client:
+                with TestClient(web.create_app(str(tmp_path), token=TOKEN), base_url=LOCAL) as client:
                     assert client.get("/api/jobs").json()["worker"]
             assert jobs.get(job)["status"] == "downloading" and jobs.get(job)["worker_id"] == external
             deadline = time.time() + 60
@@ -386,7 +387,7 @@ def test_worker_process(tmp_path, monkeypatch):
             before = _lanes(worker.pid)
             assert len(before) == 2
 
-            with TestClient(web.create_app(str(tmp_path), token=TOKEN, start_scheduler=False)) as client:
+            with TestClient(web.create_app(str(tmp_path), token=TOKEN, start_scheduler=False), base_url=LOCAL) as client:
                 assert client.delete(f"/api/jobs/{job}", headers={"x-findaline-token": TOKEN}).status_code == 200
             assert _wait(jobs, job, ("cancelled", "failed"), 30)["status"] == "cancelled"
             assert not os.path.exists(jobs.folder(job))  # work/jobs/<job>/download removed
@@ -428,7 +429,7 @@ def test_quick_lane(tmp_path, monkeypatch):
     task over the time limit gets its process killed, and a new one answers the next task."""
     headers = {"x-findaline-token": TOKEN}
     hanging = {"params": {"area": "coast", "within": "osm:Nowhere at all"}}  # Nominatim never answers
-    with TestClient(web.create_app(str(tmp_path), token=TOKEN, start_scheduler=False)) as client:
+    with TestClient(web.create_app(str(tmp_path), token=TOKEN, start_scheduler=False), base_url=LOCAL) as client:
         response = client.post("/api/estimate", json=hanging, headers=headers)
         assert response.status_code == 503 and "worker is not running" in response.text
     with _black_hole() as proxy:
@@ -438,7 +439,7 @@ def test_quick_lane(tmp_path, monkeypatch):
         scheduler = Scheduler(Jobs(str(tmp_path)), limits=Limits(quick_seconds=3))
         scheduler.start()
         try:
-            with TestClient(web.create_app(str(tmp_path), token=TOKEN, start_scheduler=False)) as client:
+            with TestClient(web.create_app(str(tmp_path), token=TOKEN, start_scheduler=False), base_url=LOCAL) as client:
                 while scheduler.quick is None:
                     time.sleep(0.1)
                 first = scheduler.quick.pid
@@ -465,7 +466,7 @@ def test_quick_wait_ends(tmp_path, monkeypatch):
     headers = {"x-findaline-token": TOKEN}
     point = {"params": {"lat": 50.1, "lon": 19.7}}
     app = web.create_app(str(tmp_path), token=TOKEN, start_scheduler=False, limits=Limits(quick_seconds=0.5))
-    with TestClient(app) as client:
+    with TestClient(app, base_url=LOCAL) as client:
         ahead = jobs.quick_add("estimate", {})  # one task ahead: 2 x 0.5 + 0.5 s
         jobs.quick_claim("busy-worker")
         started = time.time()
@@ -611,7 +612,7 @@ def test_profile_on_demand(tmp_path, monkeypatch):
     run_id = _clip_run(tmp_path, monkeypatch)
     rows = _lines_of(tmp_path, run_id)
     app = web.create_app(str(tmp_path), token=TOKEN)  # profiles come from the worker's quick lane
-    with TestClient(app) as client:
+    with TestClient(app, base_url=LOCAL) as client:
         for row in rows[:3]:
             line = ",".join(str(v) for v in row[:4])
             assert client.get(f"/api/profile?run={run_id}&line={line}").status_code == 403  # header needed
@@ -879,7 +880,7 @@ def test_app_counts_and_clears_areas(tmp_path):
     (folder / "stubs.js").write_text(APP_STUBS, encoding="utf-8")
     (folder / "test.js").write_text(APP_SCRIPT, encoding="utf-8")
     app = web.create_app(str(tmp_path), token=TOKEN, start_scheduler=False)
-    with TestClient(app) as client:
+    with TestClient(app, base_url=LOCAL) as client:
         page = client.get("/").text
     (folder / "index.html").write_text(page.replace(
         '<script src="/app/app.js"></script>',
@@ -957,7 +958,7 @@ def test_app_reads_area_files(tmp_path):
     (folder / "stubs.js").write_text(APP_STUBS, encoding="utf-8")
     (folder / "test.js").write_text("const FILES = " + json.dumps(AREA_FILES) + ";\n" + FILES_SCRIPT, encoding="utf-8")
     app = web.create_app(str(tmp_path), token=TOKEN, start_scheduler=False)
-    with TestClient(app) as client:
+    with TestClient(app, base_url=LOCAL) as client:
         page = client.get("/").text
         assert client.post("/api/area-file", headers={"x-findaline-token": TOKEN}).status_code in (404, 405)
     (folder / "index.html").write_text(page.replace(
