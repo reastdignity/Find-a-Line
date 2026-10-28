@@ -1104,6 +1104,97 @@ def test_admin_tab(run_people, tmp_path):
         assert local.get("/api/admin/users").status_code == 404 and local.get("/api/admin/status").status_code == 404
 
 
+def test_audit_log(run_people, tmp_path, providers):
+    """The audit log (audit.sqlite) records sign-ups and sign-ins, searches and cancels, share links,
+    deletions, the demo flag, administrators' actions and refusals by a limit (the web server's and
+    the worker's), with user ids and no IP addresses; the worker's housekeeping deletes the events
+    older than 90 days; the local app keeps none."""
+    import sqlite3
+
+    import audit
+    from jobs import Jobs, QuotaExceeded, Scheduler
+    a, admin = run_people["a"], run_people["admin"]
+    ids = run_people["ids"]
+    request = {"params": {"lat": 50.1, "lon": 19.7, "radius": 100}, "geometry": None}
+    visitor = TestClient(a.app, base_url=URL)
+    assert sign_in(visitor, providers, {"id": 77, "login": "newcomer"}).status_code == 303
+    assert sign_in(visitor, providers, {"id": 77, "login": "newcomer"}).status_code == 303
+    job = a.post("/api/jobs", json=request).json()["id"]
+    a.post("/api/jobs", json=request)
+    assert a.post("/api/jobs", json=request).status_code == 429  # at most two at once
+    assert admin.delete(f"/api/jobs/{job}").status_code == 200
+    a.post(f"/api/runs/{RUN_A}/share")
+    a.post(f"/api/runs/{RUN_A}/share")
+    a.delete(f"/api/runs/{RUN_A}/share")
+    admin.post(f"/api/runs/{RUN_B}/demo", json={"demo": True})
+    admin.post(f"/api/admin/users/{ids['pending']}", json={"status": "approved"})
+    admin.post(f"/api/admin/users/{ids['b']}", json={"unlimited": True})
+    admin.post(f"/api/admin/users/{ids['b']}/revoke")
+    assert a.delete(f"/api/runs/{RUN_A}").status_code == 200
+    jobs = Jobs(str(tmp_path), public=True)  # the worker's: a refusal of its quotas
+    with pytest.raises(QuotaExceeded):
+        jobs.use(ids["a"], "nominatim", 1, 0.5)
+    a.post("/logout")
+
+    log = audit.Audit(str(tmp_path)).entries()
+    actions = [(e["action"], e["user_id"]) for e in log]
+    for expected in [("sign_up", None), ("sign_in", None), ("job_add", ids["a"]), ("refused", ids["a"]),
+                     ("job_cancel", ids["admin"]), ("share_create", ids["a"]), ("share_renew", ids["a"]),
+                     ("share_revoke", ids["a"]), ("run_demo", ids["admin"]), ("user_status", ids["admin"]),
+                     ("user_unlimited", ids["admin"]), ("user_revoke", ids["admin"]), ("run_delete", ids["a"]),
+                     ("sign_out", ids["a"])]:
+        assert any(action == expected[0] and (expected[1] is None or user == expected[1])
+                   for action, user in actions), expected
+    by_action = {e["action"]: e for e in log}
+    assert by_action["sign_up"]["detail"] == {"provider": "github", "status": "pending"}
+    assert by_action["job_cancel"]["detail"] == {"owner": ids["a"]} and by_action["job_cancel"]["target"] == job
+    assert by_action["user_status"]["target"] == str(ids["pending"])
+    refusals = [e["detail"]["reason"] for e in log if e["action"] == "refused"]
+    assert any("at most 2" in r for r in refusals) and any("Nominatim" in r for r in refusals)
+    text = json.dumps(log)
+    assert "testclient" not in text and "127.0.0.1" not in text  # no addresses
+    assert "ip" not in {c[1] for c in sqlite3.connect(tmp_path / "audit.sqlite").execute("PRAGMA table_info(audit)")}
+
+    db = sqlite3.connect(tmp_path / "audit.sqlite")
+    db.execute("INSERT INTO audit (at, action) VALUES ('2020-01-01T00:00:00+00:00', 'sign_in')")
+    db.commit()
+    db.close()
+    count = len(audit.Audit(str(tmp_path)).entries())
+    Scheduler(jobs).housekeeping()
+    assert len(audit.Audit(str(tmp_path)).entries()) == count - 1
+    local_dir = tmp_path / "local"
+    local_dir.mkdir()
+    with TestClient(web.create_app(str(local_dir), token=TOKEN, start_scheduler=False)) as local:
+        local.post("/api/jobs", json=request, headers={"x-findaline-token": TOKEN})
+    assert not (local_dir / "audit.sqlite").exists()
+
+
+def test_privacy_and_about_pages(run_people):
+    """The privacy and about pages: for anyone, server-rendered (no script, no inline style), linked
+    from the anonymous page and the app; privacy states what is stored, for how long, that
+    administrators open private runs and that orthophoto tiles are open, with the contact; about
+    names every source's credits and OpenStreetMap."""
+    import sources as src
+    anonymous, a = run_people["anonymous"], run_people["a"]
+    privacy = anonymous.get("/privacy")
+    about = anonymous.get("/about")
+    for page in (privacy, about):
+        assert page.status_code == 200 and "<script" not in page.text and "style=" not in page.text
+        assert "<style" not in page.text and "admin@example.org" in page.text
+    text = privacy.text
+    for fact in ("display name", "SHA-256", "30 days", "7 days", "90 days", "Audit log", "open every run",
+                 "orthophoto tiles", "stores none", "No analytics"):
+        assert fact in text, fact
+    for source in src.SOURCES.values():
+        for credit in source.credits:
+            assert web.html.escape(credit.data) in about.text, credit.data
+    assert "OpenStreetMap contributors" in about.text and "ODbL" in about.text
+    page = anonymous.get("/").text
+    assert "href=\"/privacy\"" in page and "href=\"/about\"" in page
+    bundle = a.get("/app/app.js").text
+    assert "/privacy" in bundle and "/about" in bundle
+
+
 def _edge(url: str, profile) -> str:
     """The DOM of a page after headless Edge ran its scripts (its own profile folder)."""
     import subprocess
@@ -1176,8 +1267,9 @@ def test_signed_in_app_and_shared_map_in_edge(tmp_path, clip_run, account_settin
     (stubs / "app_check.js").write_text(APP_CHECK, encoding="utf-8")
     (stubs / "csp_stub.js").write_text(CSP_STUB, encoding="utf-8")
     (stubs / "share_check.js").write_text(SHARE_CHECK, encoding="utf-8")
-    monkeypatch.setattr(web, "SIGNIN_HTML", web.SIGNIN_HTML.replace(
-        "</head>", '<script src="/test/csp_stub.js"></script></head>'))
+    for name in ("SIGNIN_HTML", "PAGE_HTML"):  # the anonymous, privacy and about pages: count violations
+        monkeypatch.setattr(web, name, getattr(web, name).replace(
+            "</head>", '<script src="/test/csp_stub.js"></script></head>'))
     monkeypatch.setattr(web, "APP_HTML", web.APP_HTML.replace(
         '<script src="/app/app.js"></script>',
         '<script src="/test/app_stubs.js"></script><script src="/app/app.js"></script>'
@@ -1231,6 +1323,8 @@ def test_signed_in_app_and_shared_map_in_edge(tmp_path, clip_run, account_settin
         Jobs(str(data)).set_visibility(RUN_A, "demo")  # a demo: the anonymous page and the map
         dom = _edge(f"{site}/", tmp_path / "edge-visitor")
         assert f"/runs/{RUN_A}/map.html" in dom and _violations(dom) == []
+        dom = _edge(f"{site}/privacy", tmp_path / "edge-visitor")
+        assert "What this site stores" in dom and _violations(dom) == []
         dom = _edge(f"{site}/runs/{RUN_A}/map.html", tmp_path / "edge-visitor")
         result = json.loads(re.search(r'<pre id="result">(.*?)</pre>', dom, re.S).group(1).replace("&quot;", '"'))
         assert result["map"] and result["app"] == {"profiles": False} and not result["measure"], result

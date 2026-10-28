@@ -56,3 +56,9 @@ html, body { width: 100%; height: 100%; margin: 0; padding: 0; overflow: hidden;
 .fa-admin-tools { display: flex; flex-wrap: wrap; gap: 8px; align-items: baseline; margin-top: 2px; }
 .fa-badge.fa-user-pending { background: #fff1d6; color: #8a5a00; }
 .fa-badge.fa-user-blocked { background: #fbe0e3; color: #b00020; }
+.fa-links { font-size: 12px; }
+.fa-links a { color: #555; margin: 0 4px; }
+.fa-footer { margin-top: 2em; padding-top: 6px; border-top: 1px solid #ddd; color: #777; font-size: 12px; }
+.fa-page { max-width: 46em; }
+.fa-facts dt { font-weight: bold; margin-top: 8px; }
+.fa-facts dd { margin: 2px 0 0 0; }

@@ -100,6 +100,8 @@ function App() {
     <div class="fa-side">
       {!user.local && <div class="fa-user">
         <span>{user.name}{user.admin ? " (administrator)" : ""}</span>
+        <span class="fa-links"><a href="/privacy" target="_blank">privacy</a>{" "}
+          <a href="/about" target="_blank">about / data licences</a></span>
         <button class="fa-small" onClick={() => api.logout().finally(() => { location.href = "/"; })}>sign out</button>
       </div>}
       <div class="fa-tabs">

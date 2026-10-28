@@ -144,6 +144,12 @@ class Accounts:
         return [{**self._user(r).public(), "id": r["id"], "subject": r["subject"], "created": r["created"],
                  "last_login": r["last_login"], "sessions": r["sessions"]} for r in rows]
 
+    def known(self, provider: str, subject: str) -> bool:
+        """Whether an identity has an account (a sign-in, not a sign-up)."""
+        with self._db() as db:
+            return db.execute("SELECT 1 FROM users WHERE provider = ? AND subject = ?",
+                              (provider, subject)).fetchone() is not None
+
     def ensure_user(self, provider: str, subject: str) -> int:
         """The id of a user, made (approved, without a name) if it has never signed in."""
         with self._db() as db:

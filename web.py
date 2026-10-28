@@ -49,6 +49,7 @@ from starlette.staticfiles import StaticFiles
 
 import accounts as ac
 import cache
+from audit import KEEP_DAYS as AUDIT_DAYS, Audit
 import params as pm
 from jobs import TICK, Jobs, QuotaExceeded, Scheduler, search_params
 from settings import AccountSettings, Limits, PublicSettings
@@ -188,11 +189,12 @@ def title(p: pm.SearchParams) -> str:
 
 
 # The routes anyone may request in the public mode (signing in and out, the page, which shows a
-# sign-in page with the demo runs to visitors, its assets, and the list of runs of the maps, which
-# gives a visitor the demo runs only); every other route depends on current_user,
+# sign-in page with the demo runs to visitors, its assets, the list of runs of the maps, which
+# gives a visitor the demo runs only, the privacy and about pages); every other route depends on current_user,
 # require_admin or run_access (tests/test_public.py checks it)
 PUBLIC_ROUTES = {"/", "/login/{provider}", "/auth/{provider}", "/logout", "/app", "/runs/index.html",
-                 "/runs/runs.js", "/s/runs.js", "/s/index.html", "/cache/{path:path}"}
+                 "/runs/runs.js", "/s/runs.js", "/s/index.html", "/cache/{path:path}", "/privacy", "/about"}
+SESSION_SWEEP = 6 * 3600  # seconds between deletions of expired sessions (the web process, public site)
 SHARE_BYTES = 32  # the random part of a share link
 # Sources for administrators only on the public site: nasadem needs the server's OpenTopography key,
 # malta2012's licence is not settled (sources.MALTA_CREDITS)
@@ -257,12 +259,27 @@ def create_app(data_dir: str, token: Optional[str] = None, port: int = PORT, sta
     jobs = Jobs(data_dir)
     scheduler = Scheduler(jobs, limits=limits)
     users = ac.Accounts(data_dir, accounts) if public else None
+    audit = Audit(data_dir) if public else None  # the local app keeps no audit log
+
+    def record(action: str, user: Optional[ac.User] = None, target=None, detail: Optional[Dict] = None):
+        """An event of the audit log (the public site only; audit.py)."""
+        if audit is not None:
+            audit.log(action, user.id if user else None, None if target is None else str(target), detail)
 
     @contextlib.asynccontextmanager
     async def lifespan(_):
         if start_scheduler:
             scheduler.start()
+        sweep = None
+        if public:
+            async def forget_sessions():  # expired and idle sessions (the worker cleans the rest up)
+                while True:
+                    await run_in_threadpool(users.forget_sessions)
+                    await asyncio.sleep(SESSION_SWEEP)
+            sweep = asyncio.create_task(forget_sessions())
         yield
+        if sweep:
+            sweep.cancel()
         scheduler.stop()
 
     app = FastAPI(title="Find-a-Line", docs_url=None, redoc_url=None, openapi_url=None, lifespan=lifespan)
@@ -364,8 +381,12 @@ def create_app(data_dir: str, token: Optional[str] = None, port: int = PORT, sta
             # and for Google checks the ID token
             oauth_token = await client.authorize_access_token(request)
             subject, name = await ac.identity(client, provider, oauth_token)
+            new = not await run_in_threadpool(users.known, provider, subject)
             user = await run_in_threadpool(users.sign_in, provider, subject, name)
+            await run_in_threadpool(record, "sign_up" if new else "sign_in", user, None,
+                                    {"provider": provider, "status": user.status})
         except ac.SignupClosed:
+            await run_in_threadpool(record, "sign_up_refused", None, None, {"provider": provider})
             return HTMLResponse(signin_page(accounts.providers, note="New accounts are not accepted."), 403)
         except (OAuthError, JoseError, ValueError, KeyError, httpx2.HTTPError) as e:  # the ID token's checks: JoseError
             request.session.clear()
@@ -389,8 +410,11 @@ def create_app(data_dir: str, token: Optional[str] = None, port: int = PORT, sta
         given = request.headers.get("x-findaline-token")
         if given is None and int(request.headers.get("content-length") or 0) <= 4096:
             given = (parse_qs((await request.body())[:4096].decode("utf-8", "replace")).get("csrf") or [None])[0]
-        if signed_in(request) and not csrf_ok(request, given):
+        found = signed_in(request)
+        if found and not csrf_ok(request, given):
             raise HTTPException(403, "missing or wrong token")
+        if found:
+            await run_in_threadpool(record, "sign_out", found[0])
         await run_in_threadpool(users.end_session, request.cookies.get(ac.SESSION_COOKIE))
         response = RedirectResponse("/", 303)
         response.delete_cookie(ac.SESSION_COOKIE, path="/", secure=True, httponly=True, samesite="lax")
@@ -514,15 +538,19 @@ def create_app(data_dir: str, token: Optional[str] = None, port: int = PORT, sta
         """429 when a limited user asks for more estimates or profiles than Limits allows (the limits
         library, in the memory of this process)."""
         if user.limited and kind in rates and not all([rate_limiter.hit(r, kind, str(user.id)) for r in rates[kind]]):
+            record("refused", user, None, {"reason": f"{kind} rate", "status": 429})
             raise HTTPException(429, f"too many {kind}s: try again in a minute")
 
-    def queue(request: Dict, title: str, user: ac.User) -> str:
+    def queue(request: Dict, title: str, user: ac.User, again: Optional[str] = None) -> str:
         """Add a job after the quotas and safeguards (Jobs.admission, in the insert's transaction)."""
         try:
-            return jobs.add(request, title, user.id, check=jobs.admission(user.id, limits, user.limited),
-                            unlimited=unlimited(user))
+            job_id = jobs.add(request, title, user.id, check=jobs.admission(user.id, limits, user.limited),
+                              unlimited=unlimited(user))
         except QuotaExceeded as e:
+            record("refused", user, None, {"reason": str(e), "status": e.status})
             raise HTTPException(e.status, str(e))
+        record("job_add", user, job_id, {"title": title, **({"again": again} if again else {})})
+        return job_id
 
     @app.get("/api/schema")
     def get_schema(user: ac.User = Depends(current_user)):
@@ -590,17 +618,18 @@ def create_app(data_dir: str, token: Optional[str] = None, port: int = PORT, sta
         request = json.loads(job["request"])
         if "osm" not in request:
             parse(request, user)  # the limits (or the user's) may have changed since
-        return {"id": queue(request, title, user)}
+        return {"id": queue(request, title, user, again=job["id"])}
 
     @app.get("/api/jobs/{job_id}/events")
     def job_events(job: Dict = Depends(visible_job)):
         return {"events": jobs.events(0, job["id"])}
 
     @app.delete("/api/jobs/{job_id}")
-    def cancel(job: Dict = Depends(visible_job)):
+    def cancel(job: Dict = Depends(visible_job), user: ac.User = Depends(current_user)):
         """A waiting job is cancelled at once, a running one by its worker (which kills its processes)."""
         if not jobs.request_cancel(job["id"]):
             raise HTTPException(409, "the job is not waiting or running")
+        record("job_cancel", user, job["id"], {"owner": job["user_id"]} if job["user_id"] != user.id else None)
         return {"ok": True}
 
     @app.get("/api/events")
@@ -657,26 +686,29 @@ def create_app(data_dir: str, token: Optional[str] = None, port: int = PORT, sta
                          for r in runs_of(user)]}
 
     @app.post("/api/runs/{run}/demo")
-    def set_demo(body: Dict, run: str = Depends(admin_run)):
+    def set_demo(body: Dict, run: str = Depends(admin_run), user: ac.User = Depends(require_admin)):
         """Mark a run as a demo (its map for everyone, also without signing in) or private again:
         {"demo": true|false}; administrators only."""
         if not isinstance(body.get("demo"), bool):
             raise HTTPException(400, "demo: true or false")
         jobs.set_visibility(run, "demo" if body["demo"] else "private")
+        record("run_demo", user, run, {"demo": body["demo"]})
         return {"ok": True}
 
     @app.post("/api/runs/{run}/share")
-    def share_run(run: str = Depends(own_run)):
+    def share_run(run: str = Depends(own_run), user: ac.User = Depends(current_user)):
         """A share link of an own run (the map for anyone who has the link); a new one replaces the old.
         Only its sha256 is kept, so the link is shown this once."""
         if not public:
             raise HTTPException(404, "share links are for the public site")
+        renewed = (jobs.run(run) or {}).get("share_hash") is not None
         token = secrets.token_urlsafe(SHARE_BYTES)
         jobs.set_share(run, ac.digest(token))
+        record("share_renew" if renewed else "share_create", user, run)
         return {"url": f"{public.public_url}/s/{token}/map.html"}
 
     @app.delete("/api/runs/{run}")
-    def delete_run(run: str = Depends(own_run)):
+    def delete_run(run: str = Depends(own_run), user: ac.User = Depends(current_user)):
         """Delete an own run (its folder and row) on the public site; it no longer counts in the quota."""
         if not public:
             raise HTTPException(404, "runs are deleted in the runs folder")
@@ -684,12 +716,14 @@ def create_app(data_dir: str, token: Optional[str] = None, port: int = PORT, sta
             jobs.delete_run(run, runs_dir)
         except OSError:
             raise HTTPException(409, "the run is in use: try again in a moment")
+        record("run_delete", user, run)
         return {"ok": True}
 
     @app.delete("/api/runs/{run}/share")
-    def unshare_run(run: str = Depends(own_run)):
+    def unshare_run(run: str = Depends(own_run), user: ac.User = Depends(current_user)):
         """Revoke the share link of an own run."""
         jobs.set_share(run, None)
+        record("share_revoke", user, run)
         return {"ok": True}
 
     # --- The admin tab (the public site; every route Depends(require_admin)) ---
@@ -723,21 +757,24 @@ def create_app(data_dir: str, token: Optional[str] = None, port: int = PORT, sta
         return {"users": users.listing()}
 
     @app.post("/api/admin/users/{user_id}")
-    def admin_set_user(body: Dict, target: ac.User = Depends(other_user)):
+    def admin_set_user(body: Dict, target: ac.User = Depends(other_user), admin: ac.User = Depends(require_admin)):
         """Approve, block or unblock a user ({"status": "approved"|"blocked"}; blocking ends its sessions)
         or lift its limits ({"unlimited": true|false})."""
         if body.get("status") in ("approved", "blocked"):
             users.set_status(target.id, body["status"])
+            record("user_status", admin, target.id, {"status": body["status"], "was": target.status})
         elif isinstance(body.get("unlimited"), bool):
             users.set_unlimited(target.id, body["unlimited"])
+            record("user_unlimited", admin, target.id, {"unlimited": body["unlimited"]})
         else:
             raise HTTPException(400, "status (approved, blocked) or unlimited (true, false)")
         return {"ok": True}
 
     @app.post("/api/admin/users/{user_id}/revoke")
-    def admin_revoke(target: ac.User = Depends(other_user)):
+    def admin_revoke(target: ac.User = Depends(other_user), admin: ac.User = Depends(require_admin)):
         """End every session of a user (they sign in again)."""
         users.revoke(target.id)
+        record("user_revoke", admin, target.id)
         return {"ok": True}
 
     @app.get("/api/admin/runs")
@@ -836,6 +873,16 @@ def create_app(data_dir: str, token: Optional[str] = None, port: int = PORT, sta
         def share_index():
             return RedirectResponse("/", 303)
 
+        @app.get("/privacy", response_class=HTMLResponse)
+        def privacy():
+            """What the site stores, why and for how long (no script)."""
+            return privacy_page(public.contact, limits.keep_events_days)
+
+        @app.get("/about", response_class=HTMLResponse)
+        def about():
+            """What the site is, and the data it uses with their licences and notices (no script)."""
+            return about_page(public.contact)
+
         app.mount("/s", RunFiles(runs_dir, run_of_link), name="shared")
 
     app.mount("/app", StaticFiles(directory=APP_DIST), name="app")
@@ -878,8 +925,103 @@ SIGNIN_HTML = """<!doctype html>
 <h1>Find-a-Line</h1>
 <p>Finds possible highlines in elevation data.</p>
 {body}
+<p class="fa-footer"><a href="/privacy">Privacy</a> · <a href="/about">About / data licences</a></p>
 </div></body></html>
 """
+
+# The privacy and about pages of the public site (server-rendered, no script, no inline styles)
+PAGE_HTML = """<!doctype html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{title} · Find-a-Line</title>
+<link rel="stylesheet" href="/app/app.css">
+</head><body><div class="fa-signin fa-page">
+<h1>{title}</h1>
+{body}
+<p class="fa-footer"><a href="/">Find-a-Line</a> · <a href="/privacy">Privacy</a> · <a href="/about">About / data licences</a></p>
+</div></body></html>
+"""
+
+
+def privacy_page(contact: str, keep_events_days: Optional[float]) -> str:
+    """What the public site stores, why and for how long (facts of accounts.py, jobs.py, audit.py)."""
+    import jobs as jb
+    e = html.escape
+    events = f"after {keep_events_days:g} days" if keep_events_days else "never automatically"
+    items = [
+        ("Your account", "The sign-in provider (GitHub or Google), its user id for you and your display name there, "
+         "whether an administrator approved or blocked the account or lifted its limits, when it was made and when "
+         "you last signed in. No e-mail address, no password. Why: to sign you in and to give you your searches. "
+         "Kept as long as the account exists."),
+        ("Sessions", f"A random token in a cookie (__Host-findaline); the site stores only its SHA-256 hash, with a "
+         f"token against cross-site requests and when it was made and last used. A session ends when you sign out, "
+         f"after {ac.SESSION_DAYS} days, or after {ac.IDLE_DAYS} days without a visit, and is then deleted. "
+         f"Signing in uses a second, signed cookie for at most {ac.OAUTH_SECONDS // 60} minutes."),
+        ("Searches", f"What you search (the place, the drawn or loaded area, the options), its title and status, "
+         f"and its messages and progress. Why: to run the search and show it to you. The messages are deleted "
+         f"{events} after the search ended; the search itself stays in your queue."),
+        ("Runs", "The results of your searches (lines, maps, parameters, the place's name from OpenStreetMap) and "
+         "their size. Kept until you delete them in Runs. A share link is stored as a SHA-256 hash only; it can be "
+         "renewed or revoked."),
+        ("Quotas", f"How many km² your searches covered and how many uncached Nominatim requests they made, with the "
+         f"time; deleted after {2 * jb.DAY / 86400:g} days. Request rates are counted in memory only."),
+        ("Audit log", f"Sign-ins and sign-ups, approvals and blocks, searches started and cancelled, share links "
+         f"made, renewed and revoked, deleted runs, the demo flag, other administrators' actions and refusals by a "
+         f"limit: the time, the action, the user id and what it concerned. Why: to find abuse and mistakes. "
+         f"Deleted after {AUDIT_DAYS} days."),
+        ("IP addresses", "The application stores none. The reverse proxy in front of it may log requests with "
+         "their addresses to protect the site (its operator's configuration); sign-in requests are counted per "
+         "address in memory only."),
+    ]
+    facts = [
+        "Administrators can see every search and open every run, also private ones (to run the site and to "
+        "help).",
+        "A demo run, marked by an administrator, is open to everyone. The cached orthophoto tiles (copies of "
+        "public services' images, no user data) are open to everyone.",
+        "Searches ask public services from the server: Nominatim and Overpass (OpenStreetMap) and the services "
+        "of the elevation data, with the places of the search, not who you are. Maps in your browser load "
+        "background tiles (OpenStreetMap, OpenTopoMap, Esri, orthophoto services) directly: those services see "
+        "your IP address.",
+        "No analytics, no advertising, no tracking cookies.",
+    ]
+    body = ["<p>What this site stores about you, why, and for how long.</p><dl class='fa-facts'>"]
+    body += [f"<dt>{e(name)}</dt><dd>{e(text)}</dd>" for name, text in items]
+    body.append("</dl><ul>" + "".join(f"<li>{e(text)}</li>" for text in facts) + "</ul>")
+    body.append(f"<p>Questions, or to have your account and data deleted: {e(contact)}.</p>")
+    return PAGE_HTML.format(title="Privacy", body="\n".join(body))
+
+
+def about_page(contact: str) -> str:
+    """What the site is, and the credits and licences of its data (sources.SOURCES, plus OpenStreetMap)."""
+    import sources as src
+    e = html.escape
+
+    def link(text: str, url: str) -> str:
+        return f"<a href='{e(url)}'>{e(text)}</a>" if url.startswith("https://") else e(text)
+    credits = {}
+    for source in src.SOURCES.values():
+        for credit in source.credits + tuple(layer.credit for layer in (source.nmt, source.nmpt)
+                                             if layer is not None and layer.credit is not None):
+            credits.setdefault(credit.data, credit)
+    credits.setdefault(src.WATER_MASK_CREDIT.data, src.WATER_MASK_CREDIT)
+    rows = [f"<li><b>{e(c.data)}</b>: {e(c.attribution)}. Licence: {link(c.licence, c.url)}."
+            + (f" <span class='fa-hint'>{e(c.notice)}</span>" if c.notice else "") + "</li>" for c in credits.values()]
+    orthos = {s.ortho.name: s.ortho.attribution for s in src.SOURCES.values() if s.ortho is not None}
+    body = [
+        "<p>Find-a-Line finds possible highlines in elevation data: anchors on steep ground, every pair checked for "
+        "clearance under the webbing. Its results are suggestions to check on the spot, not safety advice.</p>",
+        "<h2>Elevation data</h2><ul>" + "".join(rows) + "</ul>",
+        "<h2>OpenStreetMap</h2><p>Coastlines, cliffs, named areas and place names: © "
+        "<a href='https://www.openstreetmap.org/copyright'>OpenStreetMap contributors</a>, under the Open Database "
+        "Licence (ODbL 1.0); searched with Nominatim and the Overpass API, extracts from Geofabrik.</p>",
+        "<h2>Orthophotos and background maps</h2><ul>"
+        + "".join(f"<li>{e(name)}: {e(attribution)}</li>" for name, attribution in orthos.items())
+        + "<li>OpenStreetMap tiles: © OpenStreetMap contributors</li><li>OpenTopoMap: © OpenTopoMap (CC-BY-SA)"
+          "</li><li>Esri World Imagery: © Esri and its data providers</li></ul>",
+        "<p>Each run names the data it used in its map and in its ATTRIBUTION.txt; results made from FABDEM may be "
+        "shared only for non-commercial use, under the same licence.</p>",
+        f"<p>Contact: {e(contact)}.</p>",
+    ]
+    return PAGE_HTML.format(title="About / data licences", body="\n".join(body))
 
 
 def demo_list(demos: List[Dict]) -> str:

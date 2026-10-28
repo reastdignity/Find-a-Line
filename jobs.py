@@ -251,10 +251,17 @@ class Jobs:
         with self._write() as db:
             used = self._used(db, user_id, kind)
             if limit is not None and used + amount > limit:
-                raise QuotaExceeded(f"{USAGE[kind]}: {used:.0f} of at most {limit:g} in 24 hours used, "
-                                    f"{amount:.1f} more needed: try again later")
-            db.execute("INSERT INTO usage (user_id, kind, at, amount) VALUES (?, ?, ?, ?)",
-                       (user_id, kind, time.time(), amount))
+                refused = QuotaExceeded(f"{USAGE[kind]}: {used:.0f} of at most {limit:g} in 24 hours used, "
+                                        f"{amount:.1f} more needed: try again later")
+            else:
+                refused = None
+                db.execute("INSERT INTO usage (user_id, kind, at, amount) VALUES (?, ?, ?, ?)",
+                           (user_id, kind, time.time(), amount))
+        if refused is not None:
+            if self.public:  # the audit log of the public site (the worker's refusals)
+                import audit
+                audit.Audit(self.data_dir).log("refused", user_id, None, {"reason": str(refused), "status": 429})
+            raise refused
 
     def forget_usage(self) -> int:
         """Delete what users used before the last two days (the quotas look at 24 hours)."""
@@ -894,6 +901,8 @@ class Scheduler:
         of estimates and profiles (left by a killed quick lane) after a day."""
         data = self.jobs.data_dir
         cache.remove_stale_parts(os.path.join(data, "cache"))
+        import audit
+        audit.purge(data)  # events of the audit log older than audit.KEEP_DAYS
         if self.limits.keep_events_days:
             self.jobs.forget_events(self.limits.keep_events_days)
         self.jobs.forget_quick()
