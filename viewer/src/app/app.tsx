@@ -50,10 +50,11 @@ function Runs() {
   if (!runs.length) return <p class="fa-hint">No saved runs yet.</p>;
   const changed = (id: string, shared: boolean) => setRuns(runs.map((r) => r.id === id ? {...r, shared} : r));
   return <div>{runs.map((r) => <div class="fa-run" key={r.id}>
-    <div><b>{r.name}</b> <span class="fa-hint">{r.created.slice(0, 16).replace("T", " ")}</span></div>
+    <div><b>{r.name}</b> <span class="fa-hint">{r.created.slice(0, 16).replace("T", " ")}</span>
+      {r.demo && <span class="fa-badge" title="an example: its map is open to everyone">demo</span>}</div>
     <div class="fa-hint">{r.summary.spots} spots, {r.summary.lines} lines · {r.description}</div>
     {r.has_map && <a href={`/runs/${encodeURIComponent(r.id)}/map.html`} target="_blank">open map</a>}
-    {sharing && r.has_map && <Share run={r} onChange={(shared) => changed(r.id, shared)} />}
+    {sharing && r.has_map && r.own && <Share run={r} onChange={(shared) => changed(r.id, shared)} />}
   </div>)}</div>;
 }
 

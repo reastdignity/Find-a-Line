@@ -56,6 +56,7 @@ ACTIVE = ("downloading", "computing")
 WAITING = ("queued", "ready")
 FINISHED = ("done", "failed", "cancelled")
 PHASE_STATUS = {"download": "downloading", "compute": "computing"}  # the status each phase works in
+VISIBILITIES = ("private", "demo")  # runs.visibility: the owner's (and administrators'), or everyone's
 INTERRUPTED = ("interrupted: the app was closed (a tiled area resumes where it stopped when it is "
                "started again)")
 # The schema of jobs.sqlite, one step per version (cache.migrate; never change a released step).
@@ -320,6 +321,19 @@ class Jobs:
         with self._db() as db:
             return {r[0] for r in db.execute("SELECT run_id FROM runs WHERE user_id = ? AND share_hash IS NOT NULL",
                                              (user_id,))}
+
+    def set_visibility(self, run_id: str, visibility: str) -> bool:
+        """Who sees a run: "private" (its owner, administrators) or "demo" (everyone, also without
+        signing in); whether the run has a row."""
+        if visibility not in VISIBILITIES:
+            raise ValueError(visibility)
+        with self._db() as db:
+            return bool(db.execute("UPDATE runs SET visibility = ? WHERE run_id = ?", (visibility, run_id)).rowcount)
+
+    def demo_runs(self) -> Set[str]:
+        """The ids of the demo runs."""
+        with self._db() as db:
+            return {r[0] for r in db.execute("SELECT run_id FROM runs WHERE visibility = 'demo'")}
 
     def shared_run(self, share_hash: str) -> Optional[str]:
         """The run of a share link's sha256 (None if no run has it)."""

@@ -52,6 +52,8 @@ export interface RunListed {
   summary: {lines: number; spots: number};
   has_map: boolean;
   shared: boolean;   // has a share link (the public site)
+  own: boolean;      // the user's own run (else a demo run of someone else)
+  demo: boolean;     // a demo run: its map is open to everyone (the public site)
 }
 
 export interface OsmRegion { id: string; name: string; depth: number; downloaded: boolean }

@@ -193,8 +193,8 @@ def test_public_guards(public, providers):
     assert page.status_code == 200 and "Sign in with GitHub" in page.text and "Sign in with Google" in page.text
     assert TOKEN not in page.text and "<script" not in page.text
     assert public.get("/app/app.js").status_code == 200
-    for path in ("/api/schema", "/api/jobs", "/api/events", "/api/runs", "/runs/runs.js",
-                 "/api/profile?run=x&line=1,2,3,4"):
+    assert "FINDALINE_RUNS = [];" in public.get("/runs/runs.js").text  # the demo runs: none
+    for path in ("/api/schema", "/api/jobs", "/api/events", "/api/runs", "/api/profile?run=x&line=1,2,3,4"):
         assert public.get(path).status_code == 401, path
     assert public.get("/docs").status_code == public.get("/nothing").status_code == 404
     headers = {"x-findaline-token": TOKEN, "origin": URL}
@@ -506,7 +506,7 @@ def test_authorization_of_jobs(public, people, tmp_path):
               ("post", "/api/estimate"), ("get", f"/api/jobs/{job_a}"), ("get", f"/api/jobs/{job_a}/events"),
               ("post", f"/api/jobs/{job_a}/again"), ("delete", f"/api/jobs/{job_a}"), ("get", "/api/events"),
               ("get", "/api/osm?lat=50&lon=19"), ("post", "/api/osm"),
-              ("get", "/api/profile?run=x&line=1,2,3,4"), ("get", "/runs/runs.js")]
+              ("get", "/api/profile?run=x&line=1,2,3,4"), ("post", "/api/runs/x/demo")]
     for who, code in DENIED.items():
         for method, path in routes:
             kwargs = {"json": request} if method == "post" else {}
@@ -722,7 +722,7 @@ def test_run_files_behind_access_control(run_people, tmp_path):
     assert [r["id"] for r in runs] == [RUN_A] and "window.FINDALINE_APP = {\"profiles\": true};" in listed.text
     assert {r["id"] for r in json.loads(admin.get("/runs/runs.js").text.split(" = ")[1].split(";\n")[0])} == {RUN_OLD}
     assert [r["id"] for r in a.get("/api/runs").json()["runs"]] == [RUN_A]
-    assert run_people["anonymous"].get("/runs/runs.js").status_code == 401
+    assert "FINDALINE_RUNS = [];" in run_people["anonymous"].get("/runs/runs.js").text  # no demo runs yet
     redirect = a.get("/runs/index.html", follow_redirects=False)
     assert redirect.status_code == 303 and redirect.headers["location"] == "/"
     assert a.get(f"/api/profile?run={RUN_B}&line=1,2,3,4", headers={"x-findaline-profile": "1"}).status_code == 404
@@ -805,6 +805,50 @@ def test_share_links(run_people, tmp_path):
     assert anonymous.get(f"/s/{again}/map.html").status_code == 404
 
 
+def test_demo_runs_and_the_anonymous_page(run_people, tmp_path):
+    """An administrator marks a run as a demo (nobody else may); its files (RUN_FILES only) are then
+    open to everyone, also without an account; visitors get the demo runs in runs.js (no profiles)
+    and on a read-only page with the sign-in links; signed-in users see their own runs and the
+    demos, and share only their own."""
+    a, admin, anonymous, pending = run_people["a"], run_people["admin"], run_people["anonymous"], run_people["pending"]
+    jobs = run_people["jobs"]
+    assert a.post(f"/api/runs/{RUN_B}/demo", json={"demo": True}).status_code == 403
+    assert anonymous.post(f"/api/runs/{RUN_B}/demo", json={"demo": True}).status_code == 401
+    assert admin.post(f"/api/runs/{RUN_B}/demo", json={"demo": "yes"}).status_code == 400
+    assert admin.post("/api/runs/nothing/demo", json={"demo": True}).status_code == 404
+    assert anonymous.get(f"/runs/{RUN_B}/map.html").status_code == 404
+    assert admin.post(f"/api/runs/{RUN_B}/demo", json={"demo": True}).status_code == 200
+    assert jobs.run(RUN_B)["visibility"] == "demo" and jobs.demo_runs() == {RUN_B}
+    for who in ("anonymous", "pending", "blocked", "a"):
+        for name in web.RUN_FILES:
+            assert run_people[who].get(f"/runs/{RUN_B}/{name}").status_code == 200, (who, name)
+        assert run_people[who].get(f"/runs/{RUN_B}/run.json").status_code == 404, who
+        assert run_people[who].get(f"/runs/{RUN_B}/progress.json").status_code == 404, who
+    assert anonymous.get(f"/runs/{RUN_A}/map.html").status_code == 404
+
+    def listed(client):
+        text = client.get("/runs/runs.js").text
+        runs = json.loads(text.split("window.FINDALINE_RUNS = ")[1].split(";\n")[0])
+        return {r["id"] for r in runs}, json.loads(text.split("window.FINDALINE_APP = ")[1].split(";\n")[0])
+    assert listed(anonymous) == ({RUN_B}, {"profiles": False})
+    assert listed(pending) == ({RUN_B}, {"profiles": False})
+    assert listed(a) == ({RUN_A, RUN_B}, {"profiles": True})
+    runs = {r["id"]: r for r in a.get("/api/runs").json()["runs"]}
+    assert (runs[RUN_A]["own"], runs[RUN_A]["demo"], runs[RUN_B]["own"], runs[RUN_B]["demo"]) == (True, False, False, True)
+    assert a.post(f"/api/runs/{RUN_B}/share").status_code == 404  # a demo of someone else: no share link
+    profile = {"x-findaline-profile": "1"}
+    assert a.get(f"/api/profile?run={RUN_B}&line=1,2,3,4", headers=profile).status_code == 503  # to the worker
+    assert anonymous.get(f"/api/profile?run={RUN_B}&line=1,2,3,4", headers=profile).status_code == 401
+
+    page = anonymous.get("/").text
+    assert f"/runs/{RUN_B}/map.html" in page and "B&#x27;s run" in page and "/login/github" in page
+    assert "<form" not in page and "<script" not in page and RUN_A not in page
+    page = pending.get("/").text
+    assert "waiting for an administrator" in page and f"/runs/{RUN_B}/map.html" in page
+    assert admin.post(f"/api/runs/{RUN_B}/demo", json={"demo": False}).status_code == 200
+    assert anonymous.get(f"/runs/{RUN_B}/map.html").status_code == 404 and RUN_B not in anonymous.get("/").text
+
+
 def _edge(url: str, profile) -> str:
     """The DOM of a page after headless Edge ran its scripts (its own profile folder)."""
     import subprocess
@@ -871,6 +915,8 @@ def test_signed_in_app_and_shared_map_in_edge(tmp_path, clip_run, account_settin
     (stubs / "app_check.js").write_text(APP_CHECK, encoding="utf-8")
     (stubs / "csp_stub.js").write_text(CSP_STUB, encoding="utf-8")
     (stubs / "share_check.js").write_text(SHARE_CHECK, encoding="utf-8")
+    monkeypatch.setattr(web, "SIGNIN_HTML", web.SIGNIN_HTML.replace(
+        "</head>", '<script src="/test/csp_stub.js"></script></head>'))
     monkeypatch.setattr(web, "APP_HTML", web.APP_HTML.replace(
         '<script src="/app/app.js"></script>',
         '<script src="/test/app_stubs.js"></script><script src="/app/app.js"></script>'
@@ -910,6 +956,13 @@ def test_signed_in_app_and_shared_map_in_edge(tmp_path, clip_run, account_settin
         assert result["map"] and result["runs"] and result["app"] == {"profiles": False}, result
         assert not result["measure"] and result["others"] == 0 and result["lines"] > 0, result
         assert _violations(dom) == []
+        Jobs(str(data)).set_visibility(RUN_A, "demo")  # a demo: the anonymous page and the map
+        dom = _edge(f"{site}/", tmp_path / "edge-visitor")
+        assert f"/runs/{RUN_A}/map.html" in dom and _violations(dom) == []
+        dom = _edge(f"{site}/runs/{RUN_A}/map.html", tmp_path / "edge-visitor")
+        result = json.loads(re.search(r'<pre id="result">(.*?)</pre>', dom, re.S).group(1).replace("&quot;", '"'))
+        assert result["map"] and result["app"] == {"profiles": False} and not result["measure"], result
+        assert result["lines"] > 0 and _violations(dom) == []
     finally:
         server.should_exit = True
         thread.join(10)

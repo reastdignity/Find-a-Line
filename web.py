@@ -158,10 +158,11 @@ def title(p: pm.SearchParams) -> str:
 
 
 # The routes anyone may request in the public mode (signing in and out, the page, which shows a
-# sign-in page to visitors, and its assets); every other route depends on current_user,
+# sign-in page with the demo runs to visitors, its assets, and the list of runs of the maps, which
+# gives a visitor the demo runs only); every other route depends on current_user,
 # require_admin or run_access (tests/test_public.py checks it)
 PUBLIC_ROUTES = {"/", "/login/{provider}", "/auth/{provider}", "/logout", "/app", "/runs/index.html",
-                 "/s/runs.js", "/s/index.html", "/cache/{path:path}"}
+                 "/runs/runs.js", "/s/runs.js", "/s/index.html", "/cache/{path:path}"}
 SHARE_BYTES = 32  # the random part of a share link
 SSE_PER_USER = 3  # open event streams of one user (the public mode)
 # The files of a run the public site serves (what mapping.save_map and runs.save_results write, without
@@ -308,7 +309,7 @@ def create_app(data_dir: str, token: Optional[str] = None, port: int = PORT, sta
         found = signed_in(request)
         if found and found[0].approved:
             return APP_HTML.format(token=found[1], user=html.escape(json.dumps(found[0].public())))
-        return signin_page(accounts.providers, *(found or (None, None)))
+        return signin_page(accounts.providers, *(found or (None, None)), demos=runs_of(None))
 
     @app.get("/login/{provider}")
     async def login(request: Request, provider: str, next: str = "/"):
@@ -396,21 +397,35 @@ def create_app(data_dir: str, token: Optional[str] = None, port: int = PORT, sta
             raise HTTPException(404, "no such job")
         return job
 
-    def may_open(user: ac.User, run_id: str) -> bool:
-        """Whether a user may open a run: on the public site its owner (an administrator: every run
-        with an owner's row); locally every saved run."""
+    def may_open(user: Optional[ac.User], run_id: str) -> bool:
+        """Whether a user (None: a visitor not signed in, or not approved) may open a run: on the
+        public site its owner (an administrator: every run with an owner's row), and anyone a demo
+        run; locally every saved run."""
         if not SAFE_PART.fullmatch(run_id) or not os.path.isfile(os.path.join(runs_dir, run_id, "run.json")):
             return False
         if not public:
             return True
         row = jobs.run(run_id)
-        return row is not None and (row["user_id"] == user.id or user.admin)
+        return row is not None and (row["visibility"] == "demo"
+                                    or (user is not None and user.approved and (row["user_id"] == user.id or user.admin)))
 
     def run_access(run: str, user: ac.User = Depends(current_user)) -> str:
         """A run its user may open (404 otherwise, also for runs of others)."""
         if not may_open(user, run):
             raise HTTPException(404, "no such run")
         return run
+
+    def admin_run(run: str, user: ac.User = Depends(require_admin)) -> str:
+        """A run of the public site with an owner's row, for an administrator's action (the demo flag)."""
+        if not public or jobs.run(run) is None or not may_open(user, run):
+            raise HTTPException(404, "no such run")
+        return run
+
+    def visitor(request: Request) -> Optional[ac.User]:
+        """The approved user of a request, or None (not signed in, pending, blocked): for what anyone
+        may see, demo runs (public routes only)."""
+        found = signed_in(request)
+        return found[0] if found and found[0].approved else None
 
     def own_run(run: str = Depends(run_access), user: ac.User = Depends(current_user)) -> str:
         """A run its user owns (sharing it): run_access, and the owner only."""
@@ -419,9 +434,8 @@ def create_app(data_dir: str, token: Optional[str] = None, port: int = PORT, sta
         return run
 
     def run_of_session(request: Request, run_id: str) -> Optional[str]:
-        """RunFiles of /runs: the run, if the request's user may open it."""
-        found = signed_in(request)
-        return run_id if found and found[0].approved and may_open(found[0], run_id) else None
+        """RunFiles of /runs: the run, if the request's user (or anyone: a demo run) may open it."""
+        return run_id if may_open(visitor(request), run_id) else None
 
     def run_of_link(request: Request, share: str) -> Optional[str]:
         """RunFiles of /s: the run of a share link, found by the sha256 of its token (so the lookup
@@ -553,18 +567,33 @@ def create_app(data_dir: str, token: Optional[str] = None, port: int = PORT, sta
         # connections; a client that takes no data for SEND_TIMEOUT seconds is dropped
         return EventSourceResponse(stream(), ping=PING, send_timeout=SEND_TIMEOUT)
 
-    def runs_of(user: ac.User) -> List[Dict]:
-        """The runs a user's lists show: their own on the public site (an administrator's too), all locally."""
-        return rn.list_runs(runs_dir, jobs.runs_of(user.id) if public else None)
+    def runs_of(user: Optional[ac.User]) -> List[Dict]:
+        """The runs a user's lists show: on the public site their own (an administrator's too) and the
+        demo runs (a visitor: those only); locally all."""
+        if not public:
+            return rn.list_runs(runs_dir)
+        return rn.list_runs(runs_dir, (jobs.runs_of(user.id) if user else set()) | jobs.demo_runs())
 
     @app.get("/api/runs")
     def list_runs(user: ac.User = Depends(current_user)):
-        """The user's runs (locally all)."""
+        """The user's runs and the demo runs (locally all)."""
         shared = jobs.shared_runs(user.id) if public else set()
+        mine = jobs.runs_of(user.id) if public else None
+        demo = jobs.demo_runs() if public else set()
         return {"public": bool(public),  # whether runs can be shared (by a link)
                 "runs": [{k: r.get(k) for k in ("id", "name", "created", "summary", "has_map")}
-                         | {"description": rn.params_summary(r), "shared": r["id"] in shared}
+                         | {"description": rn.params_summary(r), "shared": r["id"] in shared,
+                            "own": mine is None or r["id"] in mine, "demo": r["id"] in demo}
                          for r in runs_of(user)]}
+
+    @app.post("/api/runs/{run}/demo")
+    def set_demo(body: Dict, run: str = Depends(admin_run)):
+        """Mark a run as a demo (its map for everyone, also without signing in) or private again:
+        {"demo": true|false}; administrators only."""
+        if not isinstance(body.get("demo"), bool):
+            raise HTTPException(400, "demo: true or false")
+        jobs.set_visibility(run, "demo" if body["demo"] else "private")
+        return {"ok": True}
 
     @app.post("/api/runs/{run}/share")
     def share_run(run: str = Depends(own_run)):
@@ -636,12 +665,14 @@ def create_app(data_dir: str, token: Optional[str] = None, port: int = PORT, sta
 
     if public:
         @app.get("/runs/runs.js")
-        def runs_js(user: ac.User = Depends(current_user)):
-            """The list of runs of the maps (their "Other runs"): the user's own, and whether the map may
-            compute profiles and measure (FINDALINE_APP)."""
+        def runs_js(request: Request):
+            """The list of runs of the maps (their "Other runs"): the user's own and the demo runs (a
+            visitor not signed in or not approved: the demo runs), and whether the map may compute
+            profiles and measure (FINDALINE_APP: signed-in, approved users only)."""
+            user = visitor(request)
             listed = [rn._listed(r) for r in runs_of(user)]
             return Response(f"window.FINDALINE_RUNS = {json.dumps(listed, ensure_ascii=False)};\n"
-                            f"window.FINDALINE_APP = {json.dumps({'profiles': True})};\n",
+                            f"window.FINDALINE_APP = {json.dumps({'profiles': user is not None})};\n",
                             media_type="text/javascript")
 
         @app.get("/runs/index.html")
@@ -706,9 +737,28 @@ SIGNIN_HTML = """<!doctype html>
 """
 
 
-def signin_page(providers: List[str], user=None, csrf: Optional[str] = None, note: str = "") -> str:
+def demo_list(demos: List[Dict]) -> str:
+    """The demo runs of the anonymous page: links to their maps (read-only)."""
+    import runs as rn
+    from urllib.parse import quote
+    e = html.escape
+    if not demos:
+        return ""
+    items = []
+    for run in demos:
+        summary = run.get("summary") or {}
+        link = (f"<a href='/runs/{e(quote(run['id'], safe=''))}/map.html'>{e(run.get('name') or run['id'])}</a>"
+                if run.get("has_map") else e(run.get("name") or run["id"]))
+        items.append(f"<li>{link} <span class='fa-hint'>{summary.get('spots', 0)} spots, {summary.get('lines', 0)} "
+                     f"lines · {e(rn.params_summary(run))}</span></li>")
+    return "<h2>Examples</h2><ul class='fa-demos'>" + "".join(items) + "</ul>"
+
+
+def signin_page(providers: List[str], user=None, csrf: Optional[str] = None, note: str = "",
+                demos: Optional[List[Dict]] = None) -> str:
     """The page of the public site for a visitor not signed in, or whose account is not approved
-    (pending or blocked): sign-in links, or the account's state and signing out. No script."""
+    (pending or blocked): sign-in links, or the account's state and signing out; the demo runs
+    (their maps, read-only). No script, and nothing that changes state but signing out."""
     e = html.escape
     parts = [f"<p class='fa-error'>{e(note)}</p>"] if note else []
     if user is None:
@@ -723,6 +773,7 @@ def signin_page(providers: List[str], user=None, csrf: Optional[str] = None, not
                      f"{state}.</p>")
         parts.append(f"<form method='post' action='/logout'><input type='hidden' name='csrf' value='{e(csrf or '')}'>"
                      "<button type='submit'>Sign out</button></form>")
+    parts.append(demo_list(demos or []))
     return SIGNIN_HTML.format(body="\n".join(parts))
 
 
