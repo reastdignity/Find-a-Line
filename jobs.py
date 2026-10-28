@@ -13,6 +13,9 @@ The job queue of the web application and its worker.
   process tree (psutil) and marks it cancelled. A waiting job is cancelled at once.
 - run_phase: a phase in its own process; its stdout becomes "info" events
   (_EventWriter), the progress goes as "progress" events.
+- The public site (`worker --public`, Jobs(public=True)): events, errors and answers pass
+  Redact, which removes the data folder and other absolute server paths; an unexpected
+  exception shows "internal error, ref <id>" and its traceback goes to the log (stderr).
 - The quick lane: estimates and profiles of the page (short, but they may call Nominatim
   or Overpass, read sheet indexes and build grids) are rows of the table `quick`, which
   one long-lived process of the worker (run_quick) serves one after another; the web
@@ -24,6 +27,7 @@ import contextlib
 import json
 import multiprocessing
 import os
+import re
 import shutil
 import signal
 import socket
@@ -33,7 +37,7 @@ import threading
 import time
 import uuid
 from datetime import datetime, timedelta
-from typing import Dict, Iterable, List, NamedTuple, Optional, Set
+from typing import Any, Dict, Iterable, List, NamedTuple, Optional, Set
 
 import cache
 import params as pm
@@ -77,6 +81,46 @@ MIGRATIONS = [
 ]
 
 
+# An absolute path on the server: C:\... (or C:/...), or /dir/... not in a URL (http://host/...)
+ABSOLUTE_PATH = re.compile(r"""(?:\b[A-Za-z]:[\\/]|(?<![\w:/.~-])/(?=[\w.-]))[^\s"'<>|]*""")
+APP_DIR = os.path.dirname(os.path.abspath(__file__))
+
+
+class Redact:
+    """Removes server paths from texts for the public site: the data folder becomes relative
+    ("runs/<id>"), the folder of the app and other absolute paths "<path>"."""
+
+    def __init__(self, data_dir: str):
+        folders = {os.path.abspath(data_dir), os.path.realpath(data_dir)}
+        flags = re.IGNORECASE if os.name == "nt" else 0
+        # Only at a path boundary (a separator, a quote, whitespace or the end), so a sibling such as
+        # "<data>-old" is not taken for the data folder (it is still an absolute path: ABSOLUTE_PATH).
+        # Best effort: a path with spaces after the folder is cut at the first space.
+        self.data = [re.compile(re.escape(f) + r"""(?:[\\/]|(?=[\s"']|$))""", flags)
+                     for f in self._variants(folders)]
+        self.app = [re.compile(re.escape(f) + r"""(?=[\\/\s"']|$)[^\s"'<>|]*""", flags)
+                    for f in self._variants({APP_DIR})]
+
+    @staticmethod
+    def _variants(folders) -> List[str]:
+        found = {v for f in folders for v in (f, f.replace("\\", "/"), f.replace("/", "\\"))}
+        return sorted(found, key=len, reverse=True)  # the longest first
+
+    def __call__(self, value: Any) -> Any:
+        """The value (a text, or texts in lists and dicts) without server paths."""
+        if isinstance(value, str):
+            for pattern in self.data:
+                value = pattern.sub(lambda m: "" if m.group(0)[-1] in "\\/" else "<data folder>", value)
+            for pattern in self.app:
+                value = pattern.sub("<path>", value)
+            return ABSOLUTE_PATH.sub("<path>", value)
+        if isinstance(value, list):
+            return [self(v) for v in value]
+        if isinstance(value, dict):
+            return {k: self(v) for k, v in value.items()}
+        return value
+
+
 def _in(values: Iterable) -> str:
     """Placeholders for an SQL IN (...) of these values."""
     return "(" + ", ".join("?" * len(tuple(values))) + ")"
@@ -85,8 +129,11 @@ def _in(values: Iterable) -> str:
 class Jobs:
     """The queue and the events of the jobs (jobs.sqlite in the data folder)."""
 
-    def __init__(self, data_dir: str):
+    def __init__(self, data_dir: str, public: bool = False):
         self.data_dir = data_dir
+        self.public = public
+        # The public site: no server paths in events, errors and answers
+        self.redact = Redact(data_dir) if public else (lambda value: value)
         self.path = os.path.join(data_dir, "jobs.sqlite")
         db = self._db()
         try:
@@ -165,6 +212,8 @@ class Jobs:
         those (e.g. a phase that ends must not overwrite a job cancelled meanwhile). Whether it changed."""
         if status in FINISHED:
             fields["finished"] = datetime.now().isoformat(timespec="seconds")
+        if fields.get("error"):
+            fields["error"] = self.redact(fields["error"])
         names = "".join(f", {k} = ?" for k in fields)
         condition, values = "", ()
         if when is not None:
@@ -179,7 +228,8 @@ class Jobs:
 
     def event(self, job_id: str, kind: str, data):
         with self._db() as db:
-            db.execute("INSERT INTO events (job, kind, data) VALUES (?, ?, ?)", (job_id, kind, json.dumps(data)))
+            db.execute("INSERT INTO events (job, kind, data) VALUES (?, ?, ?)",
+                       (job_id, kind, json.dumps(self.redact(data))))
 
     def events(self, since: int, job_id: Optional[str] = None) -> List[Dict]:
         with self._db() as db:
@@ -290,7 +340,7 @@ class Jobs:
         """The answer of a running task."""
         with self._db() as db:
             db.execute("UPDATE quick SET status = 'done', answer = ? WHERE id = ? AND status = 'running'",
-                       (json.dumps({"code": code, "body": body}), task_id))
+                       (json.dumps({"code": code, "body": self.redact(body)}), task_id))
 
     # --- Cancelling ---
 
@@ -372,7 +422,7 @@ def ortho_confirm(limits: Limits, on_event):
     return confirm
 
 
-def run_phase(data_dir: str, job_id: str, phase: str, limits: Optional[Limits] = None):
+def run_phase(data_dir: str, job_id: str, phase: str, limits: Optional[Limits] = None, public: bool = False):
     """A worker process: download the data of a job, or compute it. It ends the phase only if the
     job is still in it (not cancelled or failed by the worker meanwhile). With limits, a search
     over them fails before its costly work (search.plan_search, check_estimate)."""
@@ -382,7 +432,7 @@ def run_phase(data_dir: str, job_id: str, phase: str, limits: Optional[Limits] =
     import search
     from progress import progress
 
-    jobs = Jobs(data_dir)
+    jobs = Jobs(data_dir, public)
     job = jobs.get(job_id)
     request = json.loads(job["request"])
     sys.stdout = _EventWriter(jobs, job_id)
@@ -441,8 +491,12 @@ def run_phase(data_dir: str, job_id: str, phase: str, limits: Optional[Limits] =
         jobs.set(job_id, "failed", when=working, error=cache.clean_error(e))
         failed = False
     except Exception as e:  # anything else: keep the work folder to look at
-        jobs.set(job_id, "failed", when=working,
-                 error=f"{type(e).__name__}: {cache.clean_error(e)} (working grids kept in {paths.work})")
+        if public:  # the traceback (raised below) goes to the log, the page gets a reference
+            print(f"internal error, ref {job_id} (working grids kept in {paths.work}):", file=sys.stderr)
+            jobs.set(job_id, "failed", when=working, error=f"internal error, ref {job_id}")
+        else:
+            jobs.set(job_id, "failed", when=working,
+                     error=f"{type(e).__name__}: {cache.clean_error(e)} (working grids kept in {paths.work})")
         raise
     finally:
         if not failed:
@@ -491,7 +545,7 @@ def quick_profile(data_dir: str, request: Dict, limits: Optional[Limits] = None)
 QUICK = {"estimate": quick_estimate, "profile": quick_profile}
 
 
-def run_quick(data_dir: str, worker_id: str, parent: int, limits: Optional[Limits] = None):
+def run_quick(data_dir: str, worker_id: str, parent: int, limits: Optional[Limits] = None, public: bool = False):
     """The process of the quick lane: serves the tasks of the table `quick` one after another, until
     its worker (`parent`) is gone. One process and one thread, so the state of search and sources
     (caches of sheet indexes, sag tables) is never shared between threads."""
@@ -501,7 +555,7 @@ def run_quick(data_dir: str, worker_id: str, parent: int, limits: Optional[Limit
     import requests
 
     import search
-    jobs = Jobs(data_dir)
+    jobs = Jobs(data_dir, public)
     looked = time.time()
     while True:
         task = jobs.quick_claim(worker_id)
@@ -517,8 +571,11 @@ def run_quick(data_dir: str, worker_id: str, parent: int, limits: Optional[Limit
         except (ValueError, search.SearchError, requests.RequestException) as e:  # ValueError: parameters
             jobs.quick_answer(task["id"], 400, cache.clean_error(e))
         except Exception as e:
+            ref = f"quick-{task['id']}"
+            print(f"internal error, ref {ref}:", file=sys.stderr)
             traceback.print_exc()
-            jobs.quick_answer(task["id"], 500, f"internal error: {type(e).__name__}: {cache.clean_error(e)}")
+            jobs.quick_answer(task["id"], 500, f"internal error, ref {ref}" if public else
+                              f"internal error: {type(e).__name__}: {cache.clean_error(e)}")
 
 
 class Running(NamedTuple):
@@ -667,7 +724,8 @@ class Scheduler:
                 self.jobs.quick_answer(task["id"], 504, f"time limit: stopped after {self.limits.quick_seconds:g} s")
         if self.quick is None:
             self.quick = self.context.Process(target=run_quick, daemon=True,
-                                              args=(self.jobs.data_dir, self.worker_id, os.getpid(), self.limits))
+                                              args=(self.jobs.data_dir, self.worker_id, os.getpid(), self.limits,
+                                                    self.public))
             self.quick.start()
 
     def _kill(self, phase: str):
@@ -702,7 +760,8 @@ class Scheduler:
                 job = self.jobs.claim(waiting, status, self.worker_id)
                 if job:
                     process = self.context.Process(target=run_phase, daemon=True,
-                                                   args=(self.jobs.data_dir, job["id"], phase, self.limits))
+                                                   args=(self.jobs.data_dir, job["id"], phase, self.limits,
+                                                         self.public))
                     process.start()
                     osm = "osm" in json.loads(job["request"])  # an OSM extract: its own limit
                     self.running[phase] = Running(job["id"], process, time.time(),
@@ -728,7 +787,7 @@ def main(argv: List[str]) -> int:
         os.environ["FINDALINE_CONTACT"] = PublicSettings.load().contact
     data = cache.data_dir(args.data_dir)
     cache.check_layout(os.path.join(data, "cache"))
-    scheduler = Scheduler(Jobs(data), public=args.public)
+    scheduler = Scheduler(Jobs(data, public=args.public), public=args.public)
     # SIGTERM (docker stop, systemd) stops it like Ctrl+C: the running phases are killed and
     # their jobs marked interrupted (a tiled area resumes when it is started again)
     for name in ("SIGTERM", "SIGBREAK"):  # SIGBREAK: Ctrl+Break, or a service stopped on Windows

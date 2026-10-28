@@ -1,6 +1,7 @@
 """The public mode of the web app (web.py --public, limits.PublicSettings): settings, guards
 and headers; without accounts, everything but the page and its assets answers 401."""
 
+import json
 import os
 import sys
 import warnings
@@ -256,3 +257,60 @@ def test_worker_orthophoto_limit(monkeypatch):
     confirm = jobs.ortho_confirm(Limits(ortho_minutes=10), lambda kind, text: said.append(text))
     assert search.CONFIRM_MINUTES == 10 and not confirm("ortho", "?") and confirm("expensive", "?")
     assert "online" in said[0]
+
+
+def test_redact():
+    """Texts of the public site lose the data folder (paths in it become relative), the folder of the
+    app and other absolute paths; URLs and ordinary slashes stay."""
+    import jobs
+    redact = jobs.Redact(r"C:\Data\find" if os.name == "nt" else "/srv/find")
+    data = r"C:\Data\find" if os.name == "nt" else "/srv/find"
+    assert redact(f"Run saved to {data}{os.sep}runs{os.sep}abc") == f"Run saved to runs{os.sep}abc"
+    assert redact(f"in {data}") == "in <data folder>"
+    assert redact(f'"{data}"') == '"<data folder>"'
+    assert redact(f"old {data}-old{os.sep}x") == "old <path>"  # a sibling folder: not made relative
+    assert redact("Terrain file: " + os.path.join(jobs.APP_DIR, "tests", "x.tif") + " (1 m)") == \
+        "Terrain file: <path> (1 m)"
+    assert redact("from /home/u/x.tif and D:/other/y via https://a.example/b/c?d=1") == \
+        "from <path> and <path> via https://a.example/b/c?d=1"
+    assert redact("50 km/h, 1/2, S,W,N,E, and/or") == "50 km/h, 1/2, S,W,N,E, and/or"
+    assert redact({"a": [f"{data}{os.sep}x", 3]}) == {"a": ["x", 3]}
+
+
+def test_no_server_paths_in_public_events(tmp_path, monkeypatch):
+    """The public worker's events, errors and answers hold no server paths; an unexpected exception
+    shows a reference only (its traceback goes to the log)."""
+    import time
+
+    from jobs import Jobs, Scheduler
+    for key, value in {"HTTP_PROXY": "http://127.0.0.1:9", "HTTPS_PROXY": "http://127.0.0.1:9", "NO_PROXY": "",
+                       "PYTHONIOENCODING": "utf-8"}.items():
+        monkeypatch.setenv(key, value)
+    jobs = Jobs(str(tmp_path), public=True)
+    params = {**CLIP, "northing": 254608, "easting": 553966, "radius": 150, "name": "Clip"}
+    job = jobs.add({"params": params, "geometry": None}, "clip")
+    missing = str(tmp_path / "missing.tif")  # an expected error naming a file in the data folder: made relative
+    failing = jobs.add({"params": {**params, "elevation_file": missing}, "geometry": None}, "fails")
+    broken = jobs.add({"geometry": None}, "broken")  # no params: an unexpected KeyError
+    scheduler = Scheduler(jobs, public=True)
+    scheduler.start()
+    try:
+        deadline = time.time() + 300
+        while any(jobs.get(j)["status"] not in ("done", "failed") for j in (job, failing, broken)) \
+                and time.time() < deadline:
+            time.sleep(0.5)
+        task = jobs.quick_add("estimate", {"params": {**params, "radius": 100}})
+        while (answer := jobs.quick_take(task)) is None and time.time() < deadline:
+            time.sleep(0.2)
+    finally:
+        scheduler.stop()
+    assert jobs.get(job)["status"] == "done", jobs.get(job)["error"]
+    assert jobs.get(broken)["error"] == f"internal error, ref {broken}"
+    assert answer["code"] == 200, answer
+    assert jobs.get(failing)["status"] == "failed" and "file not found: missing.tif" in jobs.get(failing)["error"]
+    ended = [{k: jobs.get(j)[k] for k in ("status", "error", "run_id")} for j in (job, failing, broken)]
+    texts = json.dumps([jobs.events(0), ended, answer])
+    for folder in (str(tmp_path), REPO):
+        for form in (folder, folder.replace("\\", "/"), json.dumps(folder)[1:-1]):
+            assert form not in texts, form
+    assert "saved to runs" in texts
