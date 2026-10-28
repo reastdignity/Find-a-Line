@@ -123,7 +123,7 @@ def _get(url: str, params: Optional[Dict], z: int, x: int, y: int) -> bytes:
     last_error = None
     for attempt in range(RETRIES):
         try:
-            response = requests.get(url, params=params, timeout=60)
+            response = requests.get(url, params=params, timeout=60, headers=cache.http_headers())
             if response.status_code == 200 and response.headers.get("content-type", "").startswith("image/"):
                 return response.content
             last_error = RuntimeError(f"HTTP {response.status_code}: {response.text[:200]}")

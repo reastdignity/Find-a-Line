@@ -331,24 +331,28 @@ def test_stac_tiles(tmp_path, monkeypatch):
 
 
 def test_orthophoto_of_tiles_only(monkeypatch):
-    """A service without a WMS (SWISSIMAGE): its own tiles, enlarged above its last zoom."""
+    """A service without a WMS (SWISSIMAGE): its own tiles, enlarged above its last zoom; the
+    requests carry the common User-Agent (cache.http_headers)."""
     import orthophoto
     from PIL import Image
     service = src.OrthoService("Fake", None, "", "fake/ortho/live", "test",
                                base_url="https://base/{z}/{x}/{y}.jpg", base_max_zoom=20)
-    asked = []
+    asked, sent = [], []
 
-    def get(url, params, timeout):
+    def get(url, params, timeout, headers=None):
         asked.append(url)
+        sent.append(headers)
         out = io.BytesIO()
         Image.fromarray(np.full((256, 256, 3), 120, np.uint8)).save(out, "JPEG")
         response = FakeResponse(out.getvalue())
         response.status_code, response.headers = 200, {"content-type": "image/jpeg"}
         return response
     monkeypatch.setattr(orthophoto.requests, "get", get)
+    monkeypatch.setenv("FINDALINE_CONTACT", "admin@example.org")
     orthophoto.tile_content(service, 20, 10, 11)
     orthophoto.tile_content(service, 21, 21, 22)
     assert asked == ["https://base/20/10/11.jpg", "https://base/20/10/11.jpg"]
+    assert sent == [{"User-Agent": "Find-a-Line/1.0 (highline finder; contact: admin@example.org)"}] * 2
 
 
 def _image(fmt, color, covered):
@@ -373,7 +377,7 @@ def test_orthophoto_falls_back_to_the_base_tiles(tmp_path, monkeypatch):
     by_bbox = {orthophoto._wms_bbox(*t): name for name, t in tiles.items()}
     asked = []
 
-    def get(url, params, timeout):
+    def get(url, params, timeout, headers=None):
         if params is None:  # a base tile: left half dark, right half light green
             z, x, y = (int(v) for v in url[len("https://base/"):-len(".jpg")].split("/"))
             asked.append(("base", z, x, y))
