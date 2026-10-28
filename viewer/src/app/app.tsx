@@ -1,5 +1,6 @@
 // The app (python findaline.py web): the map on the left, a new search, the queue, the saved
 // runs and the favourite lines on the right. Results open as the runs' own maps (runs/<id>/map.html).
+// ?ui=b|c|kit shows a prototype of a new interface instead (ui/choice.ts); this one stays the default.
 
 import "leaflet/dist/leaflet.css";
 import L from "leaflet";
@@ -16,6 +17,10 @@ import { Favourites } from "./Favourites";
 import { OsmPanel } from "./OsmPanel";
 import { PlaceMap } from "./PlaceMap";
 import { SearchForm } from "./SearchForm";
+import { AppB } from "./b/AppB";
+import { AppC } from "./c/AppC";
+import { Gallery } from "../ui/Gallery";
+import { chooseUi, uiHref } from "../ui/choice";
 
 L.Icon.Default.mergeOptions({iconRetinaUrl, iconUrl, shadowUrl});
 delete (L.Icon.Default.prototype as any)._getIconUrl;
@@ -67,6 +72,11 @@ function Runs() {
   </div>)}</div>;
 }
 
+/** The way to the prototypes of a new interface. */
+function TryNew() {
+  return <span class="fa-try">Try the new interface: <a href={uiHref("b")}>B</a> · <a href={uiHref("c")}>C</a></span>;
+}
+
 function App() {
   const mapRef = useRef<HTMLDivElement>(null);
   const [place, setPlace] = useState<PlaceMap | null>(null);
@@ -103,8 +113,10 @@ function App() {
         <span>{user.name}{user.admin ? " (administrator)" : ""}</span>
         <span class="fa-links"><a href="/privacy" target="_blank">privacy</a>{" "}
           <a href="/about" target="_blank">about / data licences</a></span>
+        <TryNew />
         <button class="fa-small" onClick={() => api.logout().finally(() => { location.href = "/"; })}>sign out</button>
       </div>}
+      {user.local && <div class="fa-try-bar"><TryNew /></div>}
       <div class="fa-tabs">
         <button class={tab === "search" ? "fa-on" : ""} onClick={() => setTab("search")}>New search</button>
         <button class={tab === "jobs" ? "fa-on" : ""} onClick={() => setTab("jobs")}>
@@ -161,4 +173,6 @@ function apply(jobs: JobView[], event: JobEvent): JobView[] {
   });
 }
 
-render(<App />, document.getElementById("app")!);
+const SHELLS = {old: App, b: AppB, c: AppC, kit: Gallery};
+const Shell = SHELLS[chooseUi()];
+render(<Shell />, document.getElementById("app")!);

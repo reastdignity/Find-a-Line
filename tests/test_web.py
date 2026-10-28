@@ -1440,3 +1440,59 @@ def test_map_shows_data_credits(tmp_path, monkeypatch):
     assert links.count("https://creativecommons.org/licenses/by-nc-sa/4.0/") == 2 and "ATTRIBUTION.txt" in links, result
     assert not any(link.startswith("javascript") for link in links if link), result
     assert result["imgs"] == 0 and result["xss"] is None, result
+
+
+# Reports which interface the app page rendered (and, in the gallery, that the sheet's handle moves it)
+UI_SCRIPT = """
+(function () {
+  const out = document.createElement("pre");
+  out.id = "result";
+  document.body.appendChild(out);
+  setTimeout(() => {
+    const found = ["fa-tabs", "fa-try", "u-gallery", "u-app-b", "u-app-c", "u-rail", "u-bnav", "u-sheet"]
+      .filter((name) => document.querySelector("." + name));
+    const sheet = document.querySelector(".u-sheet");
+    const kept = localStorage.getItem("findaline-ui");
+    let snaps = "";
+    if (sheet) {
+      const before = sheet.className;
+      sheet.querySelector(".u-sheet-handle").click();  // a keyboard-like click moves it one state
+      snaps = before + " -> ";
+      setTimeout(() => { out.textContent = JSON.stringify({found, kept, snaps: snaps + sheet.className}); }, 300);
+    } else out.textContent = JSON.stringify({found, kept, snaps});
+  }, 2000);
+})();
+"""
+
+
+@pytest.mark.skipif(not os.path.exists(EDGE), reason="needs Microsoft Edge")
+def test_interface_switch(tmp_path):
+    """?ui= picks the interface: the old app without it, the gallery of the new components (kit) and the
+    prototypes B and C, each without CSP violations; the choice is remembered (localStorage)."""
+    import html
+    import re
+    folder = tmp_path / "runs" / "uitest"
+    folder.mkdir(parents=True)
+    (folder / "stubs.js").write_text(APP_STUBS, encoding="utf-8")
+    (folder / "test.js").write_text(UI_SCRIPT, encoding="utf-8")
+    app = web.create_app(str(tmp_path), token=TOKEN, start_scheduler=False)
+    with TestClient(app, base_url=LOCAL) as client:
+        page = client.get("/").text
+    (folder / "index.html").write_text(page.replace(
+        '<script src="/app/app.js"></script>',
+        '<script src="stubs.js"></script><script src="/app/app.js"></script><script src="test.js"></script>'),
+        encoding="utf-8")
+
+    def shown(query):
+        dom = _edge_page(tmp_path, "runs/uitest/index.html" + query)
+        assert _violations(dom) == [], query  # style-src 'self': no inline styles
+        return json.loads(html.unescape(re.search(r'<pre id="result">(.*?)</pre>', dom, re.S).group(1)))
+
+    assert {"fa-tabs", "fa-try"} <= set(shown("")["found"])  # the default, with the way to the new ones
+    kit = shown("?ui=kit")
+    assert {"u-gallery", "u-rail", "u-bnav", "u-sheet"} <= set(kit["found"]), kit
+    assert "u-half" in kit["snaps"].split(" -> ")[0] and "u-full" in kit["snaps"].split(" -> ")[1], kit
+    assert "u-app-b" in shown("?ui=b")["found"]
+    assert "u-app-c" in shown("?ui=c")["found"]
+    assert shown("?ui=c")["kept"] == "c"  # every server has its own port: the next page would not see it
+    assert "fa-tabs" in shown("?ui=old")["found"]
