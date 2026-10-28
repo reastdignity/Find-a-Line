@@ -83,6 +83,16 @@ console.log(JSON.stringify(m.groupLines(lines, {distance}, {json.dumps(by)})
         assert ts == python
 
 
+def test_list_sorting(tmp_path):
+    """The list of lines: both directions, unknown values (null, NaN) last in both, ties in their order."""
+    found = run_ts(tmp_path, "list", """
+const rows = [[5, 1], [null, 2], [7, 3], [NaN, 4], [5, 5], [1, 6]]
+  .map(([clrN, k]) => ({line: {clrN, k}, n: 1}));
+const key = m.sortKey("clrN");
+console.log(JSON.stringify([true, false].map((desc) => m.sortRows(rows, key, desc).map((r) => r.line.k))));""")
+    assert found == [[3, 1, 5, 6, 2, 4], [6, 1, 5, 3, 2, 4]]
+
+
 def test_bundle_is_built_from_sources(tmp_path):
     """viewer/dist is committed: rebuild it (cd viewer; npm run build) after changing viewer/src."""
     subprocess.run(["node", "build.mjs", "--out", str(tmp_path)], cwd=VIEWER, check=True)

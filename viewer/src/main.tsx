@@ -15,6 +15,8 @@ import { dh, drop, lowerAnchor, passes, prominence, range as valueRange, saveFil
 const finite = (v: number) => isFinite(v) ? v : null;
 import { groupLines, type Group } from "./grouping";
 import { baseLayers } from "./layers";
+import { saveList, savedList, type ListState, type Row } from "./list";
+import { LinesList } from "./LinesList";
 import { inLocalPlane, listOthers, loadLines, colorOf, NEARBY_KM, saveChoice, savedChoice } from "./others";
 import { control, LinesPanel, OtherRunsPanel, RunPanel, type LinesState, type OtherItem } from "./panels";
 import { draggablePopups } from "./popups";
@@ -45,6 +47,7 @@ function creditsHtml(credits: Credit[]): string {
 }
 
 let highAbove = 20;  // m, the run's high_above (set by start)
+const PROFILE_HEIGHT = 270;  // px, the profile panel (.fal-profile in viewer.css)
 
 function lineInfo(l: Line): string {
   let html = "";
@@ -115,6 +118,7 @@ function start(data: RunData) {
   const renderer = L.canvas({padding: 0.5});
   const linesLayer = L.layerGroup().addTo(map);
   const variantsLayer = L.layerGroup().addTo(map);
+  const weightOf = (l: Line) => l.run ? 2.5 : 3;
   // Lines of other runs in the run's colour, dashed over trees/buildings
   const polyline = (l: Line, options: L.PolylineOptions) => L.polyline(
     [[l.lat1, l.lon1], [l.lat2, l.lon2]],
@@ -250,10 +254,11 @@ function start(data: RunData) {
     hidden.forEach((other) => linesLayer.removeLayer(other));
     drawPanel();
   };
-  const zoomTo = (pl: L.Polyline) => {
-    const bottom = profileLine ? profileDiv.firstElementChild?.clientHeight || 0 : 0;
+  // `profile`: the profile panel will be open (a line about to be opened from the list)
+  const zoomTo = (pl: L.Polyline, profile = profileLine !== null, animate = true) => {
+    const bottom = profile ? profileDiv.firstElementChild?.clientHeight || PROFILE_HEIGHT : 0;
     map.fitBounds(pl.getBounds(), {paddingTopLeft: [60, 60], paddingBottomRight: [60, bottom + 60],
-                                   maxZoom: data.max_zoom});
+                                   maxZoom: data.max_zoom, animate});
   };
 
   let state: LinesState = {group: true, distance: data.distance, by: data.by, showClean: true, showOver: true};
@@ -278,10 +283,39 @@ function start(data: RunData) {
                 onFilters={(next) => { filters = next; saveFilters(filters); drawLines(); }}
                 onShowAll={() => { map.closePopup(); unfocus(); }} />);
 
+  // The list of the lines shown (top right, under the layers): its rows are the groups drawn last
+  let listState: ListState = savedList(), rows: Row[] = [];
+  const polylineOf = new Map<Line, L.Polyline>();
+  let hovered: Line | null = null;  // the line of the row under the mouse, drawn wider
+  const list = control(map, "topright", "fal-panel fal-list-panel");
+  const inView = (l: Line) => map.getBounds().intersects(L.latLngBounds([l.lat1, l.lon1], [l.lat2, l.lon2]));
+  const drawList = () => list(
+    <LinesList rows={listState.inView ? rows.filter((r) => inView(r.line)) : rows} total={rows.length}
+               grouping={state.group} state={listState}
+               onState={(next) => { listState = next; saveList(listState); drawList(); }}
+               onPick={(l) => {
+                 const pl = polylineOf.get(l);
+                 if (!pl) return;
+                 // Fitted at once, then the popup (which pans itself into the view) focuses the
+                 // line and opens its profile; lines of other runs have none
+                 zoomTo(pl, !l.run, false);
+                 pl.openPopup();
+               }}
+               onHover={(l) => {
+                 const before = hovered && polylineOf.get(hovered), pl = l && polylineOf.get(l);
+                 if (before) before.setStyle({weight: weightOf(hovered!)});
+                 hovered = pl ? l : null;
+                 if (pl) pl.setStyle({weight: 7});
+                 if (pl && map.hasLayer(pl)) pl.bringToFront();
+               }} />);
+  map.on("moveend", () => { if (listState.inView && listState.open) drawList(); });
+
   const drawLines = () => {
     unfocus();
     linesLayer.clearLayers();
     variantsLayer.clearLayers();
+    polylineOf.clear();
+    hovered = null;
     // Filters first, then the groups of what is left; the group size last
     const visible = framed(all).filter((l) => (l.over ? state.showOver : state.showClean) && passes(l, filters));
     let groups = state.group ? groupLines(visible, state.distance, state.by)
@@ -291,7 +325,8 @@ function start(data: RunData) {
     // Lines over trees/buildings first, so clear lines stay on top
     groups.sort((a, b) => +b.rep.over - +a.rep.over);
     for (const g of groups) {
-      const l = g.rep, pl = polyline(l, {weight: l.run ? 2.5 : 3, opacity: 0.9});
+      const l = g.rep, pl = polyline(l, {weight: weightOf(l), opacity: 0.9});
+      polylineOf.set(l, pl);
       pl.bindTooltip((l.run ? escape(l.run.info.name) + ": " : "") + l.len.toFixed(0) + " m, clearance " + l.clr.toFixed(1) + " m" +
                      (g.members.length > 1 ? " (" + g.members.length + " similar lines)" : ""));
       pl.bindPopup("<div class='fal-drag'>&#10021; drag to move</div>" + groupInfo(g, state.by) +
@@ -313,7 +348,10 @@ function start(data: RunData) {
       pl.addTo(linesLayer);
     }
     shown = {spots: groups.length, lines: groups.reduce((n, g) => n + g.members.length, 0)};
+    // In the order of the groups: clear lines first, the best of each group first
+    rows = groups.map((g) => ({line: g.rep, n: g.members.length})).sort((a, b) => +a.line.over - +b.line.over);
     drawPanel();
+    drawList();
   };
 
   // Other runs: their lines (from lines.js) and areas, grouped together with this run's

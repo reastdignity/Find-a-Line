@@ -1038,6 +1038,74 @@ def test_map_without_inline_styles(tmp_path, monkeypatch):
     assert os.path.exists(tmp_path / "runs" / "_viewer" / "index.css")
 
 
+LIST_SCRIPT = """
+(function () {
+  const out = document.createElement("pre");
+  out.id = "result";
+  document.body.appendChild(out);
+  const map = window.FINDALINE_MAP, result = {};
+  const later = (then) => setTimeout(then, 300);
+  const rows = () => [...document.querySelectorAll(".fal-list-table tbody tr")];
+  const column = (k) => rows().map((tr) => +tr.children[k].textContent);
+  const sorted = (values) => values.every((v, i) => i === 0 || values[i - 1] >= v);
+  later(() => {
+    document.querySelector(".fal-list summary").click();
+    later(() => {
+      result.spots = +document.querySelector(".fal-summary b").textContent;
+      result.rows = rows().length;
+      result.more = !!document.querySelector(".fal-list-more");
+      result.lengthsSorted = sorted(column(1));
+      document.querySelectorAll(".fal-list-table th")[2].click();  // clearance
+      later(() => {
+        result.clearancesSorted = sorted(column(2));
+        result.sortValue = document.querySelector(".fal-list-sort").value;
+        result.firstLength = rows()[0].children[1].textContent;
+        rows()[0].click();
+        later(() => {
+          const popup = document.querySelector(".leaflet-popup-content");
+          result.popup = popup ? popup.textContent.match(/Length: (\\d+) m/)[1] : null;
+          result.profile = !!document.querySelector(".fal-profile-title");
+          document.querySelector(".fal-list-view").click();
+          later(() => {
+            result.inView = rows().length;
+            map.setView([map.getCenter().lat + 0.5, map.getCenter().lng], 15, {animate: false});
+            later(() => {
+              result.farAway = rows().length;
+              result.summary = document.querySelector(".fal-list summary").textContent;
+              out.textContent = JSON.stringify(result);
+            });
+          });
+        });
+      });
+    });
+  });
+})();
+"""
+
+
+@pytest.mark.skipif(not os.path.exists(EDGE), reason="needs Microsoft Edge")
+def test_list_of_lines(tmp_path, monkeypatch):
+    """The list of lines next to the map: a row per spot (the first 100), sorted by a column,
+    a row opens its line's popup and profile, "only in the map's view" follows the map."""
+    import re
+    run_id = _clip_run(tmp_path, monkeypatch)
+    folder = tmp_path / "runs" / run_id
+    (folder / "csp_stub.js").write_text(CSP_STUB, encoding="utf-8")
+    (folder / "list_test.js").write_text(LIST_SCRIPT, encoding="utf-8")
+    page = (folder / "map.html").read_text(encoding="utf-8")
+    (folder / "list_test.html").write_text(
+        page.replace("<head>", '<head><script src="csp_stub.js"></script>')
+            .replace("</body>", '<script src="list_test.js"></script></body>'), encoding="utf-8")
+    dom = _edge_page(tmp_path, f"runs/{run_id}/list_test.html")
+    result = json.loads(re.search(r'<pre id="result">(.*?)</pre>', dom, re.S).group(1).replace("&quot;", '"'))
+    assert result["spots"] > 100 and result["rows"] == 100 and result["more"], result
+    assert result["lengthsSorted"] and result["clearancesSorted"] and result["sortValue"] == "clr", result
+    assert result["popup"] == result["firstLength"] and result["profile"], result
+    assert result["inView"] > 0 and result["farAway"] == 0, result
+    assert result["summary"] == f"Lines (0 of {result['spots']})", result
+    assert _violations(dom) == []
+
+
 # Between data.js and the viewer: credits as a run records them, one with markup in its texts
 CREDITS_STUB = """
 window.FINDALINE_RUN.attribution = [
