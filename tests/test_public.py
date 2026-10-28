@@ -1458,6 +1458,30 @@ def test_public_time_limits_and_one_waiting_estimate(tmp_path, settings, account
         client.close()
 
 
+def test_new_jobs_rate_and_quota_before_validation(tmp_path, settings, account_settings, providers,
+                                                    monkeypatch):
+    """/api/jobs refuses a user over a quota before it validates the request (a large drawn geometry
+    costs time; review B, poc_geometry_cost), and limits the rate of a user's requests."""
+    import jobs as jb
+    from settings import Limits
+    limits = Limits.load(public=True).model_copy(update={"jobs_active_max": 1, "job_rate": "3/minute"})
+    app = _public_app(tmp_path, settings, account_settings, providers, limits=limits)
+    people = _clients(app, tmp_path, account_settings, ("a", "b", "unlimited"))
+    a, b = people["a"], people["b"]
+    assert a.post("/api/jobs", json={"params": POINT}).status_code == 200
+    validated = []
+    monkeypatch.setattr(web, "search_params", lambda request: validated.append(request) or jb.search_params(request))
+    answer = a.post("/api/jobs", json={"params": {}, "geometry": FAR_APART})
+    assert answer.status_code == 429 and "at most 1 of your searches" in answer.text and validated == []
+    assert [a.post("/api/jobs", json={"params": POINT}).status_code for _ in range(2)] == [429, 429]
+    answer = a.post("/api/jobs", json={"params": POINT})
+    assert answer.status_code == 429 and "too many searches started" in answer.text
+    assert b.post("/api/jobs", json={"params": POINT}).status_code == 200  # their own rate
+    assert {people["unlimited"].post("/api/jobs", json={"params": POINT}).status_code for _ in range(4)} == {200}
+    for client in people.values():
+        client.close()
+
+
 def test_request_limits(monkeypatch, tmp_path):
     """The public site's limits on request values (each overridable, `none` for no limit) refuse
     values over them and fields it does not allow, and give the form its min/max; locally, and for

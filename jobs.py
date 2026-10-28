@@ -244,6 +244,15 @@ class Jobs:
                                         f"{limits.km2_day_max:g} km²: try again later")
         return check
 
+    def precheck(self, check: Callable[[sqlite3.Connection], None]):
+        """Run an admission check (admission(...)) without adding a job: the web refuses a request
+        over a quota before it validates it; add() checks again in its transaction."""
+        db = self._db()
+        try:
+            check(db)
+        finally:
+            db.close()
+
     @staticmethod
     def _used(db: sqlite3.Connection, user_id: int, kind: str) -> float:
         return db.execute("SELECT COALESCE(SUM(amount), 0) FROM usage WHERE user_id = ? AND kind = ? AND at > ?",

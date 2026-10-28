@@ -219,6 +219,7 @@ SHARE_BYTES = 32  # the random part of a share link
 # malta2012's licence is not settled (sources.MALTA_CREDITS)
 ADMIN_SOURCES = ("nasadem", "malta2012")
 SSE_PER_USER = 3  # open event streams of one user (the public mode)
+RATE_NAMES = {"estimate": "estimates", "profile": "profiles", "job": "searches started"}  # Limits.<kind>_rate
 # The files of a run the public site serves (what mapping.save_map and runs.save_results write, without
 # run.json: its parameters and data files are the owner's); never progress.json, tiles or other files
 RUN_FILES = ("map.html", "data.js", "lines.js", "lines.csv", "lines.geojson", "ATTRIBUTION.txt")
@@ -550,16 +551,25 @@ def create_app(data_dir: str, token: Optional[str] = None, port: int = PORT, sta
     rates = {}  # kind -> the parsed rates of Limits.<kind>_rate (requests of a user)
     rate_limiter = strategies.MovingWindowRateLimiter(storage.MemoryStorage())
     if public:
-        for kind in ("estimate", "profile"):
+        for kind in ("estimate", "profile", "job"):
             if getattr(limits, f"{kind}_rate"):
                 rates[kind] = parse_many(getattr(limits, f"{kind}_rate"))
 
     def within_rate(kind: str, user: ac.User):
-        """429 when a limited user asks for more estimates or profiles than Limits allows (the limits
-        library, in the memory of this process)."""
+        """429 when a limited user asks for more estimates, profiles or searches than Limits allows (the
+        limits library, in the memory of this process)."""
         if user.limited and kind in rates and not all([rate_limiter.hit(r, kind, str(user.id)) for r in rates[kind]]):
             record("refused", user, None, {"reason": f"{kind} rate", "status": 429})
-            raise HTTPException(429, f"too many {kind}s: try again in a minute")
+            raise HTTPException(429, f"too many {RATE_NAMES[kind]}: try again in a minute")
+
+    def admitted(user: ac.User):
+        """The quotas and safeguards of a new job, before its request is validated (a drawn geometry
+        costs time); queue() checks them again in the insert's transaction."""
+        try:
+            jobs.precheck(jobs.admission(user.id, limits, user.limited))
+        except QuotaExceeded as e:
+            record("refused", user, None, {"reason": str(e), "status": e.status})
+            raise HTTPException(e.status, str(e))
 
     def queue(request: Dict, title: str, user: ac.User, again: Optional[str] = None) -> str:
         """Add a job after the quotas and safeguards (Jobs.admission, in the insert's transaction)."""
@@ -635,6 +645,9 @@ def create_app(data_dir: str, token: Optional[str] = None, port: int = PORT, sta
 
     @app.post("/api/jobs")
     async def add_job(body: Dict, user: ac.User = Depends(current_user)):
+        """Queue a search: the rate of the user's requests and the quotas first, then the request."""
+        within_rate("job", user)
+        await run_in_threadpool(admitted, user)
         request, params = await run_in_threadpool(parse, body, user)
         return {"id": await run_in_threadpool(queue, request, title(params), user)}
 

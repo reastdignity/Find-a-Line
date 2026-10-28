@@ -42,7 +42,7 @@ PUBLIC = {
     "region_km2_max": 2500, "area_km2_max": 50, "bbox_km_max": 75, "grid_mpx_max": 36, "tiles_max": 300, "anchors_max": 3_000_000,
     "lines_max": 3_000_000, "download_mb_max": 3000, "ortho_minutes": 10,
     "jobs_active_max": 2, "jobs_day_max": 20, "km2_day_max": 250, "runs_gb_max": 5, "nominatim_day_max": 50,
-    "estimate_rate": "20/minute;300/hour", "profile_rate": "30/minute;500/hour",
+    "estimate_rate": "20/minute;300/hour", "profile_rate": "30/minute;500/hour", "job_rate": "10/minute;60/hour",
     "queue_max": 50, "free_disk_gb_min": 20,
 }
 # Limits on request values: field of Limits -> (parameter of SearchParams, "min" or "max")
@@ -123,12 +123,14 @@ class Limits(BaseSettings):
         None, description="estimates a user may ask for, in the notation of the limits library "
                           "(\"20/minute;300/hour\")")
     profile_rate: Optional[str] = Field(None, description="profiles a user may ask for, the same notation")
+    job_rate: Optional[str] = Field(
+        None, description="requests to start a search a user may send (refused ones too), the same notation")
     # Safeguards of the server, for everyone (also users without limits and administrators)
     queue_max: Optional[int] = Field(None, gt=0, description="searches waiting or running on the site at once")
     free_disk_gb_min: Optional[float] = Field(
         None, ge=0, description="no new searches while the disk of the data folder has less free space, GB")
 
-    @field_validator("estimate_rate", "profile_rate")
+    @field_validator("estimate_rate", "profile_rate", "job_rate")
     @classmethod
     def check_rate(cls, value: Optional[str]) -> Optional[str]:
         if value is not None:
