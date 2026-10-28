@@ -1431,7 +1431,7 @@ def test_local_headers(tmp_path):
     with TestClient(web.create_app(str(tmp_path), token=TOKEN, start_scheduler=False), base_url=LOCAL) as client:
         response = client.get("/api/schema")
         assert response.status_code == 200
-        assert response.headers["referrer-policy"] == "strict-origin-when-cross-origin"
+        assert response.headers["referrer-policy"] == "strict-origin"
         assert response.headers["cross-origin-opener-policy"] == "same-origin"
         assert client.get("/", headers={"host": "localhost:8765"}).status_code == 200
 
@@ -1642,6 +1642,16 @@ def test_odd_input_is_no_server_error(tmp_path, settings, account_settings, prov
     anonymous = run_people["anonymous"]
     assert anonymous.get(f"/s/{token}/data.js").status_code == 200
     assert anonymous.get(f"/s//{token}/data.js").status_code == 404
+
+
+def test_referrer_is_the_origin_only(run_people):
+    """Every answer, a share page's too, asks for the origin only as the Referer: the browser's own
+    requests from /s/<token>/map.html (favicon, cached tiles) do not carry the token."""
+    a, anonymous = run_people["a"], run_people["anonymous"]
+    token = a.post(f"/api/runs/{RUN_A}/share").json()["url"].split("/s/")[1].split("/")[0]
+    for client, path in ((anonymous, f"/s/{token}/map.html"), (a, "/"), (anonymous, "/cache/x/wm256/1.jpg"),
+                         (a, f"/runs/{RUN_A}/map.html")):
+        assert client.get(path).headers["referrer-policy"] == "strict-origin", path
 
 
 def test_cache_control(run_people, tmp_path):

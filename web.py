@@ -69,15 +69,16 @@ LOCAL_HOSTS = ["127.0.0.1", "localhost"]  # tests use them too (TestClient's bas
 GRACEFUL_SECONDS = 5    # open event streams are closed this long after a stop
 KEEP_ALIVE_SECONDS = 5  # an idle connection is closed after it
 # Headers of every answer, in both modes. The viewer and the app need no inline scripts or
-# styles. The Referer carries the origin only: the tile servers' policies ask for one, and no
-# path (later a share token) leaves the site.
+# styles. The Referer carries the origin only, to other sites and to our own (strict-origin): the
+# tile servers' policies ask for one, and no path leaves the page, not even to us (a share page's
+# own requests, its favicon or cached tiles, would carry /s/<token>/ into the logs).
 SECURITY_HEADERS = {
     "Content-Security-Policy": "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: "
                                "https:; connect-src 'self'; base-uri 'none'; form-action 'self'; "
                                "frame-ancestors 'none'",
     "X-Content-Type-Options": "nosniff",
     "X-Frame-Options": "DENY",
-    "Referrer-Policy": "strict-origin-when-cross-origin",
+    "Referrer-Policy": "strict-origin",
     "Cross-Origin-Opener-Policy": "same-origin",
     "Cross-Origin-Resource-Policy": "same-origin",
     "Permissions-Policy": "accelerometer=(), camera=(), geolocation=(), gyroscope=(), magnetometer=(), "
