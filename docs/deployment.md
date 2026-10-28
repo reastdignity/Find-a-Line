@@ -26,10 +26,26 @@ What the site needs from the outside, and what stays closed:
 - A Linux server (Debian 13 or Ubuntu 24.04 are assumed below) with Docker Engine and the Compose
   plugin from Docker's repository (`docker compose version`), git, `sqlite3`, `restic`, `ufw`:
   `sudo apt install git sqlite3 restic ufw`.
+- **cgroup v2** (the default of both systems): `stat -fc %T /sys/fs/cgroup` must say
+  `cgroup2fs`, and `docker info` `Cgroup Version: 2`. The worker reads its container's memory
+  and CPU limits from cgroup v2 to size the searches; under cgroup v1 it cannot, and warns at
+  start (`docker compose logs worker`): a search could then plan for the whole machine and be
+  killed at the memory limit.
 - Cores and memory for the searches: the worker takes `WORKER_CPUS` cores (all but one) and
-  `WORKER_MEMORY` (8 GB by default), the web service 1 core and 1 GB. Disk: the data volume holds
-  the cache of elevation data, orthophotos and OpenStreetMap extracts and the saved runs; the site
-  accepts no new searches below 20 GB free (`FINDALINE_LIMIT_FREE_DISK_GB_MIN`).
+  `WORKER_MEMORY` (8 GB by default), the web service 1 core and 1 GB.
+- **Disk.** The data volume holds the cache of elevation data, orthophotos and OpenStreetMap
+  extracts and the saved runs; it grows with every new area searched. The site accepts no new
+  searches below 20 GB free (`FINDALINE_LIMIT_FREE_DISK_GB_MIN`), but the cache has no automatic
+  eviction yet (planned: docs/roadmap.md), and a search or download already running may still
+  fill the disk. If the volumes share a filesystem with the system and your other services, a
+  full disk takes them all down (logs, databases, Docker itself). Give the site a filesystem of
+  its own: Docker's data root (`"data-root": "/srv/docker"` in `/etc/docker/daemon.json`, on a
+  partition or logical volume of its own, set before the first `docker compose up`), or at
+  least the volume `findaline_data` (a dedicated filesystem such as an LVM volume or a separate
+  disk mounted at its folder, or a quota: an XFS project quota, a ZFS or btrfs dataset with a
+  quota). Watch it: `df -h /var/lib/docker` (or your data root) and the free disk in the
+  *Admin* tab. To free space by hand, delete old folders under the volume's `cache/` while no
+  search runs (they are downloaded again when needed).
 - SWAG running, with a domain pointing at your public address (a DNS record you manage, or a
   dynamic DNS name) and ports 80 and 443 of the router forwarded to it.
 - An e-mail address or URL where the operators of Nominatim, Overpass and the data services can
@@ -40,12 +56,24 @@ What the site needs from the outside, and what stays closed:
 ## 2. DNS and the certificate
 SWAG's certificate must cover `findaline.example.org`. Either:
 - **a subdomain**: add it to `SUBDOMAINS` of SWAG's container (e.g. `SUBDOMAINS=www,findaline`
-  with `URL=example.org`), create a DNS record for `findaline` (a CNAME to your main name, or an
-  A/AAAA record to your public address) and recreate SWAG (`docker compose up -d swag` in its
+  with `URL=example.org`), create a DNS record for `findaline` (an A record to your public IPv4
+  address, or a CNAME to your main name if that has no AAAA record; see *IPv6* below) and
+  recreate SWAG (`docker compose up -d swag` in its
   folder); SWAG requests the new certificate at start (`docker logs swag` shows it);
 - **or a wildcard certificate**: `SUBDOMAINS=wildcard`, `VALIDATION=dns` with your DNS provider's
   plugin (`DNSPLUGIN=` and its credentials in `/srv/swag/dns-conf/<provider>.ini`); then only the
   DNS record for `findaline` (or a wildcard record) is needed.
+
+**IPv6: no AAAA record for `findaline` at first.** SWAG's own network is usually IPv4 only.
+A visitor connecting over IPv6 then reaches it through Docker's userland proxy (`docker-proxy`),
+which opens a new IPv4 connection from the bridge's gateway: nginx sees every IPv6 visitor as
+that one private address (e.g. `172.18.0.1`). They would all share one bucket of the
+per-address limits (one visitor's burst refuses everyone), and fail2ban would never ban them
+(SWAG's `ignoreip` skips private addresses). So publish only an A record for this name. A CNAME
+to a name that has an AAAA record brings the AAAA along: use an A record then (with a wildcard
+record, add an explicit A record for `findaline`, which takes precedence). Check:
+`dig +short AAAA findaline.example.org` prints nothing. Section 12 checks that the log shows the
+visitors' real addresses. To serve IPv6 later, see *IPv6 later* in section 5.
 
 If your DNS provider proxies traffic (Cloudflare's orange cloud), turn the proxy off for this name:
 otherwise every request reaches SWAG from the provider's addresses, and the per-address limits
@@ -259,6 +287,16 @@ no `--ipv6`), so the containers have no IPv6 address and no IPv6 route. If you e
 add the same block for IPv6 to `/etc/ufw/after6.rules` (`fc00::/7`, `fe80::/10` instead of the
 IPv4 ranges).
 
+**IPv6 later** (an option, not needed to start). To publish an AAAA record for the site, SWAG
+must see the IPv6 visitors' own addresses (section 2): give SWAG's network IPv6
+(`enable_ipv6: true` and an IPv6 subnet in SWAG's compose file, with Docker's `ip6tables`,
+the default of current Docker Engine), so Docker forwards IPv6 to SWAG itself instead of
+through `docker-proxy`, and check with section 12 that IPv6 visitors appear with their own
+addresses. One visitor usually holds a whole /64, so the limit zones should then count per /64
+rather than per address (a `map` of `$binary_remote_addr` in `00-findaline-http.conf`), and the
+firewall rules above need their IPv6 counterparts. This is planned (docs/roadmap.md), not part
+of the files here.
+
 **Test from inside the containers** (after section 9, while the site runs):
 
 ```sh
@@ -336,6 +374,10 @@ python3 -c "import secrets; print(secrets.token_urlsafe(48))" > secrets/findalin
   `X-Forwarded-For` is believed), `FINDALINE_CONTACT`, `FINDALINE_GITHUB_CLIENT_ID` and/or
   `FINDALINE_GOOGLE_CLIENT_ID`, `FINDALINE_ADMINS` (below), `FINDALINE_SIGNUP` (`approval` by
   default: new accounts wait for an administrator), the limits (README, *Limits of the web app*).
+  The public site has time limits by default: an hour for a search's download, two hours for
+  its computing and for an OpenStreetMap extract, two minutes for an estimate or a profile
+  (`FINDALINE_LIMIT_DOWNLOAD_SECONDS=3600`, `..._COMPUTE_SECONDS=7200`, `..._OSM_SECONDS=7200`,
+  `..._QUICK_SECONDS=120`); set one in `findaline.env` only to change it (`none` removes it).
 - `.env` (compose itself): `WORKER_CPUS` (the number of cores minus one; `nproc` tells them),
   `WORKER_MEMORY`, `FINDALINE_MIRROR_DIR` (section 10), `CONTAINER_DNS_1`/`_2` (section 5).
 - `secrets/` (secrets/README.md): the client secrets into their files (`nano
@@ -588,6 +630,13 @@ bans.
 7. **Sign-in** with the real GitHub app (and Google): the account of an administrator lands in
    the app, another one on *waiting for approval*; approve it in *Admin*.
 8. **The firewall test** of section 5, and a **restore test** of section 11.
+9. **The visitors' real addresses** (outside the LAN): open the site from a phone on mobile
+   data (IPv4; and over IPv6 too if you published an AAAA record), look up the phone's public
+   address (a "what is my IP" page), then
+   `docker exec swag tail -n 5 /config/log/nginx/findaline.access.log`: the lines must start
+   with that public address, never with a private one (`172.x`, `10.x`, `192.168.x`: Docker's
+   proxy or a NAT in between, which would put every visitor in one limit bucket and out of
+   fail2ban's reach; section 2, *IPv6*).
 
 ## 13. Updates
 1. Check the CI first: the commit you are about to deploy must have passed GitHub Actions (tests
