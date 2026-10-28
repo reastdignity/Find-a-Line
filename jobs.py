@@ -37,7 +37,7 @@ from typing import Dict, Iterable, List, Optional, Set
 
 import cache
 import params as pm
-from limits import Limits
+from limits import Limits, PublicSettings
 
 TICK = 0.5                # seconds between looks at the queue
 PROGRESS_INTERVAL = 0.3   # seconds between progress events of a job
@@ -528,8 +528,10 @@ def kill_tree(pid: int):
 class Scheduler:
     """The worker: starts the processes of the jobs, one downloading and one computing job at a time."""
 
-    def __init__(self, jobs: Jobs, worker_id: Optional[str] = None, limits: Optional[Limits] = None):
+    def __init__(self, jobs: Jobs, worker_id: Optional[str] = None, limits: Optional[Limits] = None,
+                 public: bool = False):
         self.jobs = jobs
+        self.public = public  # the worker of the public site
         self.limits = limits or Limits()  # time limits (FINDALINE_LIMIT_*; none locally)
         self.quick = None  # the process of the quick lane
         self.worker_id = worker_id or f"{socket.gethostname()}-{os.getpid()}-{uuid.uuid4().hex[:6]}"
@@ -684,10 +686,17 @@ def main(argv: List[str]) -> int:
         description="The worker of the web app: runs the queued searches (start the server with "
                     "`findaline.py web --no-worker`).")
     parser.add_argument("--data-dir", help="data folder (default: FINDALINE_DATA or the folder of the scripts)")
+    parser.add_argument("--public", action="store_true",
+                        help="the worker of the public site (`findaline.py web --public`): needs the same settings "
+                             "(FINDALINE_PUBLIC_URL, FINDALINE_TRUSTED_PROXY, FINDALINE_CONTACT)")
     args = parser.parse_args(argv)
+    if args.public:
+        # FINDALINE_CONTACT goes into the User-Agent of the worker's requests (cache.py reads the
+        # environment, which the worker's processes inherit; a Docker secret is put there too)
+        os.environ["FINDALINE_CONTACT"] = PublicSettings.load().contact
     data = cache.data_dir(args.data_dir)
     cache.check_layout(os.path.join(data, "cache"))
-    scheduler = Scheduler(Jobs(data))
+    scheduler = Scheduler(Jobs(data), public=args.public)
     # SIGTERM (docker stop, systemd) stops it like Ctrl+C: the running phases are killed and
     # their jobs marked interrupted (a tiled area resumes when it is started again)
     for name in ("SIGTERM", "SIGBREAK"):  # SIGBREAK: Ctrl+Break, or a service stopped on Windows

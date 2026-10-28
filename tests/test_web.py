@@ -30,9 +30,13 @@ def client(tmp_path):
 
 
 def test_guards(client, tmp_path):
-    assert client.get("/api/schema", headers={"host": "evil.example"}).status_code == 403
+    assert client.get("/api/schema", headers={"host": "evil.example"}).status_code == 400  # DNS rebinding
     assert client.post("/api/jobs", json={"params": {}}).status_code == 403          # no token
     headers = {"x-findaline-token": TOKEN}
+    foreign = {**headers, "origin": "https://evil.example"}
+    assert client.post("/api/jobs", json={"params": {}}, headers=foreign).status_code == 403
+    own = {**headers, "origin": f"http://127.0.0.1:{web.PORT}"}
+    assert client.post("/api/jobs", json={"params": {"lat": 50, "lon": 19}}, headers=own).status_code == 200
     for params in ({"elevation_file": "x.tif"}, {"opentopo_key": "k"}, {"area": "C:/secret.geojson"}):
         response = client.post("/api/jobs", json={"params": params}, headers=headers)
         assert response.status_code == 400, params

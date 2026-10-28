@@ -16,11 +16,17 @@ opens the browser.
 
 Security (docs/roadmap.md, "Security"): the server listens on 127.0.0.1 only, but any
 website the user visits could send requests to it, so it accepts only its own Host
-names, and every request that changes something needs the session token of the page
-(a header a foreign website cannot set). File paths never come from the web: the
-cli_only fields are refused, and a drawn area or an area file (read in the browser) is a
-GeoJSON geometry checked without GDAL (SearchParams.geometry, area.check_geometry), never
-written to a file.
+names (TrustedHostMiddleware), and a request that changes something only from its own
+Origin and with the session token of the page (a header a foreign website cannot set).
+File paths never come from the web: the cli_only fields are refused, and a drawn area or
+an area file (read in the browser) is a GeoJSON geometry checked without GDAL
+(SearchParams.geometry, area.check_geometry), never written to a file. Every answer
+carries the headers of SECURITY_HEADERS.
+
+The public mode (`--public`, limits.PublicSettings) serves the site behind a reverse
+proxy: only the host of FINDALINE_PUBLIC_URL, an Origin required for changes, X-Forwarded-*
+trusted from FINDALINE_TRUSTED_PROXY only, no worker in this process. Until accounts
+exist, everything but the page and its assets (is_open) answers 401.
 """
 
 import asyncio
@@ -38,6 +44,7 @@ from typing import Dict, List, Optional
 import cache
 import params as pm
 from jobs import TICK, Jobs, Scheduler, search_params
+from limits import PublicSettings
 
 PORT = 8765
 PING = 15           # seconds between the keep-alive comments of the event stream
@@ -45,6 +52,24 @@ SEND_TIMEOUT = 30   # seconds a client may take to accept a message of the event
 QUICK_POLL = 0.1    # seconds between looks for the answer of an estimate or a profile
 NO_WORKER = "the worker is not running (findaline.py worker, or findaline.py web without --no-worker)"
 APP_DIST = os.path.join(os.path.dirname(os.path.abspath(__file__)), "viewer", "dist")
+LOCAL_HOSTS = ["127.0.0.1", "localhost", "testserver"]  # testserver: FastAPI's TestClient
+GRACEFUL_SECONDS = 5    # open event streams are closed this long after a stop
+KEEP_ALIVE_SECONDS = 5  # an idle connection is closed after it
+# Headers of every answer, in both modes. The viewer and the app need no inline scripts or
+# styles. The Referer carries the origin only: the tile servers' policies ask for one, and no
+# path (later a share token) leaves the site.
+SECURITY_HEADERS = {
+    "Content-Security-Policy": "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: "
+                               "https:; connect-src 'self'; base-uri 'none'; form-action 'self'; "
+                               "frame-ancestors 'none'",
+    "X-Content-Type-Options": "nosniff",
+    "X-Frame-Options": "DENY",
+    "Referrer-Policy": "strict-origin-when-cross-origin",
+    "Cross-Origin-Opener-Policy": "same-origin",
+    "Cross-Origin-Resource-Policy": "same-origin",
+    "Permissions-Policy": "accelerometer=(), camera=(), geolocation=(), gyroscope=(), magnetometer=(), "
+                          "microphone=(), payment=(), usb=()",
+}
 
 
 def schema() -> List[Dict]:
@@ -109,17 +134,26 @@ def title(p: pm.SearchParams) -> str:
     return (p.name or where) + (f" (r {p.radius:g} m)" if circle else "")
 
 
-def create_app(data_dir: str, token: Optional[str] = None, port: int = PORT, start_scheduler: bool = True):
-    """The FastAPI application (tests create it without the scheduler)."""
+def is_open(path: str) -> bool:
+    """Whether the public mode serves a path without signing in: the page and its assets."""
+    return path == "/" or path.startswith("/app/")
+
+
+def create_app(data_dir: str, token: Optional[str] = None, port: int = PORT, start_scheduler: bool = True,
+               public: Optional[PublicSettings] = None):
+    """The FastAPI application (tests create it without the scheduler); with `public`, the public
+    mode, which never runs the worker in this process."""
     from fastapi import FastAPI, HTTPException, Request
     from fastapi.concurrency import run_in_threadpool
     from fastapi.responses import HTMLResponse, JSONResponse
     from fastapi.staticfiles import StaticFiles
     from sse_starlette import EventSourceResponse
+    from starlette.middleware.trustedhost import TrustedHostMiddleware
 
     import runs as rn
 
     token = token or secrets.token_urlsafe(24)
+    start_scheduler = start_scheduler and public is None
     jobs = Jobs(data_dir)
     scheduler = Scheduler(jobs)
 
@@ -132,28 +166,36 @@ def create_app(data_dir: str, token: Optional[str] = None, port: int = PORT, sta
 
     app = FastAPI(title="Find-a-Line", docs_url=None, redoc_url=None, openapi_url=None, lifespan=lifespan)
     app.state.jobs, app.state.scheduler, app.state.token = jobs, scheduler, token
-    hosts = {f"127.0.0.1:{port}", f"localhost:{port}", "testserver"}
+    if public:
+        hosts, origins = [public.host], {public.origin}
+    else:
+        hosts, origins = LOCAL_HOSTS, {f"http://127.0.0.1:{port}", f"http://localhost:{port}"}
     cache_dir = os.path.join(data_dir, "cache")
     runs_dir = os.path.join(data_dir, "runs")
     os.makedirs(runs_dir, exist_ok=True)
 
     @app.middleware("http")
     async def guard(request: Request, call_next):
-        # Only our own host names (DNS rebinding), and the token for anything that changes state (CSRF)
-        if request.headers.get("host") not in hosts:
-            return JSONResponse({"detail": "unknown host"}, status_code=403)
-        if request.method not in ("GET", "HEAD") and request.headers.get("x-findaline-token") != token:
-            return JSONResponse({"detail": "missing or wrong token"}, status_code=403)
-        response = await call_next(request)
-        response.headers["Content-Security-Policy"] = (
-            "default-src 'self'; script-src 'self'; style-src 'self'; "
-            "img-src 'self' data: https:; connect-src 'self'; frame-ancestors 'none'")
-        response.headers["X-Content-Type-Options"] = "nosniff"
+        # Anything that changes state only from our own page (CSRF): its Origin (required in the
+        # public mode; locally a client without one, e.g. curl, is no browser) and its token
+        changes = request.method not in ("GET", "HEAD")
+        origin = request.headers.get("origin")
+        if public and not is_open(request.url.path):
+            response = JSONResponse({"detail": "sign-in required"}, status_code=401)
+        elif changes and (public or origin is not None) and origin not in origins:
+            response = JSONResponse({"detail": "foreign or missing Origin"}, status_code=403)
+        elif changes and request.headers.get("x-findaline-token") != token:
+            response = JSONResponse({"detail": "missing or wrong token"}, status_code=403)
+        else:
+            response = await call_next(request)
+        response.headers.update(SECURITY_HEADERS)
         # The viewer and the app change with the code, run data with every run: always revalidate
         # (otherwise a browser may keep an old viewer.js next to a new data.js)
         response.headers.setdefault("Cache-Control", "no-cache")
-        response.headers["Referrer-Policy"] = "no-referrer"
         return response
+
+    # Only our own host names (DNS rebinding; behind the proxy the public host), before the guard
+    app.add_middleware(TrustedHostMiddleware, allowed_hosts=hosts, www_redirect=False)
 
     @app.get("/", response_class=HTMLResponse)
     def page():
@@ -349,22 +391,51 @@ APP_HTML = """<!doctype html>
 """
 
 
+def is_loopback(host: str) -> bool:
+    import ipaddress
+    try:
+        return host == "localhost" or ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
 def main(argv: List[str]) -> int:
     import argparse
     parser = argparse.ArgumentParser(prog="findaline.py web", description="Find-a-Line in the browser.")
-    parser.add_argument("--port", type=int, default=PORT, help=f"port on 127.0.0.1 (default {PORT})")
+    parser.add_argument("--port", type=int, default=PORT, help=f"port (default {PORT})")
+    parser.add_argument("--host", default="127.0.0.1",
+                        help="address to listen on (default 127.0.0.1); other than a loopback address only "
+                             "with --public")
     parser.add_argument("--no-browser", action="store_true", help="do not open the browser")
     parser.add_argument("--data-dir", help="data folder (default: FINDALINE_DATA or the folder of the scripts)")
     parser.add_argument("--no-worker", action="store_true",
                         help="do not run the worker in this process; `findaline.py worker` runs the searches")
+    parser.add_argument("--public", action="store_true",
+                        help="the public site behind a reverse proxy: needs FINDALINE_PUBLIC_URL, "
+                             "FINDALINE_TRUSTED_PROXY and FINDALINE_CONTACT; implies --no-worker and --no-browser "
+                             "(the worker runs as `findaline.py worker --public`)")
     args = parser.parse_args(argv)
+    if not args.public and not is_loopback(args.host):
+        parser.error("--host other than a loopback address needs --public (the local app has no sign-in)")
     import uvicorn
+    public = PublicSettings.load() if args.public else None
     data = cache.data_dir(args.data_dir)
     cache.check_layout(os.path.join(data, "cache"))
-    app = create_app(data, port=args.port, start_scheduler=not args.no_worker)
-    url = f"http://127.0.0.1:{args.port}/"
-    print(f"Find-a-Line is running at {url} (close this window or press Ctrl+C to stop it)")
-    if not args.no_browser:
-        threading.Timer(1.5, webbrowser.open, args=(url,)).start()
-    uvicorn.run(app, host="127.0.0.1", port=args.port, log_level="warning")
+    app = create_app(data, port=args.port, start_scheduler=not args.no_worker, public=public)
+    server = {"host": args.host, "port": args.port, "log_level": "warning", "server_header": False,
+              "timeout_graceful_shutdown": GRACEFUL_SECONDS, "timeout_keep_alive": KEEP_ALIVE_SECONDS}
+    if public:
+        # The client's address and scheme from the X-Forwarded-* headers of the proxy only; a cap
+        # on connections (each open page holds one for its event stream)
+        server.update(proxy_headers=True, forwarded_allow_ips=public.trusted_proxy,
+                      limit_concurrency=public.concurrency)
+        print(f"Find-a-Line (public) serves {public.public_url} on {args.host}:{args.port}; the worker runs "
+              f"separately (findaline.py worker --public)")
+    else:
+        server["proxy_headers"] = False  # no proxy in front of the local app
+        url = f"http://127.0.0.1:{args.port}/"
+        print(f"Find-a-Line is running at {url} (close this window or press Ctrl+C to stop it)")
+        if not args.no_browser:
+            threading.Timer(1.5, webbrowser.open, args=(url,)).start()
+    uvicorn.run(app, **server)
     return 0
