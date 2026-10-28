@@ -42,6 +42,9 @@ class Limits(BaseSettings):
                                 "job fails with \"time limit\")")
     compute_seconds: Optional[float] = Field(
         None, gt=0, description="time limit of the computing phase of a job")
+    osm_seconds: Optional[float] = Field(
+        None, gt=0, description="time limit of a job that downloads or updates an OpenStreetMap extract (not "
+                                "the download phase's)")
     quick_seconds: Optional[float] = Field(
         None, gt=0, description="time limit of an estimate or a profile (the quick lane's process is killed "
                                 "and started again)")
@@ -69,8 +72,10 @@ class Limits(BaseSettings):
         env = cls()
         return cls(**{**(PUBLIC if public else {}), **env.model_dump(include=env.model_fields_set)})
 
-    def phase_seconds(self, phase: str) -> Optional[float]:
-        """The time limit of a phase of a job ("download" or "compute")."""
+    def phase_seconds(self, phase: str, osm: bool = False) -> Optional[float]:
+        """The time limit of a phase of a job ("download" or "compute"); osm: of a job of an OSM extract."""
+        if osm:
+            return self.osm_seconds
         return {"download": self.download_seconds, "compute": self.compute_seconds}[phase]
 
     def allows(self, name: str, value=None) -> bool:

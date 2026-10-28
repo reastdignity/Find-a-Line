@@ -33,7 +33,7 @@ import threading
 import time
 import uuid
 from datetime import datetime, timedelta
-from typing import Dict, Iterable, List, Optional, Set
+from typing import Dict, Iterable, List, NamedTuple, Optional, Set
 
 import cache
 import params as pm
@@ -500,6 +500,15 @@ def run_quick(data_dir: str, worker_id: str, parent: int):
             jobs.quick_answer(task["id"], 500, f"internal error: {type(e).__name__}: {cache.clean_error(e)}")
 
 
+class Running(NamedTuple):
+    """A phase of a job in its process."""
+    job_id: str
+    process: object
+    started: float
+    limit: Optional[float] = None  # seconds (Limits.phase_seconds), None: no limit
+    what: str = "phase"            # for the error over the limit: "the download phase", "the OSM extract job"
+
+
 def _remove_old(folder: str, days: float, keep: Iterable[str] = ()):
     """Delete the entries of a folder not changed for `days`, except those named in `keep`."""
     limit, keep = time.time() - days * 86400, set(keep)
@@ -535,7 +544,7 @@ class Scheduler:
         self.limits = limits or Limits()  # time limits (FINDALINE_LIMIT_*; none locally)
         self.quick = None  # the process of the quick lane
         self.worker_id = worker_id or f"{socket.gethostname()}-{os.getpid()}-{uuid.uuid4().hex[:6]}"
-        self.running: Dict[str, tuple] = {}  # phase -> (job id, process, start time)
+        self.running: Dict[str, Running] = {}  # phase -> the job running in it
         self.lock = threading.Lock()
         self.context = multiprocessing.get_context("spawn")  # the same on every OS
         self.stopped = threading.Event()
@@ -586,11 +595,11 @@ class Scheduler:
             self.jobs.unregister(self.worker_id)
 
     def _kill_all(self):
-        for phase, (job_id, process, _) in list(self.running.items()):
-            kill_tree(process.pid)
-            process.join()
+        for phase, running in list(self.running.items()):
+            kill_tree(running.process.pid)
+            running.process.join()
             del self.running[phase]
-            self._remove_folder(job_id)
+            self._remove_folder(running.job_id)
         if self.quick is not None:
             kill_tree(self.quick.pid)
             self.quick.join()
@@ -641,24 +650,23 @@ class Scheduler:
             self.quick.start()
 
     def _kill(self, phase: str):
-        job_id, process, _ = self.running.pop(phase)
-        kill_tree(process.pid)
-        process.join()
-        self._remove_folder(job_id)
+        running = self.running.pop(phase)
+        kill_tree(running.process.pid)
+        running.process.join()
+        self._remove_folder(running.job_id)
 
     def _check(self):
-        for job_id in self.jobs.cancel_requested(job_id for job_id, _, _ in self.running.values()):
-            for phase, (running_id, _, _) in list(self.running.items()):
-                if running_id == job_id:
+        for job_id in self.jobs.cancel_requested(running.job_id for running in self.running.values()):
+            for phase, running in list(self.running.items()):
+                if running.job_id == job_id:
                     self._kill(phase)
             self._remove_folder(job_id)
             self.jobs.set(job_id, "cancelled", when=ACTIVE + WAITING)
-        for phase, (job_id, process, started) in list(self.running.items()):
-            limit = self.limits.phase_seconds(phase)
+        for phase, (job_id, process, started, limit, what) in list(self.running.items()):
             if limit and process.is_alive() and time.time() - started > limit:
                 self._kill(phase)
                 self.jobs.set(job_id, "failed", when=(PHASE_STATUS[phase],),
-                              error=f"time limit: the {phase} phase was stopped after {limit:g} s")
+                              error=f"time limit: {what} was stopped after {limit:g} s")
                 continue
             if process.is_alive():
                 continue
@@ -675,7 +683,10 @@ class Scheduler:
                     process = self.context.Process(target=run_phase, args=(self.jobs.data_dir, job["id"], phase),
                                                    daemon=True)
                     process.start()
-                    self.running[phase] = (job["id"], process, time.time())
+                    osm = "osm" in json.loads(job["request"])  # an OSM extract: its own limit
+                    self.running[phase] = Running(job["id"], process, time.time(),
+                                                  self.limits.phase_seconds(phase, osm),
+                                                  "the OSM extract job" if osm else f"the {phase} phase")
 
 
 def main(argv: List[str]) -> int:

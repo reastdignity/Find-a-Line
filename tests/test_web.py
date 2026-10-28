@@ -255,12 +255,13 @@ def test_download_process_ending_late(tmp_path):
     jobs = Jobs(str(tmp_path))
     job = jobs.add({"params": {}, "geometry": None}, "job")
     jobs.set(job, "computing")
+    from jobs import Running
     scheduler = Scheduler(jobs)
-    scheduler.running["download"] = (job, _Ended(), time.time())
-    scheduler.running["compute"] = (job, type("Running", (), {"is_alive": lambda self: True})(), time.time())
+    scheduler.running["download"] = Running(job, _Ended(), time.time())
+    scheduler.running["compute"] = Running(job, type("Alive", (), {"is_alive": lambda self: True})(), time.time())
     scheduler._check()
     assert jobs.get(job)["status"] == "computing"
-    scheduler.running["compute"] = (job, _Ended(), time.time())
+    scheduler.running["compute"] = Running(job, _Ended(), time.time())
     scheduler._check()
     assert jobs.get(job)["status"] == "failed"
 
@@ -463,6 +464,26 @@ def test_time_limits(tmp_path, monkeypatch):
             scheduler.stop()
     assert result["status"] == "failed" and result["error"].startswith("time limit"), result
     assert not os.path.exists(jobs.folder(job))
+
+
+def test_time_limit_of_osm_jobs(tmp_path, monkeypatch):
+    """A job of an OSM extract has its own time limit (Limits.osm_seconds), not the download phase's."""
+    with _black_hole() as proxy:
+        for key in ("HTTP_PROXY", "HTTPS_PROXY"):
+            monkeypatch.setenv(key, proxy)  # the Geofabrik index never comes
+        monkeypatch.setenv("NO_PROXY", "")
+        jobs = Jobs(str(tmp_path))
+        job = jobs.add({"osm": {"action": "download", "region": "malta"}}, "OSM download: malta")
+        scheduler = Scheduler(jobs, limits=Limits(download_seconds=1, osm_seconds=6))
+        scheduler.start()
+        try:
+            assert _wait(jobs, job, ("downloading",))["status"] == "downloading"
+            time.sleep(3)  # over the download phase's limit
+            assert jobs.get(job)["status"] == "downloading"
+            result = _wait(jobs, job, ("failed", "done", "cancelled"), 25)
+        finally:
+            scheduler.stop()
+    assert result["status"] == "failed" and result["error"] == "time limit: the OSM extract job was stopped after 6 s"
 
 
 def test_housekeeping(tmp_path):

@@ -162,6 +162,7 @@ Each is an environment variable `FINDALINE_LIMIT_<NAME>`; nothing is limited by 
 | Variable (`FINDALINE_LIMIT_...`) | Public site | Limits |
 | --- | --- | --- |
 | `DOWNLOAD_SECONDS` / `COMPUTE_SECONDS` | | Time of the download / computing phase of a search (it fails with "time limit") |
+| `OSM_SECONDS` | | Time of a download or update of an OpenStreetMap extract |
 | `QUICK_SECONDS` | | Time of an estimate or a profile |
 | `KEEP_EVENTS_DAYS` | 90 (also locally) | Days the messages and progress of a finished search are kept |
 | `BUFFER_MAX` | 500 | Largest `--buffer`, m |
