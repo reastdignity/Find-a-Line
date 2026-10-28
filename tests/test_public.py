@@ -193,8 +193,9 @@ def test_public_guards(public, providers):
     assert TOKEN not in page.text and "<script" not in page.text
     assert public.get("/app/app.js").status_code == 200
     for path in ("/api/schema", "/api/jobs", "/api/events", "/api/runs", "/runs/index.html", "/cache/x/wm256/1.jpg",
-                 "/api/profile?run=x&line=1,2,3,4", "/docs", "/nothing"):
+                 "/api/profile?run=x&line=1,2,3,4"):
         assert public.get(path).status_code == 401, path
+    assert public.get("/docs").status_code == public.get("/nothing").status_code == 404
     headers = {"x-findaline-token": TOKEN, "origin": URL}
     assert public.post("/api/jobs", json={"params": {"lat": 50, "lon": 19}}, headers=headers).status_code == 401
     assert public.delete("/api/jobs/x", headers=headers).status_code == 401
@@ -202,7 +203,7 @@ def test_public_guards(public, providers):
     assert public.get("/", headers={"host": "evil.example"}).status_code == 400
     assert public.post("/", headers={"x-findaline-token": TOKEN}).status_code == 403  # no Origin
     assert public.post("/", headers={**headers, "origin": "https://evil.example"}).status_code == 403
-    assert public.post("/", headers=headers).status_code == 403  # the app's token is no session's
+    assert public.post("/", headers=headers).status_code == 401  # no session: the app's token is nothing
     sign_in(public, providers, {"id": 1, "login": "admin"})
     own = {"x-findaline-token": csrf_of(public), "origin": URL}
     assert public.post("/", headers=own).status_code == 405  # through the guard
@@ -420,6 +421,242 @@ def test_signup_modes_and_login_rate(tmp_path, settings, account_settings, provi
         db.close()
         codes = [client.get("/login/github", follow_redirects=False).status_code for _ in range(25)]
         assert codes.count(429) >= 3 and codes[0] == 302
+
+
+# The people of the authorization matrix: (provider id, status); "admin" is FINDALINE_ADMINS
+PEOPLE = {"a": ("11", "approved"), "b": ("12", "approved"), "pending": ("13", "pending"),
+          "blocked": ("14", "blocked"), "admin": ("1", "approved")}
+DENIED = {"anonymous": 401, "pending": 403, "blocked": 403}  # whatever the route, before its own checks
+
+
+def session_of(data_dir, account_settings, who: str):
+    """(user id, session cookie, CSRF token) of one of PEOPLE, signed in without the providers."""
+    users = ac.Accounts(str(data_dir), account_settings)
+    subject, status = PEOPLE[who]
+    user = users.sign_in("github", subject, who)
+    if user.status != status and not user.admin:
+        users.set_status(user.id, status)
+    cookie, csrf = users.new_session(user.id)
+    return user.id, cookie, csrf
+
+
+@pytest.fixture
+def people(public, tmp_path, account_settings):
+    """A TestClient per person of the matrix (and "anonymous"), each with its own cookies and token."""
+    clients, ids = {}, {}
+    for who in list(PEOPLE) + ["anonymous"]:
+        client = TestClient(public.app, base_url=URL)
+        client.headers["origin"] = URL
+        if who != "anonymous":
+            ids[who], cookie, csrf = session_of(tmp_path, account_settings, who)
+            client.cookies.set(ac.SESSION_COOKIE, cookie, domain="lines.example.org")
+            client.headers["x-findaline-token"] = csrf
+        clients[who] = client
+    clients["ids"] = ids
+    yield clients
+    for who, client in clients.items():
+        if who != "ids":
+            client.close()
+
+
+def test_every_route_has_its_access_rule(public):
+    """Every route outside the explicit public list depends on current_user, require_admin or
+    run_access (a FastAPI dependency, not a check inside the endpoint); the run files have theirs."""
+    from fastapi.routing import APIRoute
+    from starlette.routing import Mount
+
+    def names(dependant) -> set:
+        found = set()
+        for dependency in dependant.dependencies:
+            found.add(getattr(dependency.call, "__name__", ""))
+            found |= names(dependency)
+        return found
+    rules = {"current_user", "require_admin", "run_access"}
+    seen = []
+    for route in public.app.routes:
+        seen.append(route.path)
+        if route.path in web.PUBLIC_ROUTES:
+            continue
+        if isinstance(route, APIRoute):
+            assert names(route.dependant) & rules, f"{route.path} has no access rule"
+        elif isinstance(route, Mount):
+            assert route.path in GUARDED_MOUNTS, f"{route.path}: a mount without access control"
+        else:
+            raise AssertionError(f"{route.path}: an unknown kind of route")
+    assert "/api/jobs" in seen and "/api/events" in seen and "/app" in seen
+
+
+GUARDED_MOUNTS = {"/runs"}  # web.guard: approved users only (until the run files have their own rule)
+
+
+def test_authorization_of_jobs(public, people, tmp_path):
+    """Who may do what with jobs: anonymous 401, pending and blocked 403 everywhere; a user sees and
+    changes only their own jobs (other jobs are 404); an administrator sees and cancels every job,
+    but edits and queues again only their own; OSM extracts for administrators only."""
+    from jobs import Jobs
+    jobs = Jobs(str(tmp_path))
+    request = {"params": {"lat": 50.1, "lon": 19.7, "radius": 100}, "geometry": None}
+    a, b = people["a"], people["b"]
+    job_a = a.post("/api/jobs", json=request).json()["id"]
+    job_b = b.post("/api/jobs", json=request).json()["id"]
+    old = jobs.add(request, "from before the accounts")  # user_id NULL
+    assert jobs.get(job_a)["user_id"] == people["ids"]["a"] and jobs.get(old)["user_id"] is None
+    for job in (job_a, job_b, old):
+        jobs.set(job, "failed", error="x")
+    routes = [("get", "/api/schema"), ("get", "/api/jobs"), ("get", "/api/runs"), ("post", "/api/jobs"),
+              ("post", "/api/estimate"), ("get", f"/api/jobs/{job_a}"), ("get", f"/api/jobs/{job_a}/events"),
+              ("post", f"/api/jobs/{job_a}/again"), ("delete", f"/api/jobs/{job_a}"), ("get", "/api/events"),
+              ("get", "/api/osm?lat=50&lon=19"), ("post", "/api/osm"), ("get", "/cache/x/wm256/1/2/3.jpg"),
+              ("get", f"/api/profile?run=x&line=1,2,3,4"), ("get", "/runs/x/map.html")]
+    for who, code in DENIED.items():
+        for method, path in routes:
+            kwargs = {"json": request} if method == "post" else {}
+            answer = getattr(people[who], method)(path, **kwargs)
+            assert answer.status_code == code, (who, method, path, answer.status_code)
+
+    ids = lambda client: {j["id"] for j in client.get("/api/jobs").json()["jobs"]}  # noqa: E731
+    assert ids(a) == {job_a} and ids(b) == {job_b} and ids(people["admin"]) == {job_a, job_b, old}
+    for path in (f"/api/jobs/{job_b}", f"/api/jobs/{job_b}/events", f"/api/jobs/nothing"):
+        assert a.get(path).status_code == 404, path
+    assert a.post(f"/api/jobs/{job_b}/again").status_code == 404
+    assert a.delete(f"/api/jobs/{job_b}").status_code == 404
+    assert a.get(f"/api/jobs/{job_a}").json()["request"] == request
+    copy = a.post(f"/api/jobs/{job_a}/again").json()["id"]
+    assert jobs.get(copy)["user_id"] == people["ids"]["a"]
+    assert a.delete(f"/api/jobs/{copy}").status_code == 200
+    admin = people["admin"]
+    assert admin.get(f"/api/jobs/{job_b}").status_code == 404           # edit: own jobs only
+    assert admin.post(f"/api/jobs/{job_b}/again").status_code == 404
+    assert admin.get(f"/api/jobs/{job_b}/events").status_code == 200    # but sees every job
+    assert admin.get(f"/api/jobs/{old}").status_code == 200             # and those from before the accounts
+    again = b.post(f"/api/jobs/{job_b}/again").json()["id"]
+    assert admin.delete(f"/api/jobs/{again}").status_code == 200        # and cancels every job
+    assert jobs.get(again)["status"] == "cancelled"
+    events = a.get(f"/api/jobs/{job_a}/events").json()["events"]
+    assert events and all(e["job"] == job_a for e in events)
+    assert a.get("/api/jobs").json()["seq"] < admin.get("/api/jobs").json()["seq"]
+    assert a.post("/api/estimate", json=request).status_code == 503     # signed in: to the (missing) worker
+
+    (tmp_path / "cache" / "osm").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "cache" / "osm" / "geofabrik-index.json").write_text(json.dumps({"features": []}))
+    assert a.post("/api/osm", json={"action": "download", "region": "malta"}).status_code == 403
+    assert admin.post("/api/osm", json={"action": "download", "region": "malta"}).status_code == 400  # unknown
+    assert a.get("/api/profile?run=x&line=1,2,3,4", headers={"x-findaline-profile": "1"}).status_code == 404
+
+
+def _public_server(data_dir, settings, account_settings, providers):
+    """The public app on a real server (uvicorn in a thread); yields its port."""
+    import contextlib
+    import socket
+    import threading
+
+    import uvicorn
+
+    @contextlib.contextmanager
+    def serve():
+        with socket.socket() as sock:
+            sock.bind(("127.0.0.1", 0))
+            port = sock.getsockname()[1]
+        app = _public_app(data_dir, settings, account_settings, providers)
+        server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning"))
+        thread = threading.Thread(target=server.run, daemon=True)
+        thread.start()
+        try:
+            while not server.started:
+                time.sleep(0.1)
+            yield port
+        finally:
+            server.should_exit = True
+            thread.join(10)
+    return serve()
+
+
+def test_event_stream_per_user(tmp_path, settings, account_settings, providers, monkeypatch):
+    """The event stream sends a user the events of their own jobs only (an administrator's: all), to
+    signed-in, approved users only, and at most SSE_PER_USER streams per user."""
+    import http.client
+
+    from jobs import Jobs
+    monkeypatch.setattr(web, "PING", 1)
+    jobs = Jobs(str(tmp_path))
+    sessions = {who: session_of(tmp_path, account_settings, who) for who in ("a", "b", "pending", "admin")}
+    mine = jobs.add({"params": {}}, "a's", sessions["a"][0])
+    other = jobs.add({"params": {}}, "b's", sessions["b"][0])
+
+    def open_stream(port, who):
+        connection = http.client.HTTPConnection("127.0.0.1", port, timeout=20)
+        headers = {"Host": "lines.example.org"}
+        if who:
+            headers["Cookie"] = f"{ac.SESSION_COOKIE}={sessions[who][1]}"
+        connection.request("GET", "/api/events", headers=headers)
+        return connection, connection.getresponse()
+
+    def jobs_seen(response):
+        lines = []
+        while not any(line.startswith(":") for line in lines):
+            lines.append(response.fp.readline().decode("utf-8").rstrip("\r\n"))
+        return {json.loads(line[5:]).get("job") for line in lines if line.startswith("data:")} - {None}
+
+    with _public_server(tmp_path, settings, account_settings, providers) as port:
+        for who, code in ((None, 401), ("pending", 403)):
+            connection, response = open_stream(port, who)
+            assert response.status == code
+            connection.close()
+        opened = [open_stream(port, "a") for _ in range(web.SSE_PER_USER)]
+        assert jobs_seen(opened[0][1]) == {mine}
+        connection, response = open_stream(port, "a")
+        assert response.status == 429  # one stream too many
+        connection.close()
+        b_connection, b_response = open_stream(port, "b")  # another user's own count
+        assert b_response.status == 200 and jobs_seen(b_response) == {other}
+        admin, admin_response = open_stream(port, "admin")
+        assert jobs_seen(admin_response) == {mine, other}
+        for connection, _ in opened:
+            connection.close()
+        deadline = time.time() + 15
+        while time.time() < deadline:  # the closed streams are noticed at their next ping
+            connection, response = open_stream(port, "a")
+            if response.status == 200:
+                break
+            connection.close()
+            time.sleep(0.5)
+        assert response.status == 200
+        for c in (connection, b_connection, admin):
+            c.close()
+
+
+def test_jobs_database_gets_owners(tmp_path):
+    """A jobs.sqlite of version 4 gets the owners' column (its jobs: NULL, the local app's, which an
+    administrator sees on the public site); a tiled search resumes only for the same owner, and
+    without one (locally) its key is that of before."""
+    import sqlite3
+
+    import cache
+    import jobs as jb
+    import search
+    db = sqlite3.connect(tmp_path / "jobs.sqlite")
+    cache.migrate(db, jb.MIGRATIONS[:4])
+    db.execute("INSERT INTO jobs (id, created, status, request, title) VALUES ('old', '2026-10-01T10:00:00', "
+               "'done', '{}', 'Old job')")
+    db.commit()
+    db.close()
+    jobs = jb.Jobs(str(tmp_path))
+    assert jobs.get("old")["user_id"] is None and [j["id"] for j in jobs.all()] == ["old"]
+    assert jobs.all(7) == []
+    db = sqlite3.connect(tmp_path / "jobs.sqlite")
+    assert db.execute("PRAGMA user_version").fetchone()[0] == len(jb.MIGRATIONS) >= 5
+    db.close()
+
+    from settings import Limits
+    plan = _plan(tmp_path, Limits(), northing=254608, easting=553966, radius=150)
+    import hashlib as hl
+    p = plan.params.model_dump(exclude={"name", "update", "no_html", "ortho", "ortho_detail", "threads",
+                                        "opentopo_key", "tile_size", "group_distance", "group_by"})
+    before = hl.sha1(json.dumps({"params": p, "source": plan.source.id, "resolution": plan.resolution},
+                                sort_keys=True).encode()).hexdigest()[:16]
+    assert search._search_hash(plan) == before
+    plan.owner = 7
+    assert search._search_hash(plan) != before
 
 
 def test_local_headers(tmp_path):

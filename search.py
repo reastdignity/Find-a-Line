@@ -119,6 +119,7 @@ class Plan:
     tiles: Optional[List[Tuple[tuple, gd.Grid]]] = None
     tile_core: Optional[float] = None
     tile_label: str = ""  # "Tile 3/15 · " while a tile of a large area is computed
+    owner: Optional[int] = None  # the user of the web app's job (None: the local app, the command line)
 
 
 STEPS = 5
@@ -666,6 +667,8 @@ def _search_hash(plan: Plan) -> str:
     p = plan.params.model_dump(exclude={"name", "update", "no_html", "ortho", "ortho_detail", "threads",
                                         "opentopo_key", "tile_size", "group_distance", "group_by"})
     key = {"params": p, "source": plan.source.id, "resolution": plan.resolution}
+    if plan.owner is not None:  # a user resumes only their own search (locally the hash of before)
+        key["owner"] = plan.owner
     return hashlib.sha1(json.dumps(key, sort_keys=True).encode()).hexdigest()[:16]
 
 

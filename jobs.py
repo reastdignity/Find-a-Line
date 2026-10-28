@@ -37,7 +37,7 @@ import threading
 import time
 import uuid
 from datetime import datetime, timedelta
-from typing import Any, Dict, Iterable, List, NamedTuple, Optional, Set
+from typing import Any, Callable, Dict, Iterable, List, NamedTuple, Optional, Set
 
 import cache
 import params as pm
@@ -78,6 +78,9 @@ MIGRATIONS = [
     """CREATE TABLE quick (id INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT, request TEXT, status TEXT,
                            answer TEXT, worker_id TEXT, created REAL, started REAL);
        CREATE INDEX quick_status ON quick (status, id);""",
+    # 5: the owner of a job (accounts.sqlite users.id; NULL: the local app's, or from before the accounts)
+    """ALTER TABLE jobs ADD COLUMN user_id INTEGER;
+       CREATE INDEX jobs_user ON jobs (user_id, created);""",
 ]
 
 
@@ -150,12 +153,17 @@ class Jobs:
     def folder(self, job_id: str) -> str:
         return os.path.join(self.data_dir, "work", "jobs", job_id)
 
-    def add(self, request: Dict, title: str) -> str:
+    def add(self, request: Dict, title: str, user_id: Optional[int] = None,
+            check: Optional[Callable[[sqlite3.Connection], None]] = None) -> str:
+        """Queue a job of a user (None: the local app's); `check(db)` runs in the same write
+        transaction before the job is added (a quota: it raises to refuse it)."""
         job_id = f"{datetime.now():%Y%m%d-%H%M%S}-{uuid.uuid4().hex[:6]}"
         created = datetime.now().isoformat(timespec="seconds")
-        with self._db() as db:
-            db.execute("INSERT INTO jobs (id, created, status, request, title) VALUES (?, ?, 'queued', ?, ?)",
-                       (job_id, created, json.dumps(request), title))
+        with self._write() as db:
+            if check:
+                check(db)
+            db.execute("INSERT INTO jobs (id, created, status, request, title, user_id) "
+                       "VALUES (?, ?, 'queued', ?, ?, ?)", (job_id, created, json.dumps(request), title, user_id))
         self.event(job_id, "status", {"status": "queued", "title": title, "created": created})
         return job_id
 
@@ -164,10 +172,12 @@ class Jobs:
             row = db.execute("SELECT * FROM jobs WHERE id = ?", (job_id,)).fetchone()
         return dict(row) if row else None
 
-    def all(self) -> List[Dict]:
+    def all(self, user_id: Optional[int] = None) -> List[Dict]:
+        """The newest jobs, of one user (None: of everyone)."""
+        mine = "" if user_id is None else "WHERE user_id = ? "
         with self._db() as db:
-            rows = db.execute("SELECT id, created, status, title, run_id, error, finished FROM jobs "
-                              "ORDER BY created DESC LIMIT 200").fetchall()
+            rows = db.execute(f"SELECT id, created, status, title, run_id, error, finished FROM jobs {mine}"
+                              "ORDER BY created DESC LIMIT 200", () if user_id is None else (user_id,)).fetchall()
         return [dict(r) for r in rows]
 
     def waiting_or_running(self) -> List[Dict]:
@@ -231,18 +241,32 @@ class Jobs:
             db.execute("INSERT INTO events (job, kind, data) VALUES (?, ?, ?)",
                        (job_id, kind, json.dumps(self.redact(data))))
 
-    def events(self, since: int, job_id: Optional[str] = None) -> List[Dict]:
+    def events(self, since: int, job_id: Optional[str] = None, user_id: Optional[int] = None) -> List[Dict]:
+        """The events after `since`: of one job, or of all jobs (of one user's jobs with user_id)."""
         with self._db() as db:
             if job_id:
                 rows = db.execute("SELECT * FROM events WHERE seq > ? AND job = ? ORDER BY seq", (since, job_id))
+            elif user_id is not None:
+                rows = db.execute("SELECT e.* FROM events e JOIN jobs j ON j.id = e.job WHERE e.seq > ? AND "
+                                  "j.user_id = ? ORDER BY e.seq LIMIT 1000", (since, user_id))
             else:
                 rows = db.execute("SELECT * FROM events WHERE seq > ? ORDER BY seq LIMIT 1000", (since,))
             return [{"seq": r["seq"], "job": r["job"], "kind": r["kind"], "data": json.loads(r["data"])}
                     for r in rows.fetchall()]
 
-    def last_seq(self) -> int:
+    def last_seq(self, user_id: Optional[int] = None) -> int:
+        """The id of the last event (of one user's jobs with user_id)."""
         with self._db() as db:
+            if user_id is not None:
+                return db.execute("SELECT COALESCE(MAX(e.seq), 0) FROM events e JOIN jobs j ON j.id = e.job "
+                                  "WHERE j.user_id = ?", (user_id,)).fetchone()[0]
             return db.execute("SELECT COALESCE(MAX(seq), 0) FROM events").fetchone()[0]
+
+    def run_owner(self, run_id: str) -> Optional[Dict]:
+        """The job that saved a run ({"user_id": ...}), None if no job did."""
+        with self._db() as db:
+            row = db.execute("SELECT user_id FROM jobs WHERE run_id = ? LIMIT 1", (run_id,)).fetchone()
+        return dict(row) if row else None
 
     # --- Workers and their leases ---
 
@@ -473,6 +497,7 @@ def run_phase(data_dir: str, job_id: str, phase: str, limits: Optional[Limits] =
                 with open(tile_file, encoding="utf-8") as f:
                     params = params.model_copy(update={"tile_size": json.load(f)})
         plan = search.plan_search(params, paths, on_event, limits=limits)
+        plan.owner = job["user_id"]  # a tiled search resumes only for the same user
         if phase == "download":
             if limits and limits.download_mb_max:  # the estimate costs index requests
                 search.check_estimate(plan, search.estimate_search(plan))

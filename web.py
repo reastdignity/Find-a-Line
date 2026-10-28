@@ -154,9 +154,11 @@ def title(p: pm.SearchParams) -> str:
     return (p.name or where) + (f" (r {p.radius:g} m)" if circle else "")
 
 
-def is_open(path: str) -> bool:
-    """Whether the public mode serves a path without signing in: the page and its assets, signing in and out."""
-    return path in ("/", "/logout") or path.startswith(("/app/", "/login/", "/auth/"))
+# The routes anyone may request in the public mode (signing in and out, the page, which shows a
+# sign-in page to visitors, and its assets); every other route depends on current_user,
+# require_admin or run_access (tests/test_public.py checks it)
+PUBLIC_ROUTES = {"/", "/login/{provider}", "/auth/{provider}", "/logout", "/app"}
+SSE_PER_USER = 3  # open event streams of one user (the public mode)
 
 
 def create_app(data_dir: str, token: Optional[str] = None, port: int = PORT, start_scheduler: bool = True,
@@ -166,7 +168,7 @@ def create_app(data_dir: str, token: Optional[str] = None, port: int = PORT, sta
     mode, which never runs the worker in this process and needs `accounts` (the sign-in;
     `oauth_transport`: an httpx2 transport to the providers, for tests). `limits` of the request
     values: by default from FINDALINE_LIMIT_* (and the public site's defaults in the public mode)."""
-    from fastapi import FastAPI, HTTPException, Request
+    from fastapi import Depends, FastAPI, HTTPException, Request
     from fastapi.concurrency import run_in_threadpool
     from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
     from fastapi.staticfiles import StaticFiles
@@ -225,10 +227,13 @@ def create_app(data_dir: str, token: Optional[str] = None, port: int = PORT, sta
         path = request.url.path
         if changes and (public or origin is not None) and origin not in origins:
             response = JSONResponse({"detail": "foreign or missing Origin"}, status_code=403)
-        elif public and not is_open(path) and not signed_in(request):
+        elif public and path.startswith("/runs/") and not signed_in(request):
+            # Until run files have their own access control: an approved user only
             response = JSONResponse({"detail": "sign-in required"}, status_code=401)
-        elif public and not is_open(path) and not signed_in(request)[0].approved:
+        elif public and path.startswith("/runs/") and not signed_in(request)[0].approved:
             response = JSONResponse({"detail": "your account is not approved"}, status_code=403)
+        elif changes and path != "/logout" and public and not signed_in(request):
+            response = JSONResponse({"detail": "sign-in required"}, status_code=401)  # no session, no token
         elif changes and path != "/logout" and not csrf_ok(request, request.headers.get("x-findaline-token")):
             response = JSONResponse({"detail": "missing or wrong token"}, status_code=403)
         else:
@@ -325,8 +330,54 @@ def create_app(data_dir: str, token: Optional[str] = None, port: int = PORT, sta
         response.delete_cookie(ac.SESSION_COOKIE, path="/", secure=True, httponly=True, samesite="lax")
         return response
 
+    # --- Who may do what: dependencies of the routes (never checks inside an endpoint) ---
+
+    def current_user(request: Request) -> ac.User:
+        """The signed-in, approved user (401 / 403 otherwise); locally the one local user."""
+        if not public:
+            return ac.LOCAL
+        found = signed_in(request)
+        if not found:
+            raise HTTPException(401, "sign-in required")
+        if not found[0].approved:
+            raise HTTPException(403, "your account is not approved")
+        return found[0]
+
+    def require_admin(user: ac.User = Depends(current_user)) -> ac.User:
+        if not user.admin:
+            raise HTTPException(403, "administrators only")
+        return user
+
+    def visible_job(job_id: str, user: ac.User = Depends(current_user)) -> Dict:
+        """A job its user may see and cancel: their own; an administrator's: every job (404 otherwise,
+        so other users' jobs are not even known to exist)."""
+        job = jobs.get(job_id)
+        if not job or not (user.admin or job["user_id"] == user.id):
+            raise HTTPException(404, "no such job")
+        return job
+
+    def own_job(job_id: str, user: ac.User = Depends(current_user)) -> Dict:
+        """A job its user may edit or queue again: their own (an administrator's: also those from
+        before the accounts)."""
+        job = jobs.get(job_id)
+        if not job or not (job["user_id"] == user.id or (user.admin and job["user_id"] is None)):
+            raise HTTPException(404, "no such job")
+        return job
+
+    def run_access(run: str, user: ac.User = Depends(current_user)) -> str:
+        """A run its user may open: the run of one of their jobs (an administrator: every run)."""
+        meta_path = os.path.join(runs_dir, run, "run.json")
+        if os.path.basename(run) != run or run in ("", ".", "..") or not os.path.isfile(meta_path):
+            raise HTTPException(404, "no such run")
+        owner = jobs.run_owner(run)
+        if not user.admin and (owner is None or owner["user_id"] != user.id):
+            raise HTTPException(404, "no such run")
+        return run
+
+    streams: Dict[Optional[int], int] = {}  # open event streams per user
+
     @app.get("/api/schema")
-    def get_schema():
+    def get_schema(user: ac.User = Depends(current_user)):
         return {"fields": schema(limits), "groups": pm.GROUPS}
 
     def parse(body: Dict) -> Dict:
@@ -354,89 +405,98 @@ def create_app(data_dir: str, token: Optional[str] = None, port: int = PORT, sta
         return answer["body"]
 
     @app.post("/api/estimate")
-    async def estimate(body: Dict):
+    async def estimate(body: Dict, user: ac.User = Depends(current_user)):
         return await quick("estimate", parse(body))
 
     @app.post("/api/jobs")
-    async def add_job(body: Dict):
+    async def add_job(body: Dict, user: ac.User = Depends(current_user)):
         request = parse(body)
         try:
             params = await run_in_threadpool(search_params, request)
         except ValueError as e:
             raise HTTPException(400, str(e))
-        return {"id": jobs.add(request, title(params))}
+        return {"id": await run_in_threadpool(jobs.add, request, title(params), user.id)}
+
+    def seen_by(user: ac.User) -> Optional[int]:
+        """The user whose jobs a user sees (None: everyone's, for an administrator)."""
+        return None if user.admin else user.id
 
     @app.get("/api/jobs")
-    def list_jobs():
-        return {"jobs": jobs.all(), "seq": jobs.last_seq(), "worker": jobs.worker_alive()}
+    def list_jobs(user: ac.User = Depends(current_user)):
+        return {"jobs": jobs.all(seen_by(user)), "seq": jobs.last_seq(seen_by(user)), "worker": jobs.worker_alive()}
 
     @app.get("/api/jobs/{job_id}")
-    def get_job(job_id: str):
+    def get_job(job: Dict = Depends(own_job)):
         """A job with its request (parameters and drawn or uploaded area), for "edit"."""
-        job = jobs.get(job_id)
-        if not job:
-            raise HTTPException(404, "no such job")
         return {**{k: job[k] for k in ("id", "created", "status", "title", "run_id", "error")},
                 "request": json.loads(job["request"])}
 
     @app.post("/api/jobs/{job_id}/again")
-    def run_again(job_id: str):
+    def run_again(job: Dict = Depends(own_job), user: ac.User = Depends(current_user)):
         """Queue a finished job again with the same request (a tiled area resumes where it stopped)."""
-        job = jobs.get(job_id)
-        if not job:
-            raise HTTPException(404, "no such job")
         if job["status"] not in ("done", "failed", "cancelled"):
             raise HTTPException(409, "the job is still waiting or running")
         title = re.sub(r"( \(again\))+$", "", job["title"]) + " (again)"
         request = json.loads(job["request"])
         if "osm" not in request:
             parse(request)  # the limits may have changed since
-        return {"id": jobs.add(request, title)}
+        return {"id": jobs.add(request, title, user.id)}
 
     @app.get("/api/jobs/{job_id}/events")
-    def job_events(job_id: str):
-        return {"events": jobs.events(0, job_id)}
+    def job_events(job: Dict = Depends(visible_job)):
+        return {"events": jobs.events(0, job["id"])}
 
     @app.delete("/api/jobs/{job_id}")
-    def cancel(job_id: str):
+    def cancel(job: Dict = Depends(visible_job)):
         """A waiting job is cancelled at once, a running one by its worker (which kills its processes)."""
-        if not jobs.request_cancel(job_id):
+        if not jobs.request_cancel(job["id"]):
             raise HTTPException(409, "the job is not waiting or running")
         return {"ok": True}
 
     @app.get("/api/events")
-    async def events(request: Request, since: int = 0):
-        """All job events after `since`, as Server-Sent Events."""
+    async def events(request: Request, since: int = 0, user: ac.User = Depends(current_user)):
+        """The events of the user's jobs (an administrator's: of all) after `since`, as Server-Sent Events;
+        at most SSE_PER_USER streams per user on the public site."""
         # A reconnecting EventSource sends the last id it got
         last = request.headers.get("last-event-id", "")
         start = max(since, int(last) if last.isdigit() else 0)
+        if public and streams.get(user.id, 0) >= SSE_PER_USER:
+            raise HTTPException(429, f"at most {SSE_PER_USER} open pages per user")
+        whose = seen_by(user)
 
         def look(seq: int):
-            return jobs.events(seq), jobs.worker_alive()
+            return jobs.events(seq, user_id=whose), jobs.worker_alive()
 
         async def stream():
             # sse-starlette ends the generator when the client goes away (or the server stops)
             seq, worker = start, None
-            while True:
-                found, alive = await run_in_threadpool(look, seq)
-                for event in found:
-                    seq = event["seq"]
-                    yield {"id": str(seq), "data": json.dumps(event)}
-                if alive != worker:  # whether a worker runs: no id, it is not a stored event
-                    worker = alive
-                    yield {"data": json.dumps({"kind": "worker", "data": {"alive": alive}})}
-                await asyncio.sleep(TICK)
+            streams[user.id] = streams.get(user.id, 0) + 1  # counted while the generator runs
+            try:
+                while True:
+                    found, alive = await run_in_threadpool(look, seq)
+                    for event in found:
+                        seq = event["seq"]
+                        yield {"id": str(seq), "data": json.dumps(event)}
+                    if alive != worker:  # whether a worker runs: no id, it is not a stored event
+                        worker = alive
+                        yield {"data": json.dumps({"kind": "worker", "data": {"alive": alive}})}
+                    await asyncio.sleep(TICK)
+            finally:
+                streams[user.id] -= 1
         # A comment every PING seconds keeps proxies from closing a quiet stream and finds dead
         # connections; a client that takes no data for SEND_TIMEOUT seconds is dropped
         return EventSourceResponse(stream(), ping=PING, send_timeout=SEND_TIMEOUT)
 
     @app.get("/api/runs")
-    def list_runs():
+    def list_runs(user: ac.User = Depends(current_user)):
+        """The user's runs (an administrator's: all)."""
+        mine = None if user.admin else {job["run_id"] for job in jobs.all(user.id) if job["run_id"]}
         return {"runs": [{k: r.get(k) for k in ("id", "name", "created", "summary", "has_map")}
-                         | {"description": rn.params_summary(r)} for r in rn.list_runs(runs_dir)]}
+                         | {"description": rn.params_summary(r)} for r in rn.list_runs(runs_dir)
+                         if mine is None or r["id"] in mine]}
 
     @app.get("/api/osm")
-    async def osm_regions(lat: float, lon: float):
+    async def osm_regions(lat: float, lon: float, user: ac.User = Depends(current_user)):
         """The Geofabrik regions at a point and the downloaded extracts."""
         import osmextract
 
@@ -449,7 +509,7 @@ def create_app(data_dir: str, token: Optional[str] = None, port: int = PORT, sta
             raise HTTPException(502, f"Geofabrik index: {cache.clean_error(e)}")
 
     @app.post("/api/osm")
-    async def osm_job(body: Dict):
+    async def osm_job(body: Dict, user: ac.User = Depends(require_admin)):
         """Queue the download or the update of an extract: {"action": "download"|"update", "region": id}."""
         import osmextract
         action, region = body.get("action"), str(body.get("region", ""))
@@ -467,10 +527,10 @@ def create_app(data_dir: str, token: Optional[str] = None, port: int = PORT, sta
         if any(json.loads(j["request"]).get("osm", {}).get("region") == region for j in jobs.waiting_or_running()):
             raise HTTPException(409, f"{region} is already waiting or being downloaded in the queue")
         request = {"osm": {"action": action, "region": region}}
-        return {"id": jobs.add(request, f"OSM {action}: {region}")}
+        return {"id": await run_in_threadpool(jobs.add, request, f"OSM {action}: {region}", user.id)}
 
     @app.get("/api/profile")
-    async def line_profile(request: Request, run: str, line: str):
+    async def line_profile(request: Request, line: str, run: str = Depends(run_access)):
         """The profile of a line of a saved run, computed from the cached data (search.profile_of_line,
         in the worker's quick lane).
 
@@ -479,9 +539,6 @@ def create_app(data_dir: str, token: Optional[str] = None, port: int = PORT, sta
         """
         if not request.headers.get("x-findaline-profile"):
             raise HTTPException(403, "header X-Findaline-Profile missing")
-        meta_path = os.path.join(runs_dir, run, "run.json")
-        if os.path.basename(run) != run or run in ("", ".", "..") or not os.path.isfile(meta_path):
-            raise HTTPException(404, "no such run")
         try:
             points = [float(v) for v in line.split(",")]
         except ValueError:
@@ -495,7 +552,7 @@ def create_app(data_dir: str, token: Optional[str] = None, port: int = PORT, sta
 
     # Cached orthophoto tiles only (maps reach them as ../../cache/<folder>/wm256/...)
     @app.get("/cache/{path:path}")
-    def ortho_tile(path: str):
+    def ortho_tile(path: str, user: ac.User = Depends(current_user)):
         from fastapi.responses import FileResponse
         parts = path.split("/")
         full = os.path.normpath(os.path.join(cache_dir, *parts))
