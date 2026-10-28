@@ -183,6 +183,14 @@ Each is an environment variable `FINDALINE_LIMIT_<NAME>`; nothing is limited by 
 
 Several places at once: give `--point LAT,LON` (WGS84) once per place, optionally with a name for the run, `--point LAT,LON,NAME`. They are searched one after another with the same options, and each is saved as its own run. Example: `--point 50.15595,19.75627,"Żabi Koń" --point 50.17332,19.74092`
 
+#### The public site in Docker
+`Dockerfile` builds one image (Python and the locked dependencies, no build tools; it runs as uid 10001), and `compose.yaml` runs it twice: `web` (`findaline.py web --public`) and `worker` (`findaline.py worker --public`), sharing the data volume (`/data`). The root filesystem of both is read-only; the work goes to the volume and `/tmp`. Before `docker compose up -d --build`:
+- `findaline.env`: the settings of the site (`FINDALINE_PUBLIC_URL`, `FINDALINE_TRUSTED_PROXY`, `FINDALINE_CONTACT`, sign-in, `FINDALINE_LIMIT_*`), copied from `findaline.env.example`;
+- `secrets/`: one file per secret, listed in `secrets/README.md`; they reach the web service as Docker secrets, never the image;
+- optionally `.env` (from `.env.example`): the cores and memory of the services (`WORKER_CPUS`: the number of cores minus one), the folder of the Slovak tiles (`FINDALINE_MIRROR_DIR`), `OPENTOPOGRAPHY_API_KEY`.
+
+The web service publishes no port: a reverse proxy in front of it serves the site (its networks and the deployment on a home server come with `docs/deployment.md`). For a test on your own computer, copy `compose.override.example.yaml` to `compose.override.yaml`; the page is then at `http://127.0.0.1:8765/`.
+
 ### Options
 | Option | Default | Description |
 | --- | --- | --- |

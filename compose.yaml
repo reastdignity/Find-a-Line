@@ -1,0 +1,93 @@
+# The public site: `web` (the page and the API) and `worker` (the searches) from one image,
+# sharing the data volume; they talk only through jobs.sqlite in it.
+#
+# Before `docker compose up -d --build`:
+# - findaline.env: the settings of the site (copy findaline.env.example);
+# - secrets/: one file per secret (secrets/README.md), readable by uid 10001;
+# - optionally .env next to this file (copy .env.example): resources, the Slovak mirror,
+#   OPENTOPOGRAPHY_API_KEY.
+# The web service publishes no port: the reverse proxy reaches it in its own network (added by
+# the deployment, docs/deployment.md). For a local test copy compose.override.example.yaml to
+# compose.override.yaml.
+
+name: findaline
+
+x-image: &image
+  image: findaline:local
+  build: .
+  init: true                 # tini as PID 1: forwards SIGTERM, reaps the phases' processes
+  user: "10001:10001"
+  read_only: true            # writes go to /data (the volume) and /tmp only
+  cap_drop: [ALL]
+  security_opt: ["no-new-privileges:true"]
+  restart: unless-stopped
+  env_file: [findaline.env]
+
+services:
+  web:
+    <<: *image
+    command: ["web", "--public", "--host", "0.0.0.0", "--port", "8765", "--no-browser"]
+    mem_limit: ${WEB_MEMORY:-1g}
+    cpus: ${WEB_CPUS:-1}
+    pids_limit: 256
+    volumes:
+      - data:/data
+      - type: tmpfs
+        target: /tmp
+        tmpfs: {size: 67108864}   # 64 MB (mode 1777, the default)
+    secrets:
+      - findaline_session_secret
+      - findaline_github_client_secret
+      - findaline_google_client_secret
+    networks: [web]
+    # GET / with the public host as Host (TrustedHostMiddleware answers 400 to any other);
+    # the host comes from the same settings as the server's (limits.PublicSettings)
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request as r, limits; r.urlopen(r.Request('http://127.0.0.1:8765/', headers={'Host': limits.PublicSettings.load().host}), timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      start_period: 20s
+      retries: 3
+    stop_grace_period: 15s   # uvicorn closes the event streams after 5 s
+
+  worker:
+    <<: *image
+    command: ["worker", "--public"]
+    # Most of the machine: set WORKER_CPUS to the number of cores minus one (it may not exceed
+    # them) and WORKER_MEMORY to what the host can spare; the search sizes its tiles and threads
+    # from these limits (search.cgroup_limits)
+    mem_limit: ${WORKER_MEMORY:-8g}
+    cpus: ${WORKER_CPUS:-3}
+    pids_limit: 4096           # threads count: numba's per process, download pools
+    environment:
+      FINDALINE_MIRROR: /mirror
+      OPENTOPOGRAPHY_API_KEY: ${OPENTOPOGRAPHY_API_KEY:-}   # --source nasadem (admins only on the public site)
+    volumes:
+      - data:/data
+      # The local mirror of the Slovak tiles (the folder above slovakia/), read-only; without
+      # FINDALINE_MIRROR_DIR an empty volume, and --source auto takes `europe` for Slovakia
+      - ${FINDALINE_MIRROR_DIR:-no-mirror}:/mirror:ro
+      - type: tmpfs
+        target: /tmp
+        tmpfs: {size: 536870912}  # 512 MB
+    networks: [worker]
+    # SIGTERM: the worker kills its phases' processes (up to 30 s each), marks their jobs
+    # interrupted and gives up its lease (jobs.Scheduler.stop)
+    stop_grace_period: 90s
+
+volumes:
+  data:        # SQLite in WAL mode: a local volume, the same uid in both services
+  no-mirror:
+
+# One network each: the worker never shares one with the web service or the proxy
+networks:
+  web:
+  worker:
+
+secrets:
+  findaline_session_secret:
+    file: ./secrets/findaline_session_secret
+  findaline_github_client_secret:
+    file: ./secrets/findaline_github_client_secret
+  findaline_google_client_secret:
+    file: ./secrets/findaline_google_client_secret

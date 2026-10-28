@@ -1,0 +1,37 @@
+# Only what the image runs: the scripts, pyproject.toml/uv.lock and viewer/dist (the bundle,
+# copied to runs/_viewer by every run and served as the app's page). Nothing at run time reads
+# viewer/src, the tests, the docs or tools/ (sk_tiles.py is run by hand elsewhere).
+
+# Generated data and local state (the data folder is the volume at /data)
+cache/
+runs/
+work/
+*.sqlite
+*.sqlite-*
+findaline_map.html
+**/__pycache__/
+**/*.py[cod]
+.venv/
+.pytest_cache/
+
+# Settings and secrets of a deployment
+.env
+*.env
+secrets/
+compose*.yaml
+
+# Not needed at run time
+.git/
+.github/
+.claude/
+.gitignore
+.gitattributes
+.dockerignore
+Dockerfile
+docs/
+tests/
+tools/
+*.md
+start.*
+viewer/*
+!viewer/dist/

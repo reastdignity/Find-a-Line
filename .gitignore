@@ -221,3 +221,9 @@ viewer/node_modules/
 
 # Agent worktrees (one per task)
 .claude/worktrees/
+
+# Docker deployment: settings, secrets and the local override (examples are committed)
+findaline.env
+compose.override.yaml
+secrets/*
+!secrets/README.md
