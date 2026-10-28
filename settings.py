@@ -153,26 +153,41 @@ class Limits(BaseSettings):
             low = self.group_distance_min_res * resolution
         return low, high
 
-    def check_request(self, params: Dict, min_resolution: float = 1.0):
-        """Refuse values of a request over the limits (ValueError naming each). Runs before the
-        parameters are validated: a value that is no number is left to SearchParams."""
+    def check_request(self, params: Dict):
+        """Refuse the fields and values of a request the web may not set (ValueError naming each),
+        before the parameters are validated: the names, and the values as the request spells them
+        (a choice is one exact text). The bounds are checked on the validated values (check_params)."""
         problems = []
-        resolution = params.get("resolution")
         for name, value in params.items():
+            if value is not None and not self.allows(name, value):
+                problems.append(f"{name if not self.allows(name) else f'{name}={value}'}: not allowed on this site")
+        if problems:
+            raise ValueError("; ".join(problems))
+
+    def check_params(self, p, resolution: Optional[float] = None, allowed: bool = True,
+                     min_resolution: float = 1.0):
+        """Refuse validated parameters (params.SearchParams) over the limits (ValueError naming each):
+        the bounds of BOUNDS on the values pydantic read (so no spelling of a number skips them) and,
+        with `allowed`, the fields and values the web may not set (the worker checks the bounds only:
+        it sets some of those fields itself). `resolution`: the search's (by default the request's,
+        or the finest, min_resolution), for --resolution and --group-distance."""
+        problems = []
+        if allowed:
+            for name in type(p).model_fields:
+                value = getattr(p, name)
+                if name in p.model_fields_set and value is not None and not self.allows(name, value):
+                    problems.append(f"{name if not self.allows(name) else f'{name}={value}'}: not allowed on "
+                                    f"this site")
+        resolution = resolution if resolution is not None else p.resolution
+        res = max(resolution, min_resolution) if resolution is not None else min_resolution
+        for name in dict.fromkeys(param for param, _ in BOUNDS.values()) | {"group_distance": None}:
+            value = resolution if name == "resolution" else getattr(p, name)
             if value is None:
                 continue
-            if not self.allows(name, value):
-                problems.append(f"{name if not self.allows(name) else f'{name}={value}'}: not allowed on this site")
-                continue
-            try:
-                number = float(value)
-                res = max(float(resolution), min_resolution) if resolution is not None else min_resolution
-            except (TypeError, ValueError):
-                continue
             low, high = self.bounds(name, res)
-            if low is not None and number < low:
+            if low is not None and value < low:
                 problems.append(f"{name}: at least {low:g} on this site")
-            if high is not None and number > high:
+            if high is not None and value > high:
                 problems.append(f"{name}: at most {high:g} on this site")
         if problems:
             raise ValueError("; ".join(problems))

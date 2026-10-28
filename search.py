@@ -176,6 +176,7 @@ def plan_search(params: SearchParams, paths: Paths, on_event: Optional[OnEvent] 
     emit = on_event or _print
     src.used_data.clear()  # several searches may run in one process
     cache.check_layout(paths.cache)
+    _check_params(limits, params)
     region_km2 = limits.region_km2_max if limits else None
     if params.area is not None or params.geometry is not None:
         try:
@@ -208,10 +209,8 @@ def plan_search(params: SearchParams, paths: Paths, on_event: Optional[OnEvent] 
         emit("info", f"Note: {source.name} has no surface model (trees/buildings), NMPT check is off")
         nmpt = None
     resolution = params.resolution or source.default_resolution
+    _check_params(limits, params, resolution)  # the source's resolution when none was given
     group_distance = params.group_distance or max(20.0, 2 * resolution)
-    if limits and limits.group_distance_min_res and group_distance < limits.group_distance_min_res * resolution:
-        raise SearchError(f"--group-distance: at least {limits.group_distance_min_res * resolution:g} m "
-                          f"({limits.group_distance_min_res:g} × the resolution) on this site")
     native = source.nmt.native_res
     if isinstance(source.nmt, src.WcsTiles) and source.nmt.fetch_res is None and resolution < native:
         raise SearchError(f"--resolution cannot be finer than the {source.name} data ({native:g} m)")
@@ -269,6 +268,16 @@ def plan_search(params: SearchParams, paths: Paths, on_event: Optional[OnEvent] 
         emit("warning", note)
     return Plan(params, paths, area, source, grid, resolution, group_distance, nmpt, rigging, layers,
                 emit, crs, (x, y), limits, tiles, core)
+
+
+def _check_params(limits: Optional[Limits], params: SearchParams, resolution: Optional[float] = None):
+    """The bounds of the request values again (the web checks them first): the worker refuses a
+    request that skipped them (Limits.check_params, on the validated values)."""
+    if limits:
+        try:
+            limits.check_params(params, resolution, allowed=False, min_resolution=src.MIN_RESOLUTION)
+        except ValueError as e:
+            raise SearchError(str(e))
 
 
 def _check_tiles(grid: gd.Grid, params: SearchParams, res: float, core: float, limits: Limits):

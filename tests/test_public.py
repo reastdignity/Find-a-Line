@@ -1466,8 +1466,11 @@ def test_request_limits(monkeypatch, tmp_path):
                    {**point, "resolution": 5, "group_distance": 10}, {**point, "max_length": "1500"}):
         web.check_request({"params": params}, limits)
     with pytest.raises(ValueError) as error:
-        web.check_request({"params": {**point, "max_length": 2500, "threads": 2}}, limits)
-    assert "max_length: at most 2000" in str(error.value) and "threads: not allowed" in str(error.value)
+        web.check_request({"params": {**point, "max_length": 2500, "prominence_span": 1500}}, limits)
+    assert "max_length: at most 2000" in str(error.value) and "prominence_span: at most 1000" in str(error.value)
+    with pytest.raises(ValueError) as error:
+        web.check_request({"params": {**point, "threads": 2, "update": "stale"}}, limits)
+    assert "threads: not allowed" in str(error.value) and "update: not allowed" in str(error.value)
 
     fields = {f["name"]: f for f in web.schema(limits)}
     assert not {"threads", "tile_size", "update"} & set(fields)
@@ -1486,6 +1489,66 @@ def test_request_limits(monkeypatch, tmp_path):
         assert "threads" not in names
     with TestClient(web.create_app(str(tmp_path), token=TOKEN, start_scheduler=False)) as client:
         assert "threads" in {f["name"] for f in client.get("/api/schema").json()["fields"]}  # locally all
+
+
+# Numbers pydantic reads (the worker would use 5000) that Python's float() refuses (review A, 1)
+SPELLINGS = ["5_e3", "5e_3", "+_5000", "5_000_.", "._5e4"]
+POINT = {"lat": 50.1, "lon": 19.7, "radius": 100}
+
+
+@pytest.mark.parametrize("spelling", SPELLINGS)
+def test_request_limits_on_validated_values(tmp_path, settings, account_settings, providers, spelling):
+    """The bounds of the request values are checked on the values pydantic read, on /api/jobs and
+    /api/estimate: no spelling of a number skips them, a resolution spelled "1_e0" does not skip the
+    other bounds, and a value pydantic cannot read is refused."""
+    app = _public_app(tmp_path, settings, account_settings, providers)
+    a = _clients(app, tmp_path, account_settings, ("a",))["a"]
+    for path in ("/api/jobs", "/api/estimate"):
+        answer = a.post(path, json={"params": {**POINT, "max_length": spelling}})
+        assert answer.status_code == 400 and "max_length: at most 2000" in answer.text, (path, answer.text)
+        answer = a.post(path, json={"params": {**POINT, "resolution": "1_e0", "slope_threshold": 1}})
+        assert answer.status_code == 400 and "slope_threshold: at least 30" in answer.text, (path, answer.text)
+        answer = a.post(path, json={"params": {**POINT, "max_length": "5,000"}})
+        assert answer.status_code == 400 and "max_length" in answer.text
+    assert app.state.jobs.all() == []
+    a.close()
+
+
+def _phase_in_this_process(monkeypatch):
+    """jobs.run_phase called in the test's process: what it changes there (stdout, the progress
+    listeners and text interval, the Nominatim hook) is put back after the test."""
+    import osm
+    import progress
+    monkeypatch.setattr(sys, "stdout", sys.stdout)
+    monkeypatch.setattr(progress, "TEXT_INTERVAL", progress.TEXT_INTERVAL)
+    monkeypatch.setattr(progress, "_listeners", list(progress._listeners))
+    monkeypatch.setattr(osm, "BEFORE_REQUEST", osm.BEFORE_REQUEST)
+
+
+def test_worker_checks_the_request_limits(tmp_path, monkeypatch):
+    """A request that skipped the web's check (written to the queue directly) is refused by the
+    worker before any request to a service: plan_search(limits=) and the download phase."""
+    import requests
+
+    import jobs as jb
+    import search
+    from settings import Limits
+
+    def no_network(*args, **kwargs):
+        raise AssertionError("a request was sent")
+    monkeypatch.setattr(requests.Session, "request", no_network)
+    limits = Limits.load(public=True)
+    params = jb.search_params({"params": {**POINT, "max_length": "5_e3", "resolution": "1_e0"}})
+    with pytest.raises(search.SearchError) as error:
+        search.plan_search(params, search.Paths(str(tmp_path), str(tmp_path / "work")), lambda k, t: None,
+                           limits=limits)
+    assert "max_length: at most 2000" in str(error.value)
+    jobs = jb.Jobs(str(tmp_path), public=True)
+    job = jobs.add({"params": {**POINT, "drop_radius": "5_e3"}, "geometry": None}, "skipped the web", user_id=7)
+    jobs.claim("queued", "downloading", "w1")
+    _phase_in_this_process(monkeypatch)
+    jb.run_phase(str(tmp_path), job, "download", limits, True)
+    assert jobs.get(job)["status"] == "failed" and "drop_radius: at most 1000" in jobs.get(job)["error"]
 
 
 DATA = os.path.join(REPO, "tests", "data")
@@ -1547,7 +1610,7 @@ def test_search_limits_before_requests(tmp_path, monkeypatch):
         _plan(tmp_path, Limits(grid_mpx_max=0.5), geometry=SQUARE, max_length=1000)
     with pytest.raises(search.SearchError) as error:
         _plan(tmp_path, Limits(group_distance_min_res=2), **point, resolution=5, group_distance=8)
-    assert "at least 10 m" in str(error.value)
+    assert "group_distance: at least 10" in str(error.value)
     plan = _plan(tmp_path, Limits(grid_mpx_max=3), geometry=SQUARE, max_length=150)
     assert plan.grid.width * plan.grid.height <= 3e6
     plan.limits = Limits(download_mb_max=3000)

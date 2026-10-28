@@ -42,7 +42,7 @@ import secrets
 import threading
 import time
 import webbrowser
-from typing import Callable, Dict, List, Optional
+from typing import Callable, Dict, List, Optional, Tuple
 
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.staticfiles import StaticFiles
@@ -121,12 +121,18 @@ def schema(limits: Optional[Limits] = None, hidden_sources=()) -> List[Dict]:
 def check_request(request: Dict, limits: Optional[Limits] = None, hidden_sources=()) -> Dict:
     """Refuse what the web must not set, values over `limits` (None: no limits) and the sources of
     `hidden_sources`; returns the request with known keys only."""
+    return checked_request(request, limits, hidden_sources)[0]
+
+
+def checked_request(request: Dict, limits: Optional[Limits] = None, hidden_sources=()) -> Tuple[Dict, pm.SearchParams]:
+    """check_request, and the validated parameters: the bounds of `limits` are checked on the values
+    pydantic read (a number spelled "5_e3" is 5000 there), a value it cannot read is refused."""
     import sources as src
     params = request.get("params")
     if not isinstance(params, dict):
         raise ValueError("params missing")
     if limits:
-        limits.check_request(params, src.MIN_RESOLUTION)
+        limits.check_request(params)
     fields = {f["name"]: f for f in schema(limits, hidden_sources)}
     unknown = set(params) - set(fields)
     if unknown:
@@ -143,7 +149,11 @@ def check_request(request: Dict, limits: Optional[Limits] = None, hidden_sources
         raise ValueError("geometry: GeoJSON expected")
     if geometry is not None and area is not None:
         raise ValueError("either area or geometry")
-    return {"params": params, "geometry": geometry}
+    request = {"params": params, "geometry": geometry}
+    p = search_params(request)  # ValueError (pydantic's) for a value it cannot read
+    if limits:
+        limits.check_params(p, min_resolution=src.MIN_RESOLUTION)
+    return request, p
 
 
 def profile_problem(folder: str, points: List[float]) -> Optional[str]:
@@ -557,9 +567,11 @@ def create_app(data_dir: str, token: Optional[str] = None, port: int = PORT, sta
     def get_schema(user: ac.User = Depends(current_user)):
         return {"fields": schema(user_limits(user), hidden_sources(user)), "groups": pm.GROUPS}
 
-    def parse(body: Dict, user: ac.User) -> Dict:
+    def parse(body: Dict, user: ac.User) -> Tuple[Dict, pm.SearchParams]:
+        """The checked request and its validated parameters (400 otherwise); in a thread (a drawn
+        geometry takes a moment to validate)."""
         try:
-            return check_request(body, user_limits(user), hidden_sources(user))
+            return checked_request(body, user_limits(user), hidden_sources(user))
         except ValueError as e:
             raise HTTPException(400, str(e))
 
@@ -583,17 +595,13 @@ def create_app(data_dir: str, token: Optional[str] = None, port: int = PORT, sta
 
     @app.post("/api/estimate")
     async def estimate(body: Dict, user: ac.User = Depends(current_user)):
-        request = parse(body, user)
+        request, _ = await run_in_threadpool(parse, body, user)
         within_rate("estimate", user)
         return await quick("estimate", request, user)
 
     @app.post("/api/jobs")
     async def add_job(body: Dict, user: ac.User = Depends(current_user)):
-        request = parse(body, user)
-        try:
-            params = await run_in_threadpool(search_params, request)
-        except ValueError as e:
-            raise HTTPException(400, str(e))
+        request, params = await run_in_threadpool(parse, body, user)
         return {"id": await run_in_threadpool(queue, request, title(params), user)}
 
     def seen_by(user: ac.User) -> Optional[int]:
