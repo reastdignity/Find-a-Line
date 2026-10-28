@@ -65,3 +65,14 @@ html, body { width: 100%; height: 100%; margin: 0; padding: 0; overflow: hidden;
 .fal-list-table tbody tr { cursor: pointer; }
 .fal-list-table tbody tr:hover { background: #f0f0f0; }
 .fal-list-more { display: block; margin: 4px auto 0; cursor: pointer; }
+.fal-list-table td.fal-list-first { text-align: left; }
+.fal-list-unfold { font: 13px/1 sans-serif; border: none; background: none; padding: 0 2px; width: 16px; cursor: pointer; color: #333; }
+.fal-list-gap { display: inline-block; width: 16px; }
+.fal-list-table tr.fal-unfolded { background: #f4f4f4; }
+.fal-list-table tr.fal-member { color: #555; background: #fafafa; }
+.fal-list-table tr.fal-member td.fal-list-first { text-align: center; }
+.fal-list-table tr.fal-chosen { color: #000; font-weight: bold; }
+.fal-list-note { margin-bottom: 4px; padding: 2px 4px; background: #fff3cd; border-radius: 3px; max-width: 320px; }
+.fal-list-note button { font: inherit; cursor: pointer; }
+.fal-choice { margin: 2px 0 4px; }
+.fal-choice button { font: inherit; cursor: pointer; }

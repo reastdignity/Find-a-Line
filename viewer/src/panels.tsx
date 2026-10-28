@@ -12,6 +12,9 @@ export function control(map: L.Map, position: L.ControlPosition, className: stri
   const div = L.DomUtil.create("div", className);
   L.DomEvent.disableClickPropagation(div);
   L.DomEvent.disableScrollPropagation(div);
+  // Leaflet tells a click in a control by the clicked element's ancestors, which a button that its
+  // click renders away no longer has: the map would take it for its own and close the popup
+  L.DomEvent.on(div, "click", L.DomEvent.stopPropagation);
   const Control = L.Control.extend({options: {position}, onAdd: () => div});
   new Control().addTo(map);
   return (content: ComponentChild) => render(content, div);

@@ -1003,7 +1003,7 @@ OTHER_RUN_SCRIPT = """
         const swatch = popup.querySelector(".fal-swatch");
         const link = popup.querySelector("a");
         out.textContent = JSON.stringify({swatch: swatch.style.background, link: link.getAttribute("href"),
-          text: popup.textContent.slice(0, 200), xss: window.XSS || null, imgs: popup.querySelectorAll("img").length});
+          text: popup.textContent.slice(0, 400), xss: window.XSS || null, imgs: popup.querySelectorAll("img").length});
       }, 300);
     });
   });
@@ -1104,6 +1104,127 @@ def test_list_of_lines(tmp_path, monkeypatch):
     assert result["inView"] > 0 and result["farAway"] == 0, result
     assert result["summary"] == f"Lines (0 of {result['spots']})", result
     assert _violations(dom) == []
+
+
+GROUP_SCRIPT = """
+(function () {
+  const out = document.createElement("pre");
+  out.id = "result";
+  document.body.appendChild(out);
+  const map = window.FINDALINE_MAP, result = {};
+  const later = (then) => setTimeout(then, 300);
+  const rows = () => [...document.querySelectorAll(".fal-list-table tbody tr")];
+  const popup = () => document.querySelector(".leaflet-popup-content");
+  const popupLength = () => popup() ? +popup().textContent.match(/Shown line[^:]*:\\s*Length: (\\d+) m/)[1] : null;
+  const position = () => popup() ? popup().querySelector(".fal-choice b").textContent : null;
+  const spots = () => +document.querySelector(".fal-summary b").textContent;
+  later(() => {
+    result.spots = spots();
+    document.querySelector(".fal-list summary").click();
+    later(() => {
+      const row = rows().find((tr) => tr.querySelector(".fal-list-unfold") && +tr.children[4].textContent >= 3);
+      result.n = +row.children[4].textContent;
+      row.querySelector(".fal-list-unfold").click();
+      later(() => {
+        const members = rows().filter((tr) => tr.classList.contains("fal-member"));
+        result.members = members.length;
+        const other = members.find((tr) => !tr.classList.contains("fal-chosen"));
+        result.chosenLength = +other.children[1].textContent;
+        other.click();
+        later(() => {
+          result.popupLength = popupLength();
+          result.rowLength = +rows().find((tr) => tr.classList.contains("fal-unfolded")).children[1].textContent;
+          result.marked = rows().filter((tr) => tr.classList.contains("fal-chosen")).length;
+          popup().querySelector(".fal-default").click();
+          later(() => {
+            result.afterDefault = position();
+            popup().querySelector(".fal-next").click();
+            later(() => {
+              result.afterNext = position();
+              const variant = Object.values(map._layers).find((l) => l.getTooltip && l.options.weight === 1
+                && l.options.interactive !== false);
+              result.variantLength = +variant.getTooltip().getContent().match(/^(\\d+) m/)[1];
+              variant.fire("click");
+              later(() => {
+                result.afterVariant = popupLength();
+                result.spotsAfter = spots();
+                out.textContent = JSON.stringify(result);
+              });
+            });
+          });
+        });
+      });
+    });
+  });
+})();
+"""
+
+
+@pytest.mark.skipif(not os.path.exists(EDGE), reason="needs Microsoft Edge")
+def test_line_chosen_in_a_group(tmp_path, monkeypatch):
+    """Another line of a group shown instead of its representative: from the group's unfolded row in
+    the list, with ◀ ▶ and "back to" in its popup, by clicking a thin variant; the groups stay."""
+    import re
+    run_id = _clip_run(tmp_path, monkeypatch)
+    folder = tmp_path / "runs" / run_id
+    (folder / "csp_stub.js").write_text(CSP_STUB, encoding="utf-8")
+    (folder / "group_test.js").write_text(GROUP_SCRIPT, encoding="utf-8")
+    page = (folder / "map.html").read_text(encoding="utf-8")
+    (folder / "group_test.html").write_text(
+        page.replace("<head>", '<head><script src="csp_stub.js"></script>')
+            .replace("</body>", '<script src="group_test.js"></script></body>'), encoding="utf-8")
+    dom = _edge_page(tmp_path, f"runs/{run_id}/group_test.html")
+    result = json.loads(re.search(r'<pre id="result">(.*?)</pre>', dom, re.S).group(1).replace("&quot;", '"'))
+    assert result["members"] == result["n"] >= 3, result
+    assert result["popupLength"] == result["rowLength"] == result["chosenLength"] and result["marked"] == 1, result
+    assert result["afterDefault"] == "1" and result["afterNext"] == "2", result
+    assert result["afterVariant"] == result["variantLength"], result
+    assert result["spotsAfter"] == result["spots"], result
+    assert _violations(dom) == []
+
+
+LINK_SCRIPT = """
+(function () {
+  const out = document.createElement("pre");
+  out.id = "result";
+  document.body.appendChild(out);
+  const result = {};
+  const popup = () => (document.querySelector(".leaflet-popup-content") || {}).textContent || "";
+  setTimeout(() => {
+    const note = document.querySelector(".fal-list-note");
+    result.note = note && note.textContent;
+    result.popupBefore = popup();
+    note.querySelector("button").click();
+    setTimeout(() => {
+      result.popup = popup();
+      result.noteAfter = !!document.querySelector(".fal-list-note");
+      out.textContent = JSON.stringify(result);
+    }, 500);
+  }, 500);
+})();
+"""
+
+
+@pytest.mark.skipif(not os.path.exists(EDGE), reason="needs Microsoft Edge")
+def test_link_to_a_line(tmp_path, monkeypatch):
+    """map.html#line=<lat1,lon1,lat2,lon2> opens that line in its group; filters that hide it are
+    named above the list, and clearing them opens it."""
+    import re
+    run_id = _clip_run(tmp_path, monkeypatch)
+    row = _lines_of(tmp_path, run_id)[3]
+    folder = tmp_path / "runs" / run_id
+    (folder / "filter_stub.js").write_text('localStorage.setItem("findaline.filters", \'{"lenMin": 100000}\');',
+                                           encoding="utf-8")
+    (folder / "link_test.js").write_text(LINK_SCRIPT, encoding="utf-8")
+    page = (folder / "map.html").read_text(encoding="utf-8")
+    (folder / "link_test.html").write_text(
+        page.replace("<head>", '<head><script src="filter_stub.js"></script>')
+            .replace("</body>", '<script src="link_test.js"></script></body>'), encoding="utf-8")
+    dom = _edge_page(tmp_path, f"runs/{run_id}/link_test.html#line=" + ",".join(str(v) for v in row[:4]))
+    result = json.loads(re.search(r'<pre id="result">(.*?)</pre>', dom, re.S).group(1).replace("&quot;", '"'))
+    assert result["note"].startswith("The line of the link is hidden by the filters"), result
+    assert result["popupBefore"] == "" and not result["noteAfter"], result
+    assert f"Anchor 1: {row[0]:.6f}, {row[1]:.6f}" in result["popup"], result
 
 
 # Between data.js and the viewer: credits as a run records them, one with markup in its texts

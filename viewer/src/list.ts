@@ -3,10 +3,12 @@
 import { dh, drop, lowerAnchor, prominence, wallAngle } from "./filters";
 import type { Line } from "./types";
 
-/** A row of the list: a line and the size of its group (1 without grouping). */
+/** A row of the list: a line and the size of its group (1 without grouping), with the lines of its
+ * group in their order (the first is the representative). */
 export interface Row<T = Line> {
   line: T;
   n: number;
+  members?: T[];
 }
 
 export interface SortKey {

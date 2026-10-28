@@ -9,12 +9,13 @@ import iconUrl from "leaflet/dist/images/marker-icon.png";
 import shadowUrl from "leaflet/dist/images/marker-shadow.png";
 import { render } from "preact";
 import "./viewer.css";
-import { dh, drop, lowerAnchor, passes, prominence, range as valueRange, saveFilters, savedFilters, wallAngle,
-         type Filters } from "./filters";
+import { dh, drop, lowerAnchor, NO_FILTERS, passes, prominence, range as valueRange, saveFilters, savedFilters,
+         wallAngle, type Filters } from "./filters";
 
 const finite = (v: number) => isFinite(v) ? v : null;
 import { groupLines, type Group } from "./grouping";
 import { baseLayers } from "./layers";
+import { lineCoords, lineKey } from "./keys";
 import { saveList, savedList, type ListState, type Row } from "./list";
 import { LinesList } from "./LinesList";
 import { inLocalPlane, listOthers, loadLines, colorOf, NEARBY_KM, saveChoice, savedChoice } from "./others";
@@ -87,14 +88,23 @@ function showColors(element: HTMLElement | undefined) {
   element?.querySelectorAll<HTMLElement>("[data-color]").forEach((s) => { s.style.background = s.dataset.color!; });
 }
 
-function groupInfo(g: Group<Line>, by: string): string {
-  if (g.members.length === 1) return lineInfo(g.rep);
-  return "<b>" + g.members.length + " similar lines</b> (shown thin)<br>" +
+const BY_LABEL: Record<string, string> = {longest: "longest", height: "highest above the terrain",
+                                          clearance: "largest clearance"};
+
+/** The popup of a group with its line `shown`: its members are in the order of the grouping (`by`), so
+ * the first is the representative; ◀ ▶ step through them (wired in popupopen). */
+function groupInfo(g: Group<Line>, shown: Line, by: string): string {
+  if (g.members.length === 1) return lineInfo(shown);
+  const k = g.members.indexOf(shown), n = g.members.length, label = BY_LABEL[by] || BY_LABEL.clearance;
+  return "<b>" + n + " similar lines</b> (shown thin: click one to show it)<br>" +
     "<b>Lengths:</b> " + range(g.members.map((m) => m.len), 0, " m") + "<br>" +
     "<b>Clearances:</b> " + range(g.members.map((m) => m.clr), 1, " m") + "<br>" +
-    "<hr class='fal-hr'><i>Shown line (" + (by === "longest" ? "longest" : by === "height"
-      ? "highest above the terrain" : "largest clearance") +
-    "):</i><br>" + lineInfo(g.rep);
+    "<hr class='fal-hr'><div class='fal-choice'>" +
+    "<button class='fal-prev' title='the previous line of the group'" + (k === 0 ? " disabled" : "") + ">&#9664;</button>" +
+    " line <b>" + (k + 1) + "</b> of " + n + " " +
+    "<button class='fal-next' title='the next line of the group'" + (k === n - 1 ? " disabled" : "") + ">&#9654;</button>" +
+    (k > 0 ? " <button class='fal-default'>back to the " + label + "</button>" : "") + "</div>" +
+    "<i>Shown line (" + (k === 0 ? label : "chosen; line 1 is the " + label) + "):</i><br>" + lineInfo(shown);
 }
 
 function start(data: RunData) {
@@ -159,7 +169,7 @@ function start(data: RunData) {
   const fromServer = location.protocol.startsWith("http");
   const canCompute = window.FINDALINE_APP ? window.FINDALINE_APP.profiles : fromServer;
   const fetchProfile = (l: Line, note: HTMLElement | null | undefined, stillOpen: () => boolean) => {
-    const key = [l.lat1, l.lon1, l.lat2, l.lon2].join(",");
+    const key = lineCoords(l);
     const known = computed.get(key);
     if (known) { l.prof = known; showProfile(l); return; }
     if (!canCompute) {
@@ -283,26 +293,33 @@ function start(data: RunData) {
                 onFilters={(next) => { filters = next; saveFilters(filters); drawLines(); }}
                 onShowAll={() => { map.closePopup(); unfocus(); }} />);
 
+  // A group's line on the map: the one chosen in it (a variant clicked, ◀ ▶ in its popup, a row of
+  // the list, a link to the line), else its representative. Only the line shown changes: the groups
+  // stay those of groupLines (as mapping.group_lines). Kept until the map is closed.
+  const keyOf = (l: Line) => lineKey(l, data.run.id);
+  const chosen = new Set<string>();
+  const shownOf = (g: Group<Line>) => g.members.find((m) => chosen.has(keyOf(m))) || g.rep;
+  const variantRenderer = L.canvas({padding: 0.5, tolerance: 5});  // thin lines that can still be clicked
+
   // The list of the lines shown (top right, under the layers): its rows are the groups drawn last
-  let listState: ListState = savedList(), rows: Row[] = [];
-  const polylineOf = new Map<Line, L.Polyline>();
+  type Spot = Row & {group: Group<Line>};
+  let listState: ListState = savedList(), rows: Spot[] = [];
+  let linkNote: {text: string; action?: string; onAction?(): void} | null = null;  // about a link to a line
+  const polylineOf = new Map<string, L.Polyline>();  // by keyOf of the line shown
   let hovered: Line | null = null;  // the line of the row under the mouse, drawn wider
   const list = control(map, "topright", "fal-panel fal-list-panel");
   const inView = (l: Line) => map.getBounds().intersects(L.latLngBounds([l.lat1, l.lon1], [l.lat2, l.lon2]));
+  // Fitted at once, then the popup (which pans itself into the view) focuses the line and opens its
+  // profile; lines of other runs have none
+  const open = (l: Line, pl: L.Polyline) => { zoomTo(pl, !l.run, false); pl.openPopup(); };
   const drawList = () => list(
     <LinesList rows={listState.inView ? rows.filter((r) => inView(r.line)) : rows} total={rows.length}
-               grouping={state.group} state={listState}
+               grouping={state.group} state={listState} keyOf={keyOf} note={linkNote}
                onState={(next) => { listState = next; saveList(listState); drawList(); }}
-               onPick={(l) => {
-                 const pl = polylineOf.get(l);
-                 if (!pl) return;
-                 // Fitted at once, then the popup (which pans itself into the view) focuses the
-                 // line and opens its profile; lines of other runs have none
-                 zoomTo(pl, !l.run, false);
-                 pl.openPopup();
-               }}
+               onPick={(l) => { const pl = polylineOf.get(keyOf(l)); if (pl) open(l, pl); }}
+               onChoose={(row, l) => choose((row as Spot).group, l, true)}
                onHover={(l) => {
-                 const before = hovered && polylineOf.get(hovered), pl = l && polylineOf.get(l);
+                 const before = hovered && polylineOf.get(keyOf(hovered)), pl = l && polylineOf.get(keyOf(l));
                  if (before) before.setStyle({weight: weightOf(hovered!)});
                  hovered = pl ? l : null;
                  if (pl) pl.setStyle({weight: 7});
@@ -310,7 +327,66 @@ function start(data: RunData) {
                }} />);
   map.on("moveend", () => { if (listState.inView && listState.open) drawList(); });
 
+  /** The line of a group on the map, with its tooltip and popup. */
+  const drawGroup = (g: Group<Line>): L.Polyline => {
+    const l = shownOf(g), pl = polyline(l, {weight: weightOf(l), opacity: 0.9});
+    polylineOf.set(keyOf(l), pl);
+    pl.bindTooltip((l.run ? escape(l.run.info.name) + ": " : "") + l.len.toFixed(0) + " m, clearance " + l.clr.toFixed(1) + " m" +
+                   (g.members.length > 1 ? " (" + g.members.length + " similar lines)" : ""));
+    pl.bindPopup("<div class='fal-drag'>&#10021; drag to move</div>" + groupInfo(g, l, state.by) +
+                 "<div class='fal-popup-tools'><button class='fal-zoom'>Zoom to line</button></div>");
+    pl.on("popupopen", (e) => {
+      const element = e.popup.getElement();
+      showColors(element);
+      focusOn(pl);
+      showProfile(l);
+      if (!l.prof && !l.run) {
+        fetchProfile(l, element?.querySelector<HTMLElement>(".fal-profile-note"), () => focused === pl);
+      }
+      const button = (name: string, click: () => void) => {
+        const b = element?.querySelector<HTMLButtonElement>(name);
+        if (b) b.onclick = click;
+      };
+      const k = g.members.indexOf(l);
+      button(".fal-zoom", () => zoomTo(pl));
+      button(".fal-prev", () => choose(g, g.members[k - 1]));
+      button(".fal-next", () => choose(g, g.members[k + 1]));
+      button(".fal-default", () => choose(g, g.rep));
+      for (const m of g.members) {
+        if (m === l) continue;
+        const variant = polyline(m, {weight: 1, opacity: 0.8, renderer: variantRenderer});
+        variant.bindTooltip(m.len.toFixed(0) + " m, clearance " + m.clr.toFixed(1) + " m: click to show this line");
+        variant.on("click", () => choose(g, m));
+        variant.addTo(variantsLayer);
+      }
+    });
+    pl.on("popupclose", () => { unfocus(); variantsLayer.clearLayers(); });
+    pl.addTo(linesLayer);
+    return pl;
+  };
+
+  /** Show another line of a group (its representative: no choice) and open its popup; `zoom`: fit the map to it. */
+  function choose(g: Group<Line>, line: Line | undefined, zoom = false) {
+    if (!line) return;
+    const before = shownOf(g), old = polylineOf.get(keyOf(before));
+    g.members.forEach((m) => chosen.delete(keyOf(m)));
+    if (line !== g.rep) chosen.add(keyOf(line));
+    map.closePopup();  // shows the lines hidden by its focus again
+    if (old) {
+      polylineOf.delete(keyOf(before));
+      linesLayer.removeLayer(old);
+    }
+    if (hovered === before) hovered = null;
+    const pl = drawGroup(g);
+    const row = rows.find((r) => r.group === g);
+    if (row) row.line = line;
+    drawList();
+    if (zoom) open(line, pl); else pl.openPopup();
+  }
+
   const drawLines = () => {
+    // The line whose popup is open stays open if it is still shown (filters changed, other runs loaded)
+    const reopen = Array.from(polylineOf).find(([, pl]) => pl === focused)?.[0];
     unfocus();
     linesLayer.clearLayers();
     variantsLayer.clearLayers();
@@ -324,34 +400,14 @@ function start(data: RunData) {
     if (state.group && filters.groupMin !== null) groups = groups.filter((g) => g.members.length >= filters.groupMin!);
     // Lines over trees/buildings first, so clear lines stay on top
     groups.sort((a, b) => +b.rep.over - +a.rep.over);
-    for (const g of groups) {
-      const l = g.rep, pl = polyline(l, {weight: weightOf(l), opacity: 0.9});
-      polylineOf.set(l, pl);
-      pl.bindTooltip((l.run ? escape(l.run.info.name) + ": " : "") + l.len.toFixed(0) + " m, clearance " + l.clr.toFixed(1) + " m" +
-                     (g.members.length > 1 ? " (" + g.members.length + " similar lines)" : ""));
-      pl.bindPopup("<div class='fal-drag'>&#10021; drag to move</div>" + groupInfo(g, state.by) +
-                   "<div class='fal-popup-tools'><button class='fal-zoom'>Zoom to line</button></div>");
-      pl.on("popupopen", (e) => {
-        showColors(e.popup.getElement());
-        focusOn(pl);
-        showProfile(l);
-        if (!l.prof && !l.run) {
-          fetchProfile(l, e.popup.getElement()?.querySelector<HTMLElement>(".fal-profile-note"), () => focused === pl);
-        }
-        const button = e.popup.getElement()?.querySelector<HTMLButtonElement>(".fal-zoom");
-        if (button) button.onclick = () => zoomTo(pl);
-        for (const m of g.members) {
-          if (m !== g.rep) polyline(m, {weight: 1, opacity: 0.8, interactive: false}).addTo(variantsLayer);
-        }
-      });
-      pl.on("popupclose", () => { unfocus(); variantsLayer.clearLayers(); });
-      pl.addTo(linesLayer);
-    }
+    groups.forEach(drawGroup);
     shown = {spots: groups.length, lines: groups.reduce((n, g) => n + g.members.length, 0)};
     // In the order of the groups: clear lines first, the best of each group first
-    rows = groups.map((g) => ({line: g.rep, n: g.members.length})).sort((a, b) => +a.line.over - +b.line.over);
+    rows = groups.map((g) => ({line: shownOf(g), n: g.members.length, members: g.members, group: g}))
+      .sort((a, b) => +a.group.rep.over - +b.group.rep.over);
     drawPanel();
     drawList();
+    if (reopen) polylineOf.get(reopen)?.openPopup();
   };
 
   // Other runs: their lines (from lines.js) and areas, grouped together with this run's
@@ -404,10 +460,34 @@ function start(data: RunData) {
       update();
     } else show(item);
   }
+  // A link to a line of this run (map.html#line=lat1,lon1,lat2,lon2, as lineCoords): it is shown in its
+  // group, the map fits it and its popup opens; filters that hide it can be cleared from the list
+  const openLinked = () => {
+    if (!location.hash.startsWith("#line=")) return;
+    const wanted = decodeURIComponent(location.hash.slice("#line=".length));
+    const line = lines.find((l) => lineCoords(l) === wanted);
+    linkNote = line ? null : {text: "The line of the link is not in this run."};
+    if (line) {
+      chosen.add(keyOf(line));
+      drawLines();
+      const pl = polylineOf.get(keyOf(line));
+      if (pl) open(line, pl);
+      else linkNote = {text: "The line of the link is hidden by the filters.", action: "clear filters", onAction: () => {
+        filters = {...NO_FILTERS};
+        saveFilters(filters);
+        state = {...state, showClean: true, showOver: true};
+        openLinked();
+      }};
+    }
+    drawList();
+  };
+  window.addEventListener("hashchange", openLinked);
+
   drawRunPanel();
   drawLines();
-  const chosen = savedChoice();
-  items.filter((i) => chosen.includes(i.run.id)).forEach(show);
+  openLinked();
+  const chosenRuns = savedChoice();
+  items.filter((i) => chosenRuns.includes(i.run.id)).forEach(show);
 }
 
 if (window.FINDALINE_RUN) start(window.FINDALINE_RUN);
