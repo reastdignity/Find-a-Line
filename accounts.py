@@ -135,6 +135,15 @@ class Accounts:
         with self._db() as db:
             return [self._user(r) for r in db.execute("SELECT * FROM users ORDER BY id").fetchall()]
 
+    def listing(self) -> List[Dict]:
+        """The users for the admin tab: User.public() with id, subject, when made and last signed in,
+        and the number of open sessions."""
+        with self._db() as db:
+            rows = db.execute("SELECT u.*, (SELECT COUNT(*) FROM sessions s WHERE s.user_id = u.id) AS sessions "
+                              "FROM users u ORDER BY u.id").fetchall()
+        return [{**self._user(r).public(), "id": r["id"], "subject": r["subject"], "created": r["created"],
+                 "last_login": r["last_login"], "sessions": r["sessions"]} for r in rows]
+
     def ensure_user(self, provider: str, subject: str) -> int:
         """The id of a user, made (approved, without a name) if it has never signed in."""
         with self._db() as db:

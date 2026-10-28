@@ -1058,6 +1058,52 @@ def test_profiles_and_deleting_runs(run_people, tmp_path):
     assert (tmp_path / "runs" / RUN_B).exists()
 
 
+def test_admin_tab(run_people, tmp_path):
+    """The admin tab's requests are an administrator's only (a user without limits too gets 403): the
+    server's state, the users (approve, block and unblock, without limits, end sessions; not other
+    administrators), every run with its owner, the OSM extracts; nothing of it locally."""
+    admin, a, b, pending, anonymous = (run_people[w] for w in ("admin", "a", "b", "pending", "anonymous"))
+    ids = run_people["ids"]
+    routes = [("get", "/api/admin/status"), ("get", "/api/admin/users"), ("get", "/api/admin/runs"),
+              ("post", f"/api/admin/users/{ids['b']}"), ("post", f"/api/admin/users/{ids['b']}/revoke"),
+              ("get", "/api/osm?lat=50&lon=19"), ("post", "/api/osm")]
+    for who, code in (("a", 403), ("unlimited", 403), ("pending", 403), ("anonymous", 401)):
+        for method, path in routes:
+            kwargs = {"json": {"status": "approved"}} if method == "post" else {}
+            assert getattr(run_people[who], method)(path, **kwargs).status_code == code, (who, path)
+    status = admin.get("/api/admin/status").json()
+    assert status["free_gb"] > 0 and status["queue"] == 0 and status["queue_max"] == 50 and status["workers"] == []
+    listed = {u["name"]: u for u in admin.get("/api/admin/users").json()["users"]}
+    assert listed["pending"]["status"] == "pending" and listed["admin"]["admin"] and listed["unlimited"]["unlimited"]
+    assert listed["a"]["sessions"] >= 1 and "subject" in listed["a"]
+
+    assert admin.post(f"/api/admin/users/{ids['pending']}", json={"status": "approved"}).status_code == 200
+    assert pending.get("/api/jobs").status_code == 200
+    assert admin.post(f"/api/admin/users/{ids['a']}", json={"status": "blocked"}).status_code == 200
+    assert a.get("/api/jobs").status_code == 401  # blocking ended the sessions
+    assert admin.post(f"/api/admin/users/{ids['a']}", json={"status": "approved"}).status_code == 200
+    users = ac.Accounts(str(tmp_path), admin.app.state.account_settings)
+    assert users.user(ids["a"]).status == "approved"
+    assert admin.post(f"/api/admin/users/{ids['b']}", json={"unlimited": True}).status_code == 200
+    assert users.user(ids["b"]).unlimited and not users.user(ids["b"]).admin
+    assert "threads" in {f["name"] for f in b.get("/api/schema").json()["fields"]}  # at the next request
+    assert admin.post(f"/api/admin/users/{ids['b']}", json={"unlimited": False}).status_code == 200
+    assert admin.post(f"/api/admin/users/{ids['b']}", json={"status": "admin"}).status_code == 400
+    assert admin.post(f"/api/admin/users/{ids['admin']}", json={"status": "blocked"}).status_code == 400
+    assert admin.post("/api/admin/users/9999", json={"status": "blocked"}).status_code == 404
+    assert admin.post(f"/api/admin/users/{ids['b']}/revoke").status_code == 200
+    assert b.get("/api/jobs").status_code == 401
+
+    runs = {r["run_id"]: r for r in admin.get("/api/admin/runs").json()["runs"]}
+    assert set(runs) == {RUN_A, RUN_B, RUN_OLD} and runs[RUN_A]["user_id"] == ids["a"]
+    assert runs[RUN_A]["name"] == "A's run" and runs[RUN_A]["visibility"] == "private"
+    assert admin.post(f"/api/runs/{RUN_A}/demo", json={"demo": True}).status_code == 200
+    assert {r["run_id"]: r for r in admin.get("/api/admin/runs").json()["runs"]}[RUN_A]["visibility"] == "demo"
+    assert anonymous.get(f"/runs/{RUN_A}/map.html").status_code == 200
+    with TestClient(web.create_app(str(tmp_path), token=TOKEN, start_scheduler=False)) as local:
+        assert local.get("/api/admin/users").status_code == 404 and local.get("/api/admin/status").status_code == 404
+
+
 def _edge(url: str, profile) -> str:
     """The DOM of a page after headless Edge ran its scripts (its own profile folder)."""
     import subprocess
@@ -1076,8 +1122,14 @@ APP_CHECK = """
   document.body.appendChild(out);
   setTimeout(() => {
     const user = document.querySelector(".fa-user");
-    out.textContent = JSON.stringify({user: user ? user.textContent : null,
-      tabs: [...document.querySelectorAll(".fa-tabs button")].map((b) => b.textContent)});
+    const tabs = [...document.querySelectorAll(".fa-tabs button")];
+    const admin = tabs.find((b) => b.textContent === "Admin");
+    if (admin) admin.click();
+    setTimeout(() => {
+      out.textContent = JSON.stringify({user: user ? user.textContent : null, tabs: tabs.map((b) => b.textContent),
+        sections: [...document.querySelectorAll(".fa-admin h3")].map((h) => h.textContent),
+        users: document.querySelectorAll(".fa-admin .fa-run").length});
+    }, 3000);
   }, 3000);
 })();
 """
@@ -1133,6 +1185,8 @@ def test_signed_in_app_and_shared_map_in_edge(tmp_path, clip_run, account_settin
 
     data = tmp_path / "data"
     data.mkdir()
+    (data / "cache" / "osm").mkdir(parents=True)  # the admin tab's OSM panel: no Geofabrik regions
+    (data / "cache" / "osm" / "geofabrik-index.json").write_text(json.dumps({"features": []}))
     copy_run(clip_run, data, RUN_A, "A's run")
     map_html = data / "runs" / RUN_A / "map.html"
     map_html.write_text(map_html.read_text("utf-8").replace("<head>", '<head><script src="/test/csp_stub.js"></script>')
@@ -1145,10 +1199,12 @@ def test_signed_in_app_and_shared_map_in_edge(tmp_path, clip_run, account_settin
     settings = PublicSettings(public_url=site, trusted_proxy="127.0.0.1", contact="admin@example.org")
     app = web.create_app(str(data), public=settings, accounts=account_settings, oauth_transport=providers.transport)
 
+    signing_in = [{"id": 11, "login": "a"}]  # who agrees at the fake provider
+
     @app.get("/test-provider/authorize")
     def authorize(request: Request):  # the provider's page: the user agrees at once
         from fastapi.responses import RedirectResponse
-        return RedirectResponse(providers.authorize(str(request.url), {"id": 11, "login": "a"}), 302)
+        return RedirectResponse(providers.authorize(str(request.url), signing_in[0]), 302)
     app.mount("/test", StaticFiles(directory=str(stubs)))
     server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning"))
     thread = threading.Thread(target=server.run, daemon=True)
@@ -1159,7 +1215,14 @@ def test_signed_in_app_and_shared_map_in_edge(tmp_path, clip_run, account_settin
         dom = _edge(f"{site}/login/github?next=/", tmp_path / "edge")
         result = json.loads(re.search(r'<pre id="result">(.*?)</pre>', dom, re.S).group(1).replace("&quot;", '"'))
         assert result["user"] and result["user"].startswith("a") and "sign out" in result["user"], result
+        assert result["tabs"] == ["New search", "Queue", "Runs"], result  # no OSM, no Admin
         assert _violations(dom) == []
+        signing_in[0] = {"id": 1, "login": "admin"}  # FINDALINE_ADMINS: the admin tab
+        dom = _edge(f"{site}/login/github?next=/", tmp_path / "edge-admin")
+        result = json.loads(re.search(r'<pre id="result">(.*?)</pre>', dom, re.S).group(1).replace("&quot;", '"'))
+        assert result["tabs"] == ["New search", "Queue", "Runs", "Admin"], result
+        assert {"Users", "All searches", "Runs", "OpenStreetMap extracts"} <= set(result["sections"]), result
+        assert result["users"] >= 2 and _violations(dom) == []
         dom = _edge(f"{site}/s/{token}/map.html", tmp_path / "edge-anonymous")
         result = json.loads(re.search(r'<pre id="result">(.*?)</pre>', dom, re.S).group(1).replace("&quot;", '"'))
         assert result["map"] and result["runs"] and result["app"] == {"profiles": False}, result

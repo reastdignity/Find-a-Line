@@ -692,8 +692,65 @@ def create_app(data_dir: str, token: Optional[str] = None, port: int = PORT, sta
         jobs.set_share(run, None)
         return {"ok": True}
 
+    # --- The admin tab (the public site; every route Depends(require_admin)) ---
+
+    def admin_only():
+        if not public:
+            raise HTTPException(404, "the admin tab is for the public site")
+
+    def other_user(user_id: int, admin: ac.User = Depends(require_admin)) -> ac.User:
+        """A user an administrator may change: not an administrator (FINDALINE_ADMINS decides those)."""
+        admin_only()
+        target = users.user(user_id)
+        if target is None:
+            raise HTTPException(404, "no such user")
+        if target.admin:
+            raise HTTPException(400, "administrators are set by FINDALINE_ADMINS")
+        return target
+
+    @app.get("/api/admin/status")
+    def admin_status(user: ac.User = Depends(require_admin)):
+        """The workers, the free disk of the data folder and the queue."""
+        admin_only()
+        import shutil
+        waiting = jobs.waiting_or_running()
+        return {"workers": jobs.workers(), "free_gb": round(shutil.disk_usage(data_dir).free / 1e9, 1),
+                "free_gb_min": limits.free_disk_gb_min, "queue": len(waiting), "queue_max": limits.queue_max}
+
+    @app.get("/api/admin/users")
+    def admin_users(user: ac.User = Depends(require_admin)):
+        admin_only()
+        return {"users": users.listing()}
+
+    @app.post("/api/admin/users/{user_id}")
+    def admin_set_user(body: Dict, target: ac.User = Depends(other_user)):
+        """Approve, block or unblock a user ({"status": "approved"|"blocked"}; blocking ends its sessions)
+        or lift its limits ({"unlimited": true|false})."""
+        if body.get("status") in ("approved", "blocked"):
+            users.set_status(target.id, body["status"])
+        elif isinstance(body.get("unlimited"), bool):
+            users.set_unlimited(target.id, body["unlimited"])
+        else:
+            raise HTTPException(400, "status (approved, blocked) or unlimited (true, false)")
+        return {"ok": True}
+
+    @app.post("/api/admin/users/{user_id}/revoke")
+    def admin_revoke(target: ac.User = Depends(other_user)):
+        """End every session of a user (they sign in again)."""
+        users.revoke(target.id)
+        return {"ok": True}
+
+    @app.get("/api/admin/runs")
+    def admin_runs(user: ac.User = Depends(require_admin)):
+        """Every run with its owner and visibility (the demo flag: POST /api/runs/<id>/demo)."""
+        admin_only()
+        meta = {r["id"]: r for r in rn.list_runs(runs_dir)}
+        return {"runs": [{**row, "shared": bool(row["shared"]), "name": meta[row["run_id"]].get("name"),
+                          "has_map": meta[row["run_id"]]["has_map"]}
+                         for row in jobs.all_runs() if row["run_id"] in meta]}
+
     @app.get("/api/osm")
-    async def osm_regions(lat: float, lon: float, user: ac.User = Depends(current_user)):
+    async def osm_regions(lat: float, lon: float, user: ac.User = Depends(require_admin)):
         """The Geofabrik regions at a point and the downloaded extracts."""
         import osmextract
 

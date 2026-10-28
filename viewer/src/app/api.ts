@@ -35,6 +35,7 @@ export interface Job {
   run_id: string | null;
   error: string | null;
   finished: string | null;
+  user_id?: number | null;  // the owner (an administrator sees every job)
 }
 
 export interface JobEvent {
@@ -54,6 +55,20 @@ export interface RunListed {
   shared: boolean;   // has a share link (the public site)
   own: boolean;      // the user's own run (else a demo run of someone else)
   demo: boolean;     // a demo run: its map is open to everyone (the public site)
+}
+
+/** The admin tab (the public site): users, every run, the server. */
+export interface AdminUser {
+  id: number; provider: string; subject: string; name: string; status: "pending" | "approved" | "blocked";
+  admin: boolean; unlimited: boolean; created: string | null; last_login: string | null; sessions: number;
+}
+export interface AdminRun {
+  run_id: string; user_id: number | null; visibility: "private" | "demo"; bytes: number; created: string;
+  shared: boolean; name: string | null; has_map: boolean;
+}
+export interface AdminStatus {
+  workers: {id: string; pid: number; host: string; started: string}[];
+  free_gb: number; free_gb_min: number | null; queue: number; queue_max: number | null;
 }
 
 export interface OsmRegion { id: string; name: string; depth: number; downloaded: boolean }
@@ -103,7 +118,14 @@ export const api = {
   osm: (lat: number, lon: number) => call<OsmState>("GET", `/api/osm?lat=${lat}&lon=${lon}`),
   osmJob: (action: "download" | "update", region: string) =>
     call<{id: string}>("POST", "/api/osm", {action, region}),
-  logout: () => call<unknown>("POST", "/logout"),  // answered with the sign-in page
+  logout: () => call<unknown>("POST", "/logout"),
+  adminStatus: () => call<AdminStatus>("GET", "/api/admin/status"),
+  adminUsers: () => call<{users: AdminUser[]}>("GET", "/api/admin/users"),
+  adminSetUser: (id: number, change: {status?: string; unlimited?: boolean}) =>
+    call<{ok: boolean}>("POST", `/api/admin/users/${id}`, change),
+  adminRevoke: (id: number) => call<{ok: boolean}>("POST", `/api/admin/users/${id}/revoke`),
+  adminRuns: () => call<{runs: AdminRun[]}>("GET", "/api/admin/runs"),
+  setDemo: (id: string, demo: boolean) => call<{ok: boolean}>("POST", `/api/runs/${encodeURIComponent(id)}/demo`, {demo}),  // answered with the sign-in page
 };
 
 /** Events of all jobs after `since` (Server-Sent Events, reconnected by the browser), and whether

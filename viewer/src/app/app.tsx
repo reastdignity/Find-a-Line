@@ -11,6 +11,7 @@ import { useEffect, useRef, useState } from "preact/hooks";
 import "./app.css";
 import { api, subscribe, user, type Field, type JobEvent, type RunListed, type SearchRequest } from "./api";
 import { JobList, type Bar, type JobView } from "./Jobs";
+import { AdminPanel } from "./Admin";
 import { OsmPanel } from "./OsmPanel";
 import { PlaceMap } from "./PlaceMap";
 import { SearchForm } from "./SearchForm";
@@ -18,7 +19,7 @@ import { SearchForm } from "./SearchForm";
 L.Icon.Default.mergeOptions({iconRetinaUrl, iconUrl, shadowUrl});
 delete (L.Icon.Default.prototype as any)._getIconUrl;
 
-type Tab = "search" | "jobs" | "runs" | "osm";
+type Tab = "search" | "jobs" | "runs" | "osm" | "admin";
 const LOG_KEEP = 500;  // messages kept per job
 
 /** Share link of a run (the public site): made, renewed or revoked by its owner; a new link is shown
@@ -106,7 +107,9 @@ function App() {
         <button class={tab === "jobs" ? "fa-on" : ""} onClick={() => setTab("jobs")}>
           Queue{active ? ` (${active})` : ""}</button>
         <button class={tab === "runs" ? "fa-on" : ""} onClick={() => setTab("runs")}>Runs</button>
-        <button class={tab === "osm" ? "fa-on" : ""} onClick={() => setTab("osm")}>OSM</button>
+        {user.local && <button class={tab === "osm" ? "fa-on" : ""} onClick={() => setTab("osm")}>OSM</button>}
+        {!user.local && user.admin &&
+          <button class={tab === "admin" ? "fa-on" : ""} onClick={() => setTab("admin")}>Admin</button>}
       </div>
       {error && <p class="fa-error">{error}</p>}
       {!worker && <p class="fa-error fa-no-worker">The worker is not running: searches wait in the queue
@@ -121,6 +124,7 @@ function App() {
         {tab === "jobs" && <JobList jobs={jobs} onEdit={edit} />}
         {tab === "runs" && <Runs />}
         {tab === "osm" && place && <OsmPanel place={place} onStarted={() => setTab("jobs")} />}
+        {tab === "admin" && place && <AdminPanel place={place} jobs={jobs} onStarted={() => setTab("jobs")} />}
       </div>
     </div>
   </div>;

@@ -270,7 +270,7 @@ class Jobs:
         """The newest jobs, of one user (None: of everyone)."""
         mine = "" if user_id is None else "WHERE user_id = ? "
         with self._db() as db:
-            rows = db.execute(f"SELECT id, created, status, title, run_id, error, finished FROM jobs {mine}"
+            rows = db.execute(f"SELECT id, created, status, title, run_id, error, finished, user_id FROM jobs {mine}"
                               "ORDER BY created DESC LIMIT 200", () if user_id is None else (user_id,)).fetchall()
         return [dict(r) for r in rows]
 
@@ -426,6 +426,18 @@ class Jobs:
             shutil.rmtree(folder)
         with self._db() as db:
             db.execute("DELETE FROM runs WHERE run_id = ?", (run_id,))
+
+    def all_runs(self) -> List[Dict]:
+        """Every run's row (the admin tab), newest first."""
+        with self._db() as db:
+            return [dict(r) for r in db.execute("SELECT run_id, user_id, visibility, bytes, created, "
+                                                "share_hash IS NOT NULL AS shared FROM runs ORDER BY created DESC")]
+
+    def workers(self) -> List[Dict]:
+        """The workers holding a lease (the admin tab)."""
+        with self._db() as db:
+            return [dict(r) for r in db.execute("SELECT id, pid, host, started FROM workers WHERE expires > ?",
+                                                (time.time(),))]
 
     def demo_runs(self) -> Set[str]:
         """The ids of the demo runs."""
