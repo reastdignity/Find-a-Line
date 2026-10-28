@@ -18,7 +18,7 @@ import math
 import os
 import sqlite3
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional, Tuple
 
 import requests
@@ -131,50 +131,102 @@ def theme(name: str, west: float, south: float, east: float, north: float, cache
 
 
 SEARCH_URL = "https://nominatim.openstreetmap.org/search"
+FAILED_DAYS = 30  # a search without a match (or a reverse lookup without an answer) is asked again after it
+# Answers larger than this (an outline of a country) are stored with their outline simplified
+MAX_ANSWER_BYTES = 5_000_000
+# The schema of nominatim.sqlite, one step per version (cache.migrate; never change a released step).
+# Version 1 is the schema the database had before it had versions, so an old one keeps its rows.
+MIGRATIONS = [
+    """CREATE TABLE IF NOT EXISTS search (query TEXT PRIMARY KEY, answer TEXT, fetched_at TEXT);
+    CREATE TABLE IF NOT EXISTS reverse (query TEXT PRIMARY KEY, answer TEXT, fetched_at TEXT);""",
+]
+
+
+def _nominatim_db(cache_dir: str) -> sqlite3.Connection:
+    path = os.path.join(cache_dir, "osm", "nominatim.sqlite")
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    db = sqlite3.connect(path, timeout=60)
+    cache.migrate(db, MIGRATIONS)
+    return db
+
+
+def _failed(answer: Dict) -> bool:
+    """Whether a stored answer found nothing: no match for a name, an error for a point."""
+    return not answer or "error" in answer
+
+
+def _cached(cache_dir: str, table: str, key: str) -> Optional[Dict]:
+    """The stored answer to a query; None if there is none or it is a failure older than FAILED_DAYS.
+
+    A row without a time (none is known, but the column allows it) counts as a lasting answer.
+    """
+    db = _nominatim_db(cache_dir)
+    try:
+        row = db.execute(f"SELECT answer, fetched_at FROM {table} WHERE query = ?", (key,)).fetchone()
+    finally:
+        db.close()
+    if not row:
+        return None
+    answer = json.loads(row[0])
+    if _failed(answer) and row[1]:
+        if datetime.now(timezone.utc) - datetime.fromisoformat(row[1]) > timedelta(days=FAILED_DAYS):
+            return None
+    return answer
+
+
+def _fit(answer: Dict) -> Optional[str]:
+    """The answer as JSON of at most MAX_ANSWER_BYTES: its outline simplified (from about a metre,
+    doubling the tolerance) until it fits; None if it cannot (then it is not stored)."""
+    text = json.dumps(answer)
+    tolerance = 1e-5  # degrees
+    while len(text.encode("utf-8")) > MAX_ANSWER_BYTES:
+        if not isinstance(answer.get("geojson"), dict) or tolerance > 0.1:
+            return None
+        outline = shape(answer["geojson"]).simplify(tolerance, preserve_topology=True)
+        text = json.dumps({**answer, "geojson": outline.__geo_interface__})
+        tolerance *= 2
+    return text
+
+
+def _store(cache_dir: str, table: str, key: str, answer: Dict) -> Dict:
+    """Store an answer; returns it as stored (a simplified outline, see _fit), so that the
+    first search and the later ones from the cache see the same."""
+    text = _fit(answer)
+    if text is None:
+        return answer
+    db = _nominatim_db(cache_dir)
+    try:
+        with db:
+            db.execute(f"INSERT OR REPLACE INTO {table} VALUES (?, ?, ?)", (key, text, cache._now()))
+    finally:
+        db.close()
+    return json.loads(text)
+
+
+def _ask(url: str, params: Dict, timeout: int, cache_dir: str):
+    """One request to Nominatim; its JSON."""
+    response = requests.get(url, headers=cache.http_headers(), timeout=timeout, params=params)
+    response.raise_for_status()
+    time.sleep(1)  # Nominatim usage policy: at most one request per second
+    return response.json()
 
 
 def search(name: str, cache_dir: str) -> Dict:
     """The best Nominatim match for a name, with its outline ("geojson"); {} if none. Cached."""
-    path = os.path.join(cache_dir, "osm", "nominatim.sqlite")
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    with sqlite3.connect(path, timeout=60) as db:
-        db.execute("CREATE TABLE IF NOT EXISTS search (query TEXT PRIMARY KEY, answer TEXT, fetched_at TEXT)")
-        row = db.execute("SELECT answer FROM search WHERE query = ?", (name,)).fetchone()
-    db.close()
-    if row:
-        return json.loads(row[0])
-    response = requests.get(SEARCH_URL, headers=cache.http_headers(), timeout=30,
-                            params={"q": name, "format": "jsonv2", "polygon_geojson": 1, "limit": 5})
-    response.raise_for_status()
-    time.sleep(1)  # Nominatim usage policy: at most one request per second
+    answer = _cached(cache_dir, "search", name)
+    if answer is not None:
+        return answer
+    found = _ask(SEARCH_URL, {"q": name, "format": "jsonv2", "polygon_geojson": 1, "limit": 5}, 30, cache_dir)
     # The first match with an area (a peak or a bus stop is a point)
-    answer = next((r for r in response.json()
-                   if r.get("geojson", {}).get("type") in ("Polygon", "MultiPolygon")), {})
-    with sqlite3.connect(path, timeout=60) as db:
-        db.execute("INSERT OR REPLACE INTO search VALUES (?, ?, ?)",
-                   (name, json.dumps(answer), datetime.now(timezone.utc).isoformat(timespec="seconds")))
-    db.close()
-    return answer
+    answer = next((r for r in found if r.get("geojson", {}).get("type") in ("Polygon", "MultiPolygon")), {})
+    return _store(cache_dir, "search", name, answer)
 
 
 def reverse(lat: float, lon: float, cache_dir: str, **params) -> Dict:
     """Nominatim reverse geocoding, cached per point (to 1e-5°) and parameters."""
     query = {"lat": round(lat, 5), "lon": round(lon, 5), "format": "jsonv2", **params}
     key = json.dumps(query, sort_keys=True)
-    path = os.path.join(cache_dir, "osm", "nominatim.sqlite")
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    with sqlite3.connect(path, timeout=60) as db:
-        db.execute("CREATE TABLE IF NOT EXISTS reverse (query TEXT PRIMARY KEY, answer TEXT, fetched_at TEXT)")
-        row = db.execute("SELECT answer FROM reverse WHERE query = ?", (key,)).fetchone()
-    db.close()
-    if row:
-        return json.loads(row[0])
-    response = requests.get(NOMINATIM_URL, headers=cache.http_headers(), timeout=15, params=query)
-    response.raise_for_status()
-    answer = response.json()
-    time.sleep(1)  # Nominatim usage policy: at most one request per second
-    with sqlite3.connect(path, timeout=60) as db:
-        db.execute("INSERT OR REPLACE INTO reverse VALUES (?, ?, ?)",
-                   (key, json.dumps(answer), datetime.now(timezone.utc).isoformat(timespec="seconds")))
-    db.close()
-    return answer
+    answer = _cached(cache_dir, "reverse", key)
+    if answer is not None:
+        return answer
+    return _store(cache_dir, "reverse", key, _ask(NOMINATIM_URL, query, 15, cache_dir))
