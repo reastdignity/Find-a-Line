@@ -6,6 +6,8 @@ import "@geoman-io/leaflet-geoman-free/dist/leaflet-geoman.css";
 import type { FeatureCollection, GeoJSON } from "geojson";
 import L from "leaflet";
 import { baseLayers } from "../layers";
+import { COLORS } from "../style";
+import type { Line } from "../types";
 
 export type Mode = "point" | "draw" | "file" | "preset";
 const COLOR = "#1f77b4";
@@ -20,6 +22,7 @@ export class PlaceMap {
   private shown = L.geoJSON(undefined, {style: {color: COLOR, weight: 2}});
   private preview = L.geoJSON(undefined, {interactive: false,
                                           style: {color: "#d95f02", weight: 2, dashArray: "6 4", fillOpacity: 0.08}});
+  private favourites = L.featureGroup();  // the tab "Favourites"
   private mode: Mode = "point";
   onPoint: (lat: number, lon: number) => void = () => {};
   onDrawn: () => void = () => {};
@@ -111,6 +114,25 @@ export class PlaceMap {
   showPreview(area: GeoJSON | null) {
     this.preview.clearLayers();
     if (area) this.preview.addData(area as any);
+  }
+
+  /** The user's favourite lines (the tab "Favourites"; null: none), the map fitted to them. */
+  showFavourites(lines: {line: Line; label: string}[] | null) {
+    this.favourites.clearLayers();
+    if (!lines) {
+      this.favourites.remove();
+      return;
+    }
+    for (const {line, label} of lines) {
+      L.polyline([[line.lat1, line.lon1], [line.lat2, line.lon2]], {color: COLORS.favourite, weight: 5, opacity: 0.9})
+        .bindTooltip(label + ": " + line.len.toFixed(0) + " m").addTo(this.favourites);
+    }
+    this.favourites.addTo(this.map);
+    if (lines.length) this.map.fitBounds(this.favourites.getBounds(), {maxZoom: 17, padding: [30, 30]});
+  }
+
+  zoomToLine(line: Line) {
+    this.map.fitBounds([[line.lat1, line.lon1], [line.lat2, line.lon2]], {maxZoom: 19, padding: [60, 60]});
   }
 
   /** The visible part of the map as S,W,N,E (for --within). */

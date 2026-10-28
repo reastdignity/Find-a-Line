@@ -15,7 +15,8 @@ import { dh, drop, lowerAnchor, NO_FILTERS, passes, prominence, range as valueRa
 const finite = (v: number) => isFinite(v) ? v : null;
 import { groupLines, type Group } from "./grouping";
 import { baseLayers } from "./layers";
-import { lineCoords, lineKey } from "./keys";
+import { exportFavourites, loadFavourites, saveFavourite, type Exported } from "./favourites";
+import { lineCoords, lineKey, runLineKey } from "./keys";
 import { saveList, savedList, type ListState, type Row } from "./list";
 import { LinesList } from "./LinesList";
 import { inLocalPlane, listOthers, loadLines, colorOf, NEARBY_KM, saveChoice, savedChoice } from "./others";
@@ -91,9 +92,10 @@ function showColors(element: HTMLElement | undefined) {
 const BY_LABEL: Record<string, string> = {longest: "longest", height: "highest above the terrain",
                                           clearance: "largest clearance"};
 
-/** The popup of a group with its line `shown`: its members are in the order of the grouping (`by`), so
- * the first is the representative; ◀ ▶ step through them (wired in popupopen). */
-function groupInfo(g: Group<Line>, shown: Line, by: string): string {
+/** The popup of a group with its line `shown` (`favourite`: shown as the user's favourite, not chosen):
+ * its members are in the order of the grouping (`by`), so the first is the representative; ◀ ▶ step
+ * through them (wired in popupopen). */
+function groupInfo(g: Group<Line>, shown: Line, by: string, favourite: boolean): string {
   if (g.members.length === 1) return lineInfo(shown);
   const k = g.members.indexOf(shown), n = g.members.length, label = BY_LABEL[by] || BY_LABEL.clearance;
   return "<b>" + n + " similar lines</b> (shown thin: click one to show it)<br>" +
@@ -104,7 +106,8 @@ function groupInfo(g: Group<Line>, shown: Line, by: string): string {
     " line <b>" + (k + 1) + "</b> of " + n + " " +
     "<button class='fal-next' title='the next line of the group'" + (k === n - 1 ? " disabled" : "") + ">&#9654;</button>" +
     (k > 0 ? " <button class='fal-default'>back to the " + label + "</button>" : "") + "</div>" +
-    "<i>Shown line (" + (k === 0 ? label : "chosen; line 1 is the " + label) + "):</i><br>" + lineInfo(shown);
+    "<i>Shown line (" + (k === 0 ? label : (favourite ? "your favourite" : "chosen") + "; line 1 is the " + label) +
+    "):</i><br>" + lineInfo(shown);
 }
 
 function start(data: RunData) {
@@ -251,6 +254,7 @@ function start(data: RunData) {
   // Clicking a line hides all the others (its group's variants stay, thin) until
   // its popup is closed or "Show all lines" is pressed
   let focused: L.Polyline | null = null, hidden: L.Layer[] = [];
+  const haloOf = new WeakMap<L.Polyline, L.Polyline>();  // the halo under a favourite line
   const unfocus = () => {
     hidden.forEach((other) => linesLayer.addLayer(other));
     hidden = [];
@@ -260,7 +264,7 @@ function start(data: RunData) {
     if (focused === pl) return;
     unfocus();
     focused = pl;
-    linesLayer.eachLayer((other) => { if (other !== pl) hidden.push(other); });
+    linesLayer.eachLayer((other) => { if (other !== pl && other !== haloOf.get(pl)) hidden.push(other); });
     hidden.forEach((other) => linesLayer.removeLayer(other));
     drawPanel();
   };
@@ -288,33 +292,73 @@ function start(data: RunData) {
                          prom: valueRange(all, (l) => finite(prominence(l, Math.max))),
                          drop: valueRange(all, (l) => finite(drop(l))),
                          group: largestGroup > 1 ? {min: 1, max: largestGroup} : null,
-                         water: all.some((l) => l.water > 0), filled: all.some((l) => l.filled > 0)}}
+                         water: all.some((l) => l.water > 0), filled: all.some((l) => l.filled > 0),
+                         favourites: favouritesOn}}
                 onChange={(next) => { state = next; drawLines(); }}
                 onFilters={(next) => { filters = next; saveFilters(filters); drawLines(); }}
                 onShowAll={() => { map.closePopup(); unfocus(); }} />);
 
   // A group's line on the map: the one chosen in it (a variant clicked, ◀ ▶ in its popup, a row of
-  // the list, a link to the line), else its representative. Only the line shown changes: the groups
-  // stay those of groupLines (as mapping.group_lines). Kept until the map is closed.
+  // the list, a link to the line; kept until the map is closed), else the user's favourite in it,
+  // else its representative. Only the line shown changes: the groups stay those of groupLines (as
+  // mapping.group_lines).
   const keyOf = (l: Line) => lineKey(l, data.run.id);
   const chosen = new Set<string>();
-  const shownOf = (g: Group<Line>) => g.members.find((m) => chosen.has(keyOf(m))) || g.rep;
+  const shownOf = (g: Group<Line>) => g.members.find((m) => chosen.has(keyOf(m)))
+    || g.members.find((m) => favourites.has(keyOf(m))) || g.rep;
   const variantRenderer = L.canvas({padding: 0.5, tolerance: 5});  // thin lines that can still be clicked
+
+  // The user's favourite lines (keyOf) of this run and of the other runs shown, kept by the server
+  // (favourites.ts); without one (a map from disk, a share link, a visitor) the map has none
+  const favourites = new Set<string>();
+  let favouritesOn = false;
+  const wantFavourites = window.FINDALINE_APP ? window.FINDALINE_APP.favourites === true : fromServer;
+  const runOf = (l: Line) => l.run ? l.run.info.id : data.run.id;
+  const loadRunFavourites = (runId: string) => {
+    if (!wantFavourites) return;
+    loadFavourites(runId).then((found) => {
+      found.forEach((coords) => favourites.add(runLineKey(runId, coords)));
+      favouritesOn = true;
+      drawLines();
+    }, () => {});  // none for this page
+  };
+  const toggleFavourite = (l: Line) => {
+    const key = keyOf(l), on = !favourites.has(key);
+    const flip = (to: boolean) => { if (to) favourites.add(key); else favourites.delete(key); };
+    if (!on && polylineOf.has(key)) chosen.add(key);  // a line shown stays shown in its group (and its popup open)
+    flip(on);
+    listNote = null;
+    drawLines();
+    saveFavourite(runOf(l), l, on).catch((e) => {
+      flip(!on);
+      listNote = {text: "The favourite was not saved: " + e.message};
+      drawLines();
+    });
+  };
+  const favouriteLines = (): Exported[] => all.filter((l) => favourites.has(keyOf(l)))
+    .map((l) => ({line: l, runId: runOf(l), runName: l.run ? l.run.info.name : data.run.name}));
 
   // The list of the lines shown (top right, under the layers): its rows are the groups drawn last
   type Spot = Row & {group: Group<Line>};
   let listState: ListState = savedList(), rows: Spot[] = [];
-  let linkNote: {text: string; action?: string; onAction?(): void} | null = null;  // about a link to a line
+  let listNote: {text: string; action?: string; onAction?(): void} | null = null;  // a link to a line, an error
   const polylineOf = new Map<string, L.Polyline>();  // by keyOf of the line shown
   let hovered: Line | null = null;  // the line of the row under the mouse, drawn wider
   const list = control(map, "topright", "fal-panel fal-list-panel");
   const inView = (l: Line) => map.getBounds().intersects(L.latLngBounds([l.lat1, l.lon1], [l.lat2, l.lon2]));
   // Fitted at once, then the popup (which pans itself into the view) focuses the line and opens its
-  // profile; lines of other runs have none
-  const open = (l: Line, pl: L.Polyline) => { zoomTo(pl, !l.run, false); pl.openPopup(); };
+  // profile; lines of other runs have none. An open popup is left as it is: opening it again renders
+  // its content anew, without the handlers of its buttons (popupopen does not come again)
+  const open = (l: Line, pl: L.Polyline) => {
+    zoomTo(pl, !l.run, false);
+    if (!pl.isPopupOpen()) pl.openPopup();
+  };
   const drawList = () => list(
     <LinesList rows={listState.inView ? rows.filter((r) => inView(r.line)) : rows} total={rows.length}
-               grouping={state.group} state={listState} keyOf={keyOf} note={linkNote}
+               grouping={state.group} state={listState} keyOf={keyOf} note={listNote}
+               isFavourite={favouritesOn ? (l) => favourites.has(keyOf(l)) : null} onFavourite={toggleFavourite}
+               favourites={favouritesOn ? favouriteLines().length : 0}
+               onExport={(kind) => exportFavourites(favouriteLines(), kind)}
                onState={(next) => { listState = next; saveList(listState); drawList(); }}
                onPick={(l) => { const pl = polylineOf.get(keyOf(l)); if (pl) open(l, pl); }}
                onChoose={(row, l) => choose((row as Spot).group, l, true)}
@@ -327,14 +371,24 @@ function start(data: RunData) {
                }} />);
   map.on("moveend", () => { if (listState.inView && listState.open) drawList(); });
 
-  /** The line of a group on the map, with its tooltip and popup. */
+  /** The line of a group on the map (over its halo if it is a favourite), with its tooltip and popup. */
   const drawGroup = (g: Group<Line>): L.Polyline => {
-    const l = shownOf(g), pl = polyline(l, {weight: weightOf(l), opacity: 0.9});
+    const l = shownOf(g), pl = polyline(l, {weight: weightOf(l), opacity: 0.9}), favourite = favourites.has(keyOf(l));
     polylineOf.set(keyOf(l), pl);
-    pl.bindTooltip((l.run ? escape(l.run.info.name) + ": " : "") + l.len.toFixed(0) + " m, clearance " + l.clr.toFixed(1) + " m" +
+    if (favourite) {
+      const halo = polyline(l, {color: COLORS.favourite, weight: weightOf(l) + 7, opacity: 0.6, dashArray: undefined,
+                                interactive: false});
+      haloOf.set(pl, halo);
+      halo.addTo(linesLayer);
+    }
+    pl.bindTooltip((favourite ? "★ " : "") + (l.run ? escape(l.run.info.name) + ": " : "") + l.len.toFixed(0) +
+                   " m, clearance " + l.clr.toFixed(1) + " m" +
                    (g.members.length > 1 ? " (" + g.members.length + " similar lines)" : ""));
-    pl.bindPopup("<div class='fal-drag'>&#10021; drag to move</div>" + groupInfo(g, l, state.by) +
-                 "<div class='fal-popup-tools'><button class='fal-zoom'>Zoom to line</button></div>");
+    pl.bindPopup("<div class='fal-drag'>&#10021; drag to move</div>" +
+                 groupInfo(g, l, state.by, favourite && !chosen.has(keyOf(l))) +
+                 "<div class='fal-popup-tools'><button class='fal-zoom'>Zoom to line</button>" +
+                 (favouritesOn ? " <button class='fal-fav'>" +
+                   (favourite ? "★ favourite (remove)" : "☆ add to favourites") + "</button>" : "") + "</div>");
     pl.on("popupopen", (e) => {
       const element = e.popup.getElement();
       showColors(element);
@@ -352,6 +406,7 @@ function start(data: RunData) {
       button(".fal-prev", () => choose(g, g.members[k - 1]));
       button(".fal-next", () => choose(g, g.members[k + 1]));
       button(".fal-default", () => choose(g, g.rep));
+      button(".fal-fav", () => toggleFavourite(l));
       for (const m of g.members) {
         if (m === l) continue;
         const variant = polyline(m, {weight: 1, opacity: 0.8, renderer: variantRenderer});
@@ -365,16 +420,19 @@ function start(data: RunData) {
     return pl;
   };
 
-  /** Show another line of a group (its representative: no choice) and open its popup; `zoom`: fit the map to it. */
+  /** Show another line of a group and open its popup (the representative too is a choice: it wins over a
+   * favourite of the group); `zoom`: fit the map to it. */
   function choose(g: Group<Line>, line: Line | undefined, zoom = false) {
     if (!line) return;
     const before = shownOf(g), old = polylineOf.get(keyOf(before));
     g.members.forEach((m) => chosen.delete(keyOf(m)));
-    if (line !== g.rep) chosen.add(keyOf(line));
+    chosen.add(keyOf(line));
     map.closePopup();  // shows the lines hidden by its focus again
     if (old) {
       polylineOf.delete(keyOf(before));
       linesLayer.removeLayer(old);
+      const halo = haloOf.get(old);
+      if (halo) linesLayer.removeLayer(halo);
     }
     if (hovered === before) hovered = null;
     const pl = drawGroup(g);
@@ -393,7 +451,8 @@ function start(data: RunData) {
     polylineOf.clear();
     hovered = null;
     // Filters first, then the groups of what is left; the group size last
-    const visible = framed(all).filter((l) => (l.over ? state.showOver : state.showClean) && passes(l, filters));
+    const visible = framed(all).filter((l) => (l.over ? state.showOver : state.showClean) && passes(l, filters)
+      && (!filters.favOnly || !favouritesOn || favourites.has(keyOf(l))));
     let groups = state.group ? groupLines(visible, state.distance, state.by)
       : visible.map((l) => ({rep: l, members: [l]}));
     largestGroup = groups.reduce((m, g) => Math.max(m, g.members.length), 1);
@@ -442,6 +501,7 @@ function start(data: RunData) {
                                                      style: {color: item.color, weight: 1, dashArray: "6", fill: false}});
       outline.addTo(map);
       shownRuns.set(item.run.id, {lines: runLines, area: outline, crs: loaded.crs});
+      loadRunFavourites(item.run.id);
       item.status = "on";
       item.lines = runLines.length;
       update();
@@ -466,13 +526,13 @@ function start(data: RunData) {
     if (!location.hash.startsWith("#line=")) return;
     const wanted = decodeURIComponent(location.hash.slice("#line=".length));
     const line = lines.find((l) => lineCoords(l) === wanted);
-    linkNote = line ? null : {text: "The line of the link is not in this run."};
+    listNote = line ? null : {text: "The line of the link is not in this run."};
     if (line) {
       chosen.add(keyOf(line));
       drawLines();
       const pl = polylineOf.get(keyOf(line));
       if (pl) open(line, pl);
-      else linkNote = {text: "The line of the link is hidden by the filters.", action: "clear filters", onAction: () => {
+      else listNote = {text: "The line of the link is hidden by the filters.", action: "clear filters", onAction: () => {
         filters = {...NO_FILTERS};
         saveFilters(filters);
         state = {...state, showClean: true, showOver: true};
@@ -486,6 +546,7 @@ function start(data: RunData) {
   drawRunPanel();
   drawLines();
   openLinked();
+  loadRunFavourites(data.run.id);
   const chosenRuns = savedChoice();
   items.filter((i) => chosenRuns.includes(i.run.id)).forEach(show);
 }

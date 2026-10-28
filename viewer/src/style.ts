@@ -3,4 +3,5 @@
 export const COLORS = {
   clean: "#FF10F0",  // neon pink
   over: "#FF8C00",   // orange: the line passes too close to trees/buildings (NMPT)
+  favourite: "#FFD400",  // the halo of a favourite line
 };

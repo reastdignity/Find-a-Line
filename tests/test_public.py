@@ -743,7 +743,8 @@ def test_run_files_behind_access_control(run_people, tmp_path):
     listed = a.get("/runs/runs.js")
     assert listed.status_code == 200 and listed.headers["content-type"].startswith("text/javascript")
     runs = json.loads(listed.text.split("window.FINDALINE_RUNS = ")[1].split(";\n")[0])
-    assert [r["id"] for r in runs] == [RUN_A] and "window.FINDALINE_APP = {\"profiles\": true};" in listed.text
+    assert [r["id"] for r in runs] == [RUN_A]
+    assert "window.FINDALINE_APP = {\"profiles\": true, \"favourites\": true};" in listed.text
     assert {r["id"] for r in json.loads(admin.get("/runs/runs.js").text.split(" = ")[1].split(";\n")[0])} == {RUN_OLD}
     assert [r["id"] for r in a.get("/api/runs").json()["runs"]] == [RUN_A]
     assert "FINDALINE_RUNS = [];" in run_people["anonymous"].get("/runs/runs.js").text  # no demo runs yet
@@ -804,7 +805,7 @@ def test_share_links(run_people, tmp_path):
         assert anonymous.get(path).status_code == 404, path
     shared_js = anonymous.get("/s/runs.js")
     assert shared_js.status_code == 200 and "FINDALINE_RUNS" not in shared_js.text
-    assert 'window.FINDALINE_APP = {"profiles": false};' in shared_js.text
+    assert 'window.FINDALINE_APP = {"profiles": false, "favourites": false};' in shared_js.text
     assert anonymous.get("/s/_viewer/viewer.js").status_code == 200
     redirect = anonymous.get("/s/index.html", follow_redirects=False)
     assert redirect.status_code == 303 and redirect.headers["location"] == "/"
@@ -858,9 +859,9 @@ def test_demo_runs_and_the_anonymous_page(run_people, tmp_path):
         text = client.get("/runs/runs.js").text
         runs = json.loads(text.split("window.FINDALINE_RUNS = ")[1].split(";\n")[0])
         return {r["id"] for r in runs}, json.loads(text.split("window.FINDALINE_APP = ")[1].split(";\n")[0])
-    assert listed(anonymous) == ({RUN_B}, {"profiles": False})
-    assert listed(pending) == ({RUN_B}, {"profiles": False})
-    assert listed(a) == ({RUN_A, RUN_B}, {"profiles": True})
+    assert listed(anonymous) == ({RUN_B}, {"profiles": False, "favourites": False})
+    assert listed(pending) == ({RUN_B}, {"profiles": False, "favourites": False})
+    assert listed(a) == ({RUN_A, RUN_B}, {"profiles": True, "favourites": True})
     runs = {r["id"]: r for r in a.get("/api/runs").json()["runs"]}
     assert (runs[RUN_A]["own"], runs[RUN_A]["demo"], runs[RUN_B]["own"], runs[RUN_B]["demo"]) == (True, False, False, True)
     assert a.post(f"/api/runs/{RUN_B}/share").status_code == 404  # a demo of someone else: no share link
@@ -1082,6 +1083,86 @@ def test_profiles_and_deleting_runs(run_people, tmp_path):
     with TestClient(web.create_app(str(tmp_path), token=TOKEN, start_scheduler=False), base_url=LOCAL) as local:
         assert local.delete(f"/api/runs/{RUN_B}", headers={"x-findaline-token": TOKEN}).status_code == 404
     assert (tmp_path / "runs" / RUN_B).exists()
+
+
+FAVOURITE = {"len": 120.5, "clr": 1.2, "clrN": None, "e1": 330.0, "e2": 328.5, "over": False, "water": 0.0,
+             "filled": 0.0, "hmax": 15.0, "hmean": 9.5, "highPct": 0.0, "angle1": 12.0, "angle2": None,
+             "prom1": 3.0, "prom2": None, "drop1": 30.0, "drop2": None}
+LINE, OTHER_LINE = "50.1570825,19.7572871,50.1561275,19.7547235", "50.157,19.757,1e-7,19.754"
+
+
+def mark(client, run: str, line, on=True, data=FAVOURITE):
+    return client.post(f"/api/runs/{run}/favourites",
+                       json={"line": line, "favourite": on, **({"data": data} if on else {})})
+
+
+def test_favourites(run_people, tmp_path, monkeypatch):
+    """Favourite lines: a user marks and unmarks lines of the runs they may open (a demo run too, each
+    their own), the map gets them with the session's token, the app lists them with their values
+    while the run stays open to the user; odd lines and values are refused, a user has at most
+    FAVOURITES_MAX; the audit log records them; deleting a run deletes its favourites."""
+    import audit
+    import jobs as jb
+    a, b, admin, anonymous = run_people["a"], run_people["b"], run_people["admin"], run_people["anonymous"]
+    ids, jobs = run_people["ids"], run_people["jobs"]
+    lines = lambda client, run=RUN_A: client.get(f"/api/runs/{run}/favourites").json()["lines"]  # noqa: E731
+    assert a.get(f"/api/runs/{RUN_A}/favourites").json() == {"lines": [], "token": a.headers["x-findaline-token"]}
+    assert mark(a, RUN_A, LINE).status_code == 200 and mark(a, RUN_A, LINE).status_code == 200  # once
+    assert mark(a, RUN_A, OTHER_LINE).status_code == 200
+    assert lines(a) == [OTHER_LINE, LINE]  # newest first
+    assert mark(a, RUN_A, OTHER_LINE, on=False).status_code == 200 and lines(a) == [LINE]
+    assert b.get(f"/api/runs/{RUN_A}/favourites").status_code == 404 and mark(b, RUN_A, LINE).status_code == 404
+    assert anonymous.get(f"/api/runs/{RUN_A}/favourites").status_code == 401
+    assert mark(anonymous, RUN_A, LINE).status_code == 401
+    assert mark(run_people["pending"], RUN_A, LINE).status_code == 403
+    for line in ("1,2,3", "1,2,3,x", "91,0,0,0", "1,2,3,4;", "1,2,3,nan", "1_0,2,3,4", "1," * 60 + "1", 5, None):
+        assert mark(a, RUN_A, line).status_code == 400, line
+    for data in ({**FAVOURITE, "len": "inf"}, {**FAVOURITE, "extra": 1}, {**FAVOURITE, "over": "no"}, None, []):
+        assert mark(a, RUN_A, OTHER_LINE, data=data).status_code == 400, data
+    assert a.post(f"/api/runs/{RUN_A}/favourites", json={"line": LINE, "favourite": "yes"}).status_code == 400
+    assert a.post(f"/api/runs/{RUN_A}/favourites", json={"line": LINE, "favourite": True},
+                  headers={"x-findaline-token": "wrong"}).status_code == 403
+
+    assert admin.post(f"/api/runs/{RUN_A}/demo", json={"demo": True}).status_code == 200
+    assert mark(b, RUN_A, OTHER_LINE).status_code == 200
+    assert lines(b) == [OTHER_LINE] and lines(a) == [LINE]
+    listed = b.get("/api/favourites").json()["favourites"]
+    assert [(f["run_id"], f["line"], f["run_name"], f["data"]) for f in listed] == [(RUN_A, OTHER_LINE, "A's run",
+                                                                                      FAVOURITE)]
+    assert listed[0]["run_created"] and listed[0]["created"]
+    assert admin.post(f"/api/runs/{RUN_A}/demo", json={"demo": False}).status_code == 200
+    assert b.get("/api/favourites").json() == {"favourites": []}  # no longer a run b may open
+    assert [f["line"] for f in a.get("/api/favourites").json()["favourites"]] == [LINE]
+
+    monkeypatch.setattr(jb, "FAVOURITES_MAX", 1)
+    refused = mark(a, RUN_A, OTHER_LINE)
+    assert refused.status_code == 409 and "at most 1 favourite" in refused.text
+    assert mark(a, RUN_A, LINE).status_code == 200  # marked already: no new row
+    log = audit.Audit(str(tmp_path)).entries()
+    assert {"line": LINE, "favourite": True} in [e["detail"] for e in log if e["action"] == "favourite"
+                                                 and e["user_id"] == ids["a"] and e["target"] == RUN_A]
+    assert any(e["action"] == "refused" and "favourite" in e["detail"]["reason"] for e in log)
+
+    assert a.delete(f"/api/runs/{RUN_A}").status_code == 200
+    assert jobs.favourites(ids["a"]) == [] and jobs.favourites(ids["b"]) == []
+
+
+def test_local_favourites(tmp_path, clip_run, settings, account_settings, providers):
+    """The local app: its one user's favourites (user_id NULL), its token for the map; when the data
+    folder goes public, they go to the first administrator with the runs."""
+    copy_run(clip_run, tmp_path, RUN_A, "A's run")
+    with TestClient(web.create_app(str(tmp_path), token=TOKEN, start_scheduler=False), base_url=LOCAL) as local:
+        assert local.get(f"/api/runs/{RUN_A}/favourites").json() == {"lines": [], "token": TOKEN}
+        assert mark(local, RUN_A, LINE).status_code == 403  # without the token
+        local.headers["x-findaline-token"] = TOKEN
+        assert mark(local, RUN_A, LINE).status_code == 200
+        listed = local.get("/api/favourites").json()["favourites"]
+        assert [(f["run_id"], f["line"]) for f in listed] == [(RUN_A, LINE)]
+    _public_app(tmp_path, settings, account_settings, providers)  # adopts the runs and the favourites
+    admin = ac.Accounts(str(tmp_path), account_settings).first_admin()
+    from jobs import Jobs
+    assert [f["line"] for f in Jobs(str(tmp_path)).favourites(admin)] == [LINE]
+    assert Jobs(str(tmp_path)).favourites(None) == []
 
 
 def test_admin_tab(run_people, tmp_path):
@@ -1333,17 +1414,17 @@ def test_signed_in_app_and_shared_map_in_edge(tmp_path, clip_run, account_settin
         dom = _edge(f"{site}/login/github?next=/", tmp_path / "edge")
         result = json.loads(re.search(r'<pre id="result">(.*?)</pre>', dom, re.S).group(1).replace("&quot;", '"'))
         assert result["user"] and result["user"].startswith("a") and "sign out" in result["user"], result
-        assert result["tabs"] == ["New search", "Queue", "Runs"], result  # no OSM, no Admin
+        assert result["tabs"] == ["New search", "Queue", "Runs", "Favourites"], result  # no OSM, no Admin
         assert _violations(dom) == []
         signing_in[0] = {"id": 1, "login": "admin"}  # FINDALINE_ADMINS: the admin tab
         dom = _edge(f"{site}/login/github?next=/", tmp_path / "edge-admin")
         result = json.loads(re.search(r'<pre id="result">(.*?)</pre>', dom, re.S).group(1).replace("&quot;", '"'))
-        assert result["tabs"] == ["New search", "Queue", "Runs", "Admin"], result
+        assert result["tabs"] == ["New search", "Queue", "Runs", "Favourites", "Admin"], result
         assert {"Users", "All searches", "Runs", "OpenStreetMap extracts"} <= set(result["sections"]), result
         assert result["users"] >= 2 and _violations(dom) == []
         dom = _edge(f"{site}/s/{token}/map.html", tmp_path / "edge-anonymous")
         result = json.loads(re.search(r'<pre id="result">(.*?)</pre>', dom, re.S).group(1).replace("&quot;", '"'))
-        assert result["map"] and result["runs"] and result["app"] == {"profiles": False}, result
+        assert result["map"] and result["runs"] and result["app"] == {"profiles": False, "favourites": False}, result
         assert not result["measure"] and result["others"] == 0 and result["lines"] > 0, result
         assert _violations(dom) == []
         Jobs(str(data)).set_visibility(RUN_A, "demo")  # a demo: the anonymous page and the map
@@ -1353,7 +1434,8 @@ def test_signed_in_app_and_shared_map_in_edge(tmp_path, clip_run, account_settin
         assert "What this site stores" in dom and _violations(dom) == []
         dom = _edge(f"{site}/runs/{RUN_A}/map.html", tmp_path / "edge-visitor")
         result = json.loads(re.search(r'<pre id="result">(.*?)</pre>', dom, re.S).group(1).replace("&quot;", '"'))
-        assert result["map"] and result["app"] == {"profiles": False} and not result["measure"], result
+        assert result["map"] and result["app"] == {"profiles": False, "favourites": False}, result
+        assert not result["measure"], result
         assert result["lines"] > 0 and _violations(dom) == []
     finally:
         server.should_exit = True
@@ -1423,6 +1505,28 @@ def test_databases_get_the_tiers_and_usage(tmp_path, account_settings):
     db = sqlite3.connect(tmp_path / "jobs.sqlite")
     assert db.execute("PRAGMA user_version").fetchone()[0] == len(jb.MIGRATIONS) >= 7
     assert db.execute("SELECT amount FROM usage").fetchall() == [(3.0,)]
+    db.close()
+
+
+def test_jobs_database_gets_favourites(tmp_path):
+    """jobs.sqlite of version 7 gets the table of favourite lines, its jobs and runs stay; a line is a
+    favourite of a user once, of the local user (NULL) too."""
+    import sqlite3
+
+    import cache
+    import jobs as jb
+    db = sqlite3.connect(tmp_path / "jobs.sqlite")
+    cache.migrate(db, jb.MIGRATIONS[:7])
+    db.execute("INSERT INTO runs (run_id, user_id) VALUES ('old', 11)")
+    db.commit()
+    db.close()
+    jobs = jb.Jobs(str(tmp_path))
+    assert jobs.run("old")["user_id"] == 11
+    for user in (11, 11, None, None):
+        jobs.set_favourite(user, "old", "1,2,3,4", {"len": 1})
+    assert [f["data"] for f in jobs.favourites(11)] == [{"len": 1}] and len(jobs.favourites(None)) == 1
+    db = sqlite3.connect(tmp_path / "jobs.sqlite")
+    assert db.execute("PRAGMA user_version").fetchone()[0] == len(jb.MIGRATIONS) >= 8
     db.close()
 
 

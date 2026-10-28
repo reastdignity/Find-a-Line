@@ -1,4 +1,5 @@
 import type { GeoJSON } from "geojson";
+import type { Favourite } from "../favourites";
 
 // Requests to the local server (web.py). Changing requests carry the session token
 // of the page, which a foreign website cannot read or set.
@@ -115,6 +116,9 @@ export const api = {
   share: (id: string) => call<{url: string}>("POST", `/api/runs/${encodeURIComponent(id)}/share`),
   unshare: (id: string) => call<{ok: boolean}>("DELETE", `/api/runs/${encodeURIComponent(id)}/share`),
   deleteRun: (id: string) => call<{ok: boolean}>("DELETE", `/api/runs/${encodeURIComponent(id)}`),
+  favourites: () => call<{favourites: Favourite[]}>("GET", "/api/favourites"),
+  unfavourite: (run: string, line: string) =>
+    call<{ok: boolean}>("POST", `/api/runs/${encodeURIComponent(run)}/favourites`, {line, favourite: false}),
   osm: (lat: number, lon: number) => call<OsmState>("GET", `/api/osm?lat=${lat}&lon=${lon}`),
   osmJob: (action: "download" | "update", region: string) =>
     call<{id: string}>("POST", "/api/osm", {action, region}),

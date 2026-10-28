@@ -76,3 +76,6 @@ html, body { width: 100%; height: 100%; margin: 0; padding: 0; overflow: hidden;
 .fal-list-note button { font: inherit; cursor: pointer; }
 .fal-choice { margin: 2px 0 4px; }
 .fal-choice button { font: inherit; cursor: pointer; }
+.fal-list-star { font: 13px/1 sans-serif; border: none; background: none; padding: 0 2px; cursor: pointer; color: #999; }
+.fal-list-star.fal-on { color: #d4a800; }
+.fal-list-export button { font: inherit; cursor: pointer; }

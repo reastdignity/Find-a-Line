@@ -1,6 +1,7 @@
 // The list of the lines shown on the map (top right): one row per spot (with grouping) or line,
 // sorted by any of their values; clicking a row opens the line on the map, and the row of a group
-// unfolds into its lines, any of which can be shown instead.
+// unfolds into its lines, any of which can be shown instead. With the user's favourites: a star per
+// line, and their export.
 
 import { useState } from "preact/hooks";
 import { formatValue, sortKey, sortRows, SORT_KEYS, type ListState, type Row, type SortKey } from "./list";
@@ -20,6 +21,10 @@ export interface LinesListProps {
   onPick(line: Line): void;               // a row: open its line
   onChoose(row: Row, line: Line): void;   // a line of a group: show it for the group and open it
   onHover(line: Line | null): void;
+  isFavourite: ((line: Line) => boolean) | null;  // null: the map has no favourites
+  onFavourite(line: Line): void;
+  favourites: number;  // favourite lines of the runs shown
+  onExport(kind: "geojson" | "csv"): void;
 }
 
 export function LinesList(props: LinesListProps) {
@@ -37,6 +42,13 @@ export function LinesList(props: LinesListProps) {
   const swatch = (l: Line) => <span class="fal-swatch" style={"background:" + (l.run ? l.run.color
     : l.over ? COLORS.over : COLORS.clean)}></span>;
   const hover = (l: Line) => ({onMouseEnter: () => props.onHover(l), onMouseLeave: () => props.onHover(null)});
+  const star = (l: Line) => {
+    if (!props.isFavourite) return null;
+    const on = props.isFavourite(l);
+    return <button class={"fal-list-star" + (on ? " fal-on" : "")}
+                   title={on ? "remove from favourites" : "add to favourites"}
+                   onClick={(e) => { e.stopPropagation(); props.onFavourite(l); }}>{on ? "★" : "☆"}</button>;
+  };
   const row = (r: Row) => {
     const members = r.members && r.members.length > 1 ? r.members : null;
     const group = members ? keyOf(members[0]) : "", open = members !== null && unfolded.has(group);
@@ -52,14 +64,14 @@ export function LinesList(props: LinesListProps) {
         <td class="fal-list-first">
           {members ? <button class="fal-list-unfold" title={open ? "fold the group" : "the lines of the group"}
                              onClick={toggle}>{open ? "▾" : "▸"}</button> : <span class="fal-list-gap"></span>}
-          {swatch(r.line)}</td>
+          {swatch(r.line)}{star(r.line)}</td>
         {columns.map((c) => <td>{formatValue(c, r)}</td>)}
       </tr>,
       ...(open ? sortRows(members!.map((m) => ({line: m, n: r.n})), key, state.desc).map((m) =>
         <tr key={keyOf(m.line)} class={"fal-member" + (m.line === r.line ? " fal-chosen" : "")}
             title={m.line === members![0] ? "the group's first line" : "show this line for the group"}
             onClick={() => props.onChoose(r, m.line)} {...hover(m.line)}>
-          <td class="fal-list-first">{m.line === r.line ? "●" : ""}</td>
+          <td class="fal-list-first">{m.line === r.line ? "●" : ""}{star(m.line)}</td>
           {columns.map((c) => <td>{c.key === "n" ? "" : formatValue(c, m)}</td>)}
         </tr>) : []),
     ];
@@ -79,6 +91,10 @@ export function LinesList(props: LinesListProps) {
           {state.desc ? "↓" : "↑"}</button><br />
         <label><input type="checkbox" class="fal-list-view" checked={state.inView}
                       onChange={(e) => set({inView: e.currentTarget.checked})} /> only in the map's view</label>
+        {props.favourites > 0 && <div class="fal-list-export">Export {props.favourites} favourite
+          {props.favourites > 1 ? "s" : ""}:{" "}
+          <button onClick={() => props.onExport("geojson")}>GeoJSON</button>{" "}
+          <button onClick={() => props.onExport("csv")}>CSV</button></div>}
       </div>
       {sorted.length === 0 ? <div class="fal-dim">No lines{state.inView ? " in the view" : ""}.</div> :
         <div class="fal-list-body">

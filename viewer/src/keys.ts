@@ -9,4 +9,5 @@ type Anchors = Pick<Line, "lat1" | "lon1" | "lat2" | "lon2">;
 export const lineCoords = (l: Anchors) => [l.lat1, l.lon1, l.lat2, l.lon2].join(",");
 
 /** A line among the lines of several runs: "<run id>|lat1,lon1,lat2,lon2". */
-export const lineKey = (l: Line, currentRun: string) => (l.run ? l.run.info.id : currentRun) + "|" + lineCoords(l);
+export const runLineKey = (runId: string, coords: string) => runId + "|" + coords;
+export const lineKey = (l: Line, currentRun: string) => runLineKey(l.run ? l.run.info.id : currentRun, lineCoords(l));

@@ -1,5 +1,5 @@
 // Filters of the lines on the map, applied before grouping (the group size after it).
-// null means no limit. Kept in the browser for every map.
+// null means no limit. Kept in the browser for every map (but "only favourites": the map's own).
 
 import type { Line } from "./types";
 
@@ -20,11 +20,13 @@ export interface Filters {
   water: "all" | "water" | "land";
   hideFilled: boolean;        // hide lines over gaps filled from another source
   groupMin: number | null;    // similar lines in a group (with grouping on)
+  favOnly: boolean;           // only favourite lines (applied by main.tsx, which knows them)
 }
 
 export const NO_FILTERS: Filters = {lenMin: null, lenMax: null, clrMin: null, clrNMin: null, dhMax: null,
                                     elevMin: null, heightMin: null, meanMin: null, highPctMin: null,
-                                    angleMax: null, promMin: null, promBothMin: null, dropMin: null, water: "all", hideFilled: false, groupMin: null};
+                                    angleMax: null, promMin: null, promBothMin: null, dropMin: null, water: "all", hideFilled: false, groupMin: null,
+                                    favOnly: false};
 const STORAGE_KEY = "findaline.filters";
 
 export const dh = (l: Line) => Math.abs(l.e1 - l.e2);
@@ -70,7 +72,7 @@ export function range(lines: Line[], value: (l: Line) => number | null): Range |
 
 export function savedFilters(): Filters {
   try {
-    return {...NO_FILTERS, ...JSON.parse(localStorage.getItem(STORAGE_KEY) || "{}")};
+    return {...NO_FILTERS, ...JSON.parse(localStorage.getItem(STORAGE_KEY) || "{}"), favOnly: false};
   } catch {
     return {...NO_FILTERS};
   }

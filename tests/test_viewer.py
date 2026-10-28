@@ -93,6 +93,25 @@ console.log(JSON.stringify([true, false].map((desc) => m.sortRows(rows, key, des
     assert found == [[3, 1, 5, 6, 2, 4], [6, 1, 5, 3, 2, 4]]
 
 
+def test_favourites_export(tmp_path):
+    """The export of favourite lines: lines.csv's column names, text quoted and kept from being read as
+    a formula, unknown values empty (CSV) or null (GeoJSON), the anchors as a LineString."""
+    found = run_ts(tmp_path, "favourites", """
+const f = {run_id: "r1", run_name: "=cmd \\"x\\", y", run_created: "", created: "", line: "50.1,19.7,50.2,19.8",
+           data: {len: 120.5, clr: 1.2, clrN: null, e1: 330, e2: 328.5, over: true, water: 0, filled: 0, hmax: 15,
+                  hmean: null, highPct: 0, angle1: 12, angle2: null, prom1: 3, prom2: null, drop1: 30, drop2: null}};
+const line = m.favouriteLine(f), lines = [{line, runId: f.run_id, runName: f.run_name}];
+console.log(JSON.stringify({csv: m.favouritesCsv(lines), geojson: JSON.parse(m.favouritesGeoJSON(lines)),
+                            data: m.favouriteData(line)}));""")
+    head, row = found["csv"].split("\r\n")[:2]
+    assert head.split(",")[:4] == ["run_id", "run_name", "length_m", "clearance_m"]
+    assert row.startswith('"r1","\'=cmd ""x"", y",120.5,1.2,,true,0,0,15,,0,50.1,19.7,330,12,3,30,50.2,19.8,328.5,,,')
+    feature = found["geojson"]["features"][0]
+    assert feature["geometry"] == {"type": "LineString", "coordinates": [[19.7, 50.1], [19.8, 50.2]]}
+    assert feature["properties"]["height_mean_m"] is None and feature["properties"]["over_trees_buildings"] is True
+    assert found["data"]["hmean"] is None and found["data"]["len"] == 120.5  # back as the server keeps it
+
+
 def test_bundle_is_built_from_sources(tmp_path):
     """viewer/dist is committed: rebuild it (cd viewer; npm run build) after changing viewer/src."""
     subprocess.run(["node", "build.mjs", "--out", str(tmp_path)], cwd=VIEWER, check=True)

@@ -1227,6 +1227,163 @@ def test_link_to_a_line(tmp_path, monkeypatch):
     assert f"Anchor 1: {row[0]:.6f}, {row[1]:.6f}" in result["popup"], result
 
 
+# Favourites in a map served by the app: the downloads of the export are caught (their Blob kept)
+FAVOURITES_SCRIPT = """
+(function () {
+  const out = document.createElement("pre");
+  out.id = "result";
+  document.body.appendChild(out);
+  const map = window.FINDALINE_MAP, run = window.FINDALINE_RUN.run.id, result = {};
+  const later = (then, ms = 400) => setTimeout(then, ms);
+  const rows = () => [...document.querySelectorAll(".fal-list-table tbody tr")];
+  const spots = () => +document.querySelector(".fal-summary b").textContent;
+  const saved = () => fetch("/api/runs/" + encodeURIComponent(run) + "/favourites").then((r) => r.json());
+  const starred = () => Object.values(map._layers).filter((l) => l.getTooltip && l.getTooltip()
+    && String(l.getTooltip().getContent()).startsWith("★ ")).length;
+  // waits for the server, which virtual time does not wait for
+  const until = (count, then, tries = 30) => saved().then((body) => body.lines.length === count || !tries
+    ? then(body) : later(() => until(count, then, tries - 1), 300));
+  let blob = null;
+  URL.createObjectURL = (b) => { blob = b; return "blob:test"; };
+  HTMLAnchorElement.prototype.click = function () { result.download = this.download; };
+  later(() => {
+    document.querySelector(".fal-list summary").click();
+    later(() => {
+      result.stars = document.querySelectorAll(".fal-list-star").length;
+      rows()[0].querySelector(".fal-list-star").click();
+      until(1, () => {
+        result.halo = Object.values(map._layers).some((l) => l.options && l.options.color === "#FFD400");
+        result.starred = starred();
+        // a line of a group that is not shown: as a favourite it becomes the line shown
+        const group = rows().find((tr) => tr.querySelector(".fal-list-unfold") && tr !== rows()[0]);
+        group.querySelector(".fal-list-unfold").click();
+        later(() => {
+          const member = rows().filter((tr) => tr.classList.contains("fal-member"))
+            .find((tr) => !tr.classList.contains("fal-chosen"));
+          result.memberLength = member.children[1].textContent;
+          member.querySelector(".fal-list-star").click();
+          until(2, () => {
+            const unfolded = () => rows().find((tr) => tr.classList.contains("fal-unfolded"));
+            result.groupLength = unfolded().children[1].textContent;
+            unfolded().click();
+            later(() => {
+              const popup = document.querySelector(".leaflet-popup-content").textContent;
+              result.popupFavourite = /your favourite/.test(popup) && popup.includes("★ favourite");
+              document.querySelector(".fal-filters summary").click();
+              document.querySelector(".fal-fav-only").click();
+              later(() => {
+                result.onlyFavourites = spots();
+                document.querySelectorAll(".fal-list-export button")[1].click();  // CSV
+                later(() => blob.text().then((csv) => {
+                  result.csv = csv.split("\\r\\n").filter((x) => x);
+                  document.querySelector(".fal-fav-only").click();
+                  later(() => {
+                    unfolded().click();  // its popup is open: clicked again, its buttons still work
+                    later(() => {
+                      document.querySelector(".leaflet-popup-content .fal-fav").click();
+                      until(1, (body) => {
+                        result.left = body.lines;
+                        result.unmarked = document.querySelector(".leaflet-popup-content .fal-fav").textContent;
+                        out.textContent = JSON.stringify(result);
+                      });
+                    });
+                  });
+                }));
+              });
+            });
+          });
+        });
+      });
+    });
+  });
+})();
+"""
+
+FAVOURITES_TAB_SCRIPT = """
+(function () {
+  const out = document.createElement("pre");
+  out.id = "result";
+  document.body.appendChild(out);
+  const result = {};
+  const button = (text) => [...document.querySelectorAll("button")].find((b) => b.textContent === text);
+  const cards = () => [...document.querySelectorAll(".fa-favourite")];
+  const wait = (ok, then, tries = 100) => ok() ? then() : tries ? setTimeout(() => wait(ok, then, tries - 1), 100)
+                                                    : (out.textContent = "timeout " + JSON.stringify(result));
+  wait(() => button("Favourites"), () => {
+    button("Favourites").click();
+    wait(() => cards().length, () => {
+      result.cards = cards().length;
+      result.mapLines = Object.values(window.FINDALINE_PLACE.map._layers)
+        .filter((l) => l.options && l.options.color === "#FFD400").length;
+      const select = document.querySelector(".fa-favourites-sort");
+      select.value = "len";
+      select.dispatchEvent(new Event("change"));
+      setTimeout(() => {
+        result.lengths = cards().map((c) => +c.querySelector("b").textContent);
+        result.link = cards()[0].querySelector("a").getAttribute("href");
+        cards()[0].querySelector("button").click();
+        wait(() => cards().length === result.cards - 1, () => {
+          result.after = cards().length;
+          out.textContent = JSON.stringify(result);
+        });
+      }, 300);
+    });
+  });
+})();
+"""
+
+
+@pytest.mark.skipif(not os.path.exists(EDGE), reason="needs Microsoft Edge")
+def test_favourites_in_the_map_and_the_app(tmp_path, monkeypatch):
+    """Favourite lines marked in a map served by the app (a star in the list and in the popup): kept by
+    the server, drawn with a halo and a star, a favourite of a group shown as its line, "only
+    favourite lines", the CSV export; the app's tab lists them, sorted, with a link to the line in its
+    map, and removes one."""
+    import re
+    run_id = _clip_run(tmp_path, monkeypatch)
+    folder = tmp_path / "runs" / run_id
+    (folder / "csp_stub.js").write_text(CSP_STUB, encoding="utf-8")
+    (folder / "fav_test.js").write_text(FAVOURITES_SCRIPT, encoding="utf-8")
+    page = (folder / "map.html").read_text(encoding="utf-8")
+    (folder / "fav_test.html").write_text(
+        page.replace("<head>", '<head><script src="csp_stub.js"></script>')
+            .replace("</body>", '<script src="fav_test.js"></script></body>'), encoding="utf-8")
+    dom = _edge_page(tmp_path, f"runs/{run_id}/fav_test.html")
+    result = json.loads(re.search(r'<pre id="result">(.*?)</pre>', dom, re.S).group(1).replace("&quot;", '"'))
+    assert result["stars"] == 100 and result["halo"] and result["starred"] == 1, result
+    assert result["groupLength"] == result["memberLength"] and result["popupFavourite"], result
+    assert result["onlyFavourites"] == 2, result
+    assert result["download"] == "favourites.csv" and len(result["csv"]) == 3, result
+    assert result["csv"][0].startswith("run_id,run_name,length_m,clearance_m,"), result
+    assert result["unmarked"] == "☆ add to favourites" and len(result["left"]) == 1, result
+    assert _violations(dom) == []
+
+    app = web.create_app(str(tmp_path), token=TOKEN, start_scheduler=False)
+    rows = _lines_of(tmp_path, run_id)
+    with TestClient(app, base_url=LOCAL) as client:
+        line = ",".join(str(v) for v in rows[-1][:4])
+        data = {"len": 999.0, "clr": 1.0, "clrN": None, "e1": 1.0, "e2": 2.0, "over": False, "water": 0.0,
+                "filled": 0.0, "hmax": None, "hmean": None, "highPct": None, "angle1": None, "angle2": None,
+                "prom1": None, "prom2": None, "drop1": None, "drop2": None}
+        assert client.post(f"/api/runs/{run_id}/favourites", json={"line": line, "favourite": True, "data": data},
+                           headers={"x-findaline-token": TOKEN}).status_code == 200
+        page = client.get("/").text
+    tab = tmp_path / "runs" / "apptest"
+    tab.mkdir()
+    (tab / "stubs.js").write_text(APP_STUBS, encoding="utf-8")
+    (tab / "test.js").write_text(FAVOURITES_TAB_SCRIPT, encoding="utf-8")
+    (tab / "index.html").write_text(page.replace(
+        '<script src="/app/app.js"></script>',
+        '<script src="stubs.js"></script><script src="/app/app.js"></script><script src="test.js"></script>'),
+        encoding="utf-8")
+    dom = _edge_page(tmp_path, "runs/apptest/index.html")
+    result = json.loads(re.search(r'<pre id="result">(.*?)</pre>', dom, re.S).group(1).replace("&quot;", '"'))
+    assert result["cards"] == 2 and result["mapLines"] == 2, result
+    assert result["lengths"][0] == 999 and result["lengths"] == sorted(result["lengths"], reverse=True), result
+    assert result["link"] == f"/runs/{run_id}/map.html#line=" + line.replace(",", "%2C"), result
+    assert result["after"] == 1 and _violations(dom) == []
+
+
 # Between data.js and the viewer: credits as a run records them, one with markup in its texts
 CREDITS_STUB = """
 window.FINDALINE_RUN.attribution = [

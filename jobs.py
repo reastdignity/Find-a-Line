@@ -99,7 +99,14 @@ MIGRATIONS = [
        ALTER TABLE quick ADD COLUMN unlimited INTEGER NOT NULL DEFAULT 0;
        CREATE TABLE usage (user_id INTEGER NOT NULL, kind TEXT NOT NULL, at REAL NOT NULL, amount REAL NOT NULL);
        CREATE INDEX usage_user ON usage (user_id, kind, at);""",
+    # 8: a user's favourite lines (NULL: the local app's user): the run, the line ("lat1,lon1,lat2,lon2"
+    # as the run's data.js holds it) and its values as the map sent them (JSON, for the list of all of them)
+    """CREATE TABLE favourites (user_id INTEGER, run_id TEXT NOT NULL, line TEXT NOT NULL, data TEXT NOT NULL,
+                                created TEXT);
+       CREATE UNIQUE INDEX favourites_key ON favourites (IFNULL(user_id, 0), run_id, line);
+       CREATE INDEX favourites_run ON favourites (run_id);""",
 ]
+FAVOURITES_MAX = 10000  # favourite lines of a user (a safeguard of the database, the same for everyone)
 
 
 # An absolute path on the server: C:\... (or C:/...), or /dir/... not in a URL (http://host/...: the
@@ -414,8 +421,8 @@ class Jobs:
     def adopt_runs(self, runs_dir: str, user_id: Optional[int]) -> int:
         """Give the runs without an owner to `user_id` (the first administrator), as private runs:
         those of the folder without a row (saved before the public mode, or on the command line) and
-        rows without a user (the local app's). Runs in progress (no run.json yet) are left to their
-        job. Nothing is deleted. Returns how many runs were given."""
+        rows without a user (the local app's), with the local app's favourite lines. Runs in progress
+        (no run.json yet) are left to their job. Nothing is deleted. Returns how many runs were given."""
         import runs as rn
         found = []
         if os.path.isdir(runs_dir):
@@ -432,6 +439,8 @@ class Jobs:
                            (run_id, user_id, rn.folder_bytes(os.path.join(runs_dir, run_id)), now))
             given = db.execute("UPDATE runs SET user_id = ? WHERE user_id IS NULL", (user_id,)).rowcount \
                 if user_id is not None else 0
+            if user_id is not None:  # the local app's favourites go with its runs
+                db.execute("UPDATE OR IGNORE favourites SET user_id = ? WHERE user_id IS NULL", (user_id,))
         return len(new) + given
 
     def set_share(self, run_id: str, share_hash: Optional[str]):
@@ -454,13 +463,45 @@ class Jobs:
             return bool(db.execute("UPDATE runs SET visibility = ? WHERE run_id = ?", (visibility, run_id)).rowcount)
 
     def delete_run(self, run_id: str, runs_dir: str):
-        """Delete a run: its folder, then its row (its share link and demo flag go with it). A folder
-        that cannot be deleted raises OSError and keeps its row (or adopt_runs would give it away)."""
+        """Delete a run: its folder, then its row (its share link and demo flag go with it) and the
+        favourite lines of everyone in it. A folder that cannot be deleted raises OSError and keeps its
+        row (or adopt_runs would give it away)."""
         folder = os.path.join(runs_dir, run_id)
         if os.path.isdir(folder):
             shutil.rmtree(folder)
         with self._db() as db:
             db.execute("DELETE FROM runs WHERE run_id = ?", (run_id,))
+            db.execute("DELETE FROM favourites WHERE run_id = ?", (run_id,))
+
+    # --- Favourite lines (the maps mark them, the app lists them) ---
+
+    def favourites(self, user_id: Optional[int], run_id: Optional[str] = None) -> List[Dict]:
+        """A user's favourite lines (of one run), newest first: run_id, line, data (a dict), created."""
+        query, args = "SELECT run_id, line, data, created FROM favourites WHERE user_id IS ?", [user_id]
+        if run_id is not None:
+            query += " AND run_id = ?"
+            args.append(run_id)
+        with self._db() as db:
+            rows = db.execute(query + " ORDER BY created DESC, rowid DESC", args).fetchall()
+        return [{**dict(r), "data": json.loads(r["data"])} for r in rows]
+
+    def set_favourite(self, user_id: Optional[int], run_id: str, line: str, data: Optional[Dict]):
+        """Mark a line of a run as a favourite of a user (with its values `data`), or unmark it (data
+        None). Marking one more than FAVOURITES_MAX raises QuotaExceeded (409); marking a line again
+        keeps the first values."""
+        with self._write() as db:
+            if data is None:
+                db.execute("DELETE FROM favourites WHERE user_id IS ? AND run_id = ? AND line = ?",
+                           (user_id, run_id, line))
+                return
+            count = db.execute("SELECT COUNT(*) FROM favourites WHERE user_id IS ?", (user_id,)).fetchone()[0]
+            known = db.execute("SELECT 1 FROM favourites WHERE user_id IS ? AND run_id = ? AND line = ?",
+                               (user_id, run_id, line)).fetchone()
+            if not known and count >= FAVOURITES_MAX:
+                raise QuotaExceeded(f"at most {FAVOURITES_MAX} favourite lines: remove some first", 409)
+            db.execute("INSERT INTO favourites (user_id, run_id, line, data, created) VALUES (?, ?, ?, ?, ?) "
+                       "ON CONFLICT DO NOTHING",
+                       (user_id, run_id, line, json.dumps(data), datetime.now().isoformat(timespec="seconds")))
 
     def all_runs(self) -> List[Dict]:
         """Every run's row (the admin tab), newest first."""

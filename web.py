@@ -44,6 +44,7 @@ import time
 import webbrowser
 from typing import Callable, Dict, List, Optional, Tuple
 
+import pydantic
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.staticfiles import StaticFiles
 
@@ -192,6 +193,55 @@ def profile_problem(folder: str, points: List[float], admin: bool = False) -> Op
     if length > max_length * 1.01 + 2:
         return f"the points are {length:.0f} m apart, at most {max_length:g} m (the run's --max-length)"
     return None
+
+
+# A favourite line: its anchors as the run's data.js holds them and the map joins them
+# (viewer/src/keys.ts lineCoords: JavaScript's numbers, so 1e-7 may be spelled so)
+_NUMBER = r"-?\d{1,3}(?:\.\d{1,15})?(?:e-\d{1,2})?"
+LINE_KEY = re.compile(rf"{_NUMBER}(?:,{_NUMBER}){{3}}")
+
+
+class FavouriteLine(pydantic.BaseModel):
+    """The values of a favourite line as the map sends them (the fields of viewer/src/types.ts Line
+    without its anchors, grid coordinates and profile; null: not known), kept for the list of all of
+    a user's favourites (one's own data, shown to oneself only)."""
+    model_config = pydantic.ConfigDict(extra="forbid")
+    len: pydantic.FiniteFloat
+    clr: pydantic.FiniteFloat
+    clrN: Optional[pydantic.FiniteFloat]
+    e1: pydantic.FiniteFloat
+    e2: pydantic.FiniteFloat
+    over: pydantic.StrictBool
+    water: pydantic.FiniteFloat
+    filled: pydantic.FiniteFloat
+    hmax: Optional[pydantic.FiniteFloat]
+    hmean: Optional[pydantic.FiniteFloat]
+    highPct: Optional[pydantic.FiniteFloat]
+    angle1: Optional[pydantic.FiniteFloat]
+    angle2: Optional[pydantic.FiniteFloat]
+    prom1: Optional[pydantic.FiniteFloat]
+    prom2: Optional[pydantic.FiniteFloat]
+    drop1: Optional[pydantic.FiniteFloat]
+    drop2: Optional[pydantic.FiniteFloat]
+
+
+def checked_favourite(body) -> Tuple[str, Optional[Dict]]:
+    """(line, its values; None: unmark it) of a request {"line": "lat1,lon1,lat2,lon2", "favourite":
+    true|false, "data": FavouriteLine (when true)}; ValueError for anything else."""
+    if not isinstance(body, dict) or not isinstance(body.get("favourite"), bool):
+        raise ValueError("favourite: true or false")
+    line = body.get("line")
+    if not isinstance(line, str) or len(line) > 100 or not LINE_KEY.fullmatch(line):
+        raise ValueError("line: lat1,lon1,lat2,lon2")
+    lat1, lon1, lat2, lon2 = (float(v) for v in line.split(","))
+    if not (abs(lat1) <= 90 and abs(lat2) <= 90 and abs(lon1) <= 180 and abs(lon2) <= 180):
+        raise ValueError("line: lat1,lon1,lat2,lon2")
+    if not body["favourite"]:
+        return line, None
+    try:
+        return line, FavouriteLine.model_validate(body.get("data")).model_dump()
+    except pydantic.ValidationError:
+        raise ValueError("data: the values of the line") from None
 
 
 MAX_TITLE = 120  # characters of a job's title (the queue lists them, each event of the job repeats none)
@@ -852,6 +902,41 @@ def create_app(data_dir: str, token: Optional[str] = None, port: int = PORT, sta
         record("share_revoke", user, run)
         return {"ok": True}
 
+    # --- Favourite lines: marked on a run's map, listed in the app ---
+
+    @app.get("/api/runs/{run}/favourites")
+    def run_favourites(request: Request, run: str = Depends(run_access), user: ac.User = Depends(current_user)):
+        """The user's favourite lines of a run (lat1,lon1,lat2,lon2), and the token the map's changes need:
+        a map is a static page without one (an answer in JSON, which only a page of this site can read)."""
+        return {"lines": [f["line"] for f in jobs.favourites(user.id, run)],
+                "token": signed_in(request)[1] if public else token}
+
+    @app.post("/api/runs/{run}/favourites")
+    def set_favourite(body: Dict, run: str = Depends(run_access), user: ac.User = Depends(current_user)):
+        """Mark a line of a run as a favourite or unmark it: {"line": "lat1,lon1,lat2,lon2", "favourite":
+        true|false, "data": its values (FavouriteLine) when true}; at most jobs.FAVOURITES_MAX per user."""
+        try:
+            line, data = checked_favourite(body)
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+        try:
+            jobs.set_favourite(user.id, run, line, data)
+        except QuotaExceeded as e:
+            refused(user, "favourites", str(e), e.status)
+            raise HTTPException(e.status, str(e))
+        record("favourite", user, run, {"line": line, "favourite": data is not None})
+        return {"ok": True}
+
+    @app.get("/api/favourites")
+    def all_favourites(user: ac.User = Depends(current_user)):
+        """The user's favourite lines in every run they may still open (a run that is no longer a demo
+        drops out), with the run's name and date, newest first."""
+        found = [f for f in jobs.favourites(user.id) if may_open(user, f["run_id"])]
+        meta = {r["id"]: r for r in rn.list_runs(runs_dir, {f["run_id"] for f in found})}
+        return {"favourites": [{**f, "run_name": meta[f["run_id"]].get("name", f["run_id"]),
+                                "run_created": meta[f["run_id"]].get("created", "")}
+                               for f in found if f["run_id"] in meta]}
+
     # --- The admin tab (the public site; every route Depends(require_admin)) ---
 
     def admin_only():
@@ -982,12 +1067,12 @@ def create_app(data_dir: str, token: Optional[str] = None, port: int = PORT, sta
         def runs_js(request: Request):
             """The list of runs of the maps (their "Other runs"): the user's own and the demo runs (a
             visitor not signed in or not approved: the demo runs), and whether the map may compute
-            profiles and measure (FINDALINE_APP: signed-in, approved users only)."""
+            profiles and measure, and mark favourite lines (FINDALINE_APP: signed-in, approved users only)."""
             user = visitor(request)
             listed = [rn._listed(r) for r in runs_of(user)]
+            flags = {"profiles": user is not None, "favourites": user is not None}
             return Response(f"window.FINDALINE_RUNS = {json.dumps(listed, ensure_ascii=False)};\n"
-                            f"window.FINDALINE_APP = {json.dumps({'profiles': user is not None})};\n",
-                            media_type="text/javascript")
+                            f"window.FINDALINE_APP = {json.dumps(flags)};\n", media_type="text/javascript")
 
         @app.get("/runs/index.html")
         def runs_index():
@@ -996,9 +1081,9 @@ def create_app(data_dir: str, token: Optional[str] = None, port: int = PORT, sta
         # Share links: /s/<token>/map.html and its files; the map's ../runs.js and ../_viewer/ land here
         @app.get("/s/runs.js")
         def share_runs_js():
-            """No list of runs (FINDALINE_RUNS stays undefined: the map shows its own run only) and no
-            profiles or measuring."""
-            return Response(f"window.FINDALINE_APP = {json.dumps({'profiles': False})};\n",
+            """No list of runs (FINDALINE_RUNS stays undefined: the map shows its own run only), no
+            profiles or measuring, no favourites."""
+            return Response(f"window.FINDALINE_APP = {json.dumps({'profiles': False, 'favourites': False})};\n",
                             media_type="text/javascript")
 
         @app.get("/s/index.html")
@@ -1094,10 +1179,14 @@ def privacy_page(contact: str, keep_events_days: Optional[float]) -> str:
         ("Runs", "The results of your searches (lines, maps, parameters, the place's name from OpenStreetMap) and "
          "their size. Kept until you delete them in Runs. A share link is stored as a SHA-256 hash only; it can be "
          "renewed or revoked."),
+        ("Favourite lines", f"The lines you mark as favourites on a map: the run, the line's anchors and its values "
+         f"(length, clearances, heights, angles, prominence), and when you marked it; at most {jb.FAVOURITES_MAX}. "
+         f"Why: to list them for you. Kept until you unmark them or the run is deleted."),
         ("Quotas", f"How many km² your searches covered and how many uncached Nominatim requests they made, with the "
          f"time; deleted after {2 * jb.DAY / 86400:g} days. Request rates are counted in memory only."),
         ("Audit log", f"Sign-ins and sign-ups, approvals and blocks, searches started and cancelled, share links "
-         f"made, renewed and revoked, deleted runs, the demo flag, other administrators' actions and refusals by a "
+         f"made, renewed and revoked, deleted runs, the demo flag, favourite lines marked and unmarked, other "
+         f"administrators' actions and refusals by a "
          f"limit: the time, the action, the user id and what it concerned. Why: to find abuse and mistakes. "
          f"Deleted after {AUDIT_DAYS} days."),
         ("IP addresses", "The application stores none. The reverse proxy in front of it may log requests with "

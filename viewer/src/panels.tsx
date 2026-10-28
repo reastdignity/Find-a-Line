@@ -155,6 +155,7 @@ export interface FilterRanges {
   group: Range | null;
   water: boolean;   // some lines are over water
   filled: boolean;  // some lines are over filled gaps
+  favourites: boolean;  // the map knows the user's favourite lines
 }
 
 /** A limit: a slider over the range of the lines and a number field; at the end of the range, no limit. */
@@ -219,5 +220,8 @@ export function FiltersPanel({filters, ranges, grouping, onChange}: {
     {ranges.filled && <label class="fal-limit"><input type="checkbox" checked={filters.hideFilled}
                                                        onChange={(e) => set({hideFilled: e.currentTarget.checked})} />
       hide lines over filled gaps in the data</label>}
+    {ranges.favourites && <label class="fal-limit"><input type="checkbox" class="fal-fav-only" checked={filters.favOnly}
+                                                           onChange={(e) => set({favOnly: e.currentTarget.checked})} />
+      only favourite lines</label>}
   </details>;
 }
