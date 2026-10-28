@@ -4,3 +4,5 @@ viewer/dist/** -text
 *.sh text eol=lf
 *.command text eol=lf
 *.bat text eol=crlf
+# Deployment files (scripts, nginx and fail2ban configuration, firewall rules) go to Linux
+deploy/** text eol=lf
