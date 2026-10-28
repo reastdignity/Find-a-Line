@@ -1,5 +1,5 @@
 # Offline tests on Linux and Windows, and audits of the locked dependencies.
-# macOS is left out until it is needed (docs/roadmap.md, "Deferred"); the docker job comes with the Dockerfile.
+# macOS is left out until it is needed (docs/roadmap.md, "Deferred"). The docker job builds and smoke-tests the image.
 name: CI
 
 on:
@@ -75,3 +75,54 @@ jobs:
       - name: npm audit
         working-directory: viewer
         run: npm audit --omit=dev
+
+  # The image of the public site: build it, run a search and the two services in it as compose
+  # runs them (read-only root, no capabilities), and check the compose files with example settings
+  docker:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Example settings and secrets
+        run: |
+          cp findaline.env.example findaline.env
+          printf 'WORKER_CPUS=2\nWORKER_MEMORY=4g\n' > .env
+          cp compose.override.example.yaml compose.override.yaml
+          for name in findaline_session_secret findaline_github_client_secret findaline_google_client_secret; do
+            python3 -c "import secrets; print(secrets.token_urlsafe(48))" > "secrets/$name"
+          done
+
+      - name: Compose files
+        run: docker compose config --quiet
+
+      - name: Build the image
+        run: docker compose build
+
+      - name: Command line in the image
+        run: docker compose run --rm --no-deps worker --help
+
+      # The Żabi Koń clip offline: numba's cache, the run and the viewer copy must all land in /data
+      - name: A search in the image
+        run: |
+          docker compose run --rm --no-deps --volume "$PWD/tests/data:/clip:ro" worker \
+            --elevation-file /clip/zabi_kon_nmt.tif --surface-file /clip/zabi_kon_nmpt.tif \
+            --northing 254608 --easting 553966 --radius 290 --water off --fill-gaps off --no-plot --yes
+
+      # --wait: until the web service's healthcheck passes
+      - name: Services
+        run: |
+          docker compose up --detach --wait --wait-timeout 120
+          test "$(curl -s -o /dev/null -w '%{http_code}' -H 'Host: findaline.example.org' http://127.0.0.1:8765/)" = 200
+          test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8765/)" = 400  # any other host
+          docker compose stop worker
+          docker compose ps --all
+          test "$(docker inspect --format '{{.State.ExitCode}}' "$(docker compose ps --all --quiet worker)")" = 0
+
+      - name: Logs
+        if: always()
+        run: docker compose logs --no-color
+
+      - name: Clean up
+        if: always()
+        run: docker compose down --volumes
