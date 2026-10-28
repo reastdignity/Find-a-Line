@@ -153,13 +153,15 @@ function start(data: RunData) {
   // computes the others from the cached data (web.py /api/profile)
   const computed = new Map<string, Profile>();
   const fromServer = location.protocol.startsWith("http");
+  const canCompute = window.FINDALINE_APP ? window.FINDALINE_APP.profiles : fromServer;
   const fetchProfile = (l: Line, note: HTMLElement | null | undefined, stillOpen: () => boolean) => {
     const key = [l.lat1, l.lon1, l.lat2, l.lon2].join(",");
     const known = computed.get(key);
     if (known) { l.prof = known; showProfile(l); return; }
-    if (!fromServer) {
+    if (!canCompute) {
       if (note) note.innerHTML = "<i>No profile saved for this line (in the map of an area only the line saved " +
-        "for each group has one). Open this map from the app (<code>findaline.py web</code>) to compute it.</i>";
+        "for each group has one). " + (fromServer ? "Its owner can compute it in the app." :
+        "Open this map from the app (<code>findaline.py web</code>) to compute it.") + "</i>";
       return;
     }
     if (note) note.innerHTML = "<i>Computing the terrain profile…</i>";
@@ -178,7 +180,7 @@ function start(data: RunData) {
 
   // Measuring: the profile between two points clicked on the map, computed by the server
   // like that of a line (anchors on the ground; their height above it is set in the panel)
-  if (fromServer) {
+  if (canCompute) {
     const measureLayer = L.layerGroup().addTo(map);
     let measuring = false, points: L.LatLng[] = [];
     const box = control(map, "topleft", "fal-measure leaflet-bar");

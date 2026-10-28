@@ -27,7 +27,7 @@ import re
 import secrets
 import unicodedata
 from datetime import datetime
-from typing import Dict, List, Optional
+from typing import Dict, Iterable, List, Optional
 from urllib.parse import quote
 
 import requests
@@ -99,6 +99,18 @@ def new_run(runs_dir: str, name: str, created: datetime) -> Dict:
     path = os.path.join(runs_dir, run_id)
     os.makedirs(path, exist_ok=False)  # never two searches in one folder
     return {"id": run_id, "path": path}
+
+
+def folder_bytes(path: str) -> int:
+    """The size of a run's folder on disk (its files, also those of its tiles)."""
+    total = 0
+    for folder, _, files in os.walk(path):
+        for name in files:
+            try:
+                total += os.path.getsize(os.path.join(folder, name))
+            except OSError:
+                pass
+    return total
 
 
 def public_meta(meta: Dict) -> Dict:
@@ -218,11 +230,11 @@ def save_results(run_path: str, groups: List[Dict], meta: Dict, on_lines=lambda 
     on_lines(0, "run.json")
 
 
-def list_runs(runs_dir: str) -> List[Dict]:
-    """All saved runs, newest first."""
+def list_runs(runs_dir: str, only: Optional[Iterable[str]] = None) -> List[Dict]:
+    """All saved runs (or those of `only`, ids), newest first."""
     runs = []
     if os.path.isdir(runs_dir):
-        for run_id in os.listdir(runs_dir):
+        for run_id in os.listdir(runs_dir) if only is None else set(only):
             path = os.path.join(runs_dir, run_id, "run.json")
             if os.path.isfile(path):
                 with open(path, encoding="utf-8") as f:

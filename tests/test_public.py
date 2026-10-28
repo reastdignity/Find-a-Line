@@ -192,7 +192,7 @@ def test_public_guards(public, providers):
     assert page.status_code == 200 and "Sign in with GitHub" in page.text and "Sign in with Google" in page.text
     assert TOKEN not in page.text and "<script" not in page.text
     assert public.get("/app/app.js").status_code == 200
-    for path in ("/api/schema", "/api/jobs", "/api/events", "/api/runs", "/runs/index.html", "/cache/x/wm256/1.jpg",
+    for path in ("/api/schema", "/api/jobs", "/api/events", "/api/runs", "/runs/runs.js", "/cache/x/wm256/1.jpg",
                  "/api/profile?run=x&line=1,2,3,4"):
         assert public.get(path).status_code == 401, path
     assert public.get("/docs").status_code == public.get("/nothing").status_code == 404
@@ -275,7 +275,8 @@ def test_sign_in_with_github(public, providers, tmp_path):
     import sqlite3
     db = sqlite3.connect(tmp_path / "accounts.sqlite")
     rows = db.execute("SELECT provider, subject, name, status FROM users").fetchall()
-    assert rows == [("github", "42", "alice", "pending")]
+    assert rows == [("github", "1", None, "approved"),  # the first administrator, made at the start
+                    ("github", "42", "alice", "pending")]
     assert "a@example.org" not in json.dumps(db.execute("SELECT * FROM users").fetchall())
     stored = db.execute("SELECT hash FROM sessions").fetchall()
     token = public.cookies.get(ac.SESSION_COOKIE)
@@ -288,7 +289,7 @@ def test_sign_in_with_github(public, providers, tmp_path):
     sign_in(public, providers, {"id": 42, "login": "alice2"})
     assert public.cookies.get(ac.SESSION_COOKIE) != token  # a new session; the old one ended
     assert db.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 1
-    assert db.execute("SELECT name FROM users").fetchone()[0] == "alice2"
+    assert db.execute("SELECT name FROM users WHERE subject = '42'").fetchone()[0] == "alice2"
     with TestClient(public.app, base_url=URL) as admin:
         sign_in(admin, providers, {"id": 1, "login": "root"})
         assert admin.get("/api/jobs").status_code == 200 and "(administrator)" not in admin.get("/").text
@@ -309,7 +310,7 @@ def test_sign_in_with_google(public, providers, tmp_path):
             assert answer.status_code == 400 and ac.SESSION_COOKIE not in other.cookies, change
     import sqlite3
     db = sqlite3.connect(tmp_path / "accounts.sqlite")
-    assert db.execute("SELECT provider, subject FROM users").fetchall() == [("google", "g-123")]
+    assert db.execute("SELECT provider, subject FROM users").fetchall() == [("github", "1"), ("google", "g-123")]
     db.close()
 
 
@@ -480,13 +481,10 @@ def test_every_route_has_its_access_rule(public):
         if isinstance(route, APIRoute):
             assert names(route.dependant) & rules, f"{route.path} has no access rule"
         elif isinstance(route, Mount):
-            assert route.path in GUARDED_MOUNTS, f"{route.path}: a mount without access control"
+            assert isinstance(route.app, web.RunFiles), f"{route.path}: a mount without access control"
         else:
             raise AssertionError(f"{route.path}: an unknown kind of route")
     assert "/api/jobs" in seen and "/api/events" in seen and "/app" in seen
-
-
-GUARDED_MOUNTS = {"/runs"}  # web.guard: approved users only (until the run files have their own rule)
 
 
 def test_authorization_of_jobs(public, people, tmp_path):
@@ -507,7 +505,7 @@ def test_authorization_of_jobs(public, people, tmp_path):
               ("post", "/api/estimate"), ("get", f"/api/jobs/{job_a}"), ("get", f"/api/jobs/{job_a}/events"),
               ("post", f"/api/jobs/{job_a}/again"), ("delete", f"/api/jobs/{job_a}"), ("get", "/api/events"),
               ("get", "/api/osm?lat=50&lon=19"), ("post", "/api/osm"), ("get", "/cache/x/wm256/1/2/3.jpg"),
-              ("get", f"/api/profile?run=x&line=1,2,3,4"), ("get", "/runs/x/map.html")]
+              ("get", "/api/profile?run=x&line=1,2,3,4"), ("get", "/runs/runs.js")]
     for who, code in DENIED.items():
         for method, path in routes:
             kwargs = {"json": request} if method == "post" else {}
@@ -623,6 +621,133 @@ def test_event_stream_per_user(tmp_path, settings, account_settings, providers, 
         assert response.status == 200
         for c in (connection, b_connection, admin):
             c.close()
+
+
+@pytest.fixture(scope="module")
+def clip_run(tmp_path_factory):
+    """The folder of a run of the Żabi Koń clip (computed once, offline), to copy into data folders."""
+    import subprocess
+    data = tmp_path_factory.mktemp("clip")
+    env = {**os.environ, "HTTP_PROXY": "http://127.0.0.1:9", "HTTPS_PROXY": "http://127.0.0.1:9", "NO_PROXY": "",
+           "PYTHONIOENCODING": "utf-8"}
+    result = subprocess.run(
+        [sys.executable, "findaline.py", "--elevation-file", os.path.join(DATA, "zabi_kon_nmt.tif"),
+         "--northing", "254608", "--easting", "553966", "--radius", "150", "--water", "off", "--fill-gaps", "off",
+         "--no-plot", "--yes", "--ortho", "never", "--nmpt", "off", "--data-dir", str(data)],
+        cwd=REPO, capture_output=True, text=True, encoding="utf-8", timeout=600, env=env)
+    assert result.returncode == 0, result.stdout + result.stderr
+    runs = data / "runs"
+    return next(runs / d for d in os.listdir(runs) if (runs / d / "run.json").is_file())
+
+
+def copy_run(clip_run, data_dir, run_id: str, name: str):
+    """The clip's run as another run of a data folder (its id and name changed)."""
+    import shutil
+    folder = data_dir / "runs" / run_id
+    shutil.copytree(clip_run, folder)
+    meta = json.loads((folder / "run.json").read_text("utf-8"))
+    meta.update(id=run_id, name=name)
+    (folder / "run.json").write_text(json.dumps(meta), "utf-8")
+    data = (folder / "data.js").read_text("utf-8").replace(clip_run.name, run_id)
+    (folder / "data.js").write_text(data, "utf-8")
+    return folder
+
+
+RUN_A, RUN_B, RUN_OLD = "2026-10-01_100000_A_00000000000000aa", "2026-10-01_100000_B_00000000000000bb", \
+    "2026-09-01_100000_Old"
+
+
+@pytest.fixture
+def run_people(tmp_path, clip_run, settings, account_settings, providers):
+    """A public app over a data folder with a run of A, one of B and one from before the public mode
+    (no row: given to the first administrator when the app starts), with a client per person."""
+    from jobs import Jobs
+    for run_id, name in ((RUN_A, "A's run"), (RUN_B, "B's run"), (RUN_OLD, "Old run")):
+        copy_run(clip_run, tmp_path, run_id, name)
+    (tmp_path / "runs" / RUN_A / "progress.json").write_text("{}")
+    (tmp_path / "runs" / RUN_A / "tiles").mkdir()
+    (tmp_path / "runs" / RUN_A / "tiles" / "0.pkl.gz").write_bytes(b"x")
+    (tmp_path / "jobs.sqlite").unlink(missing_ok=True)
+    jobs = Jobs(str(tmp_path))
+    clients, ids = {}, {}
+    for who in list(PEOPLE) + ["anonymous"]:
+        if who != "anonymous":
+            ids[who], cookie, csrf = session_of(tmp_path, account_settings, who)
+    jobs.add_run(RUN_A, ids["a"], 100)
+    jobs.add_run(RUN_B, ids["b"], 100)
+    app = _public_app(tmp_path, settings, account_settings, providers)  # adopts RUN_OLD
+    for who in list(PEOPLE) + ["anonymous"]:
+        client = TestClient(app, base_url=URL)
+        client.headers["origin"] = URL
+        if who != "anonymous":
+            _, cookie, csrf = session_of(tmp_path, account_settings, who)
+            client.cookies.set(ac.SESSION_COOKIE, cookie, domain="lines.example.org")
+            client.headers["x-findaline-token"] = csrf
+        clients[who] = client
+    clients["ids"], clients["jobs"] = ids, jobs
+    yield clients
+    for who, client in clients.items():
+        if isinstance(client, TestClient):
+            client.close()
+
+
+def test_run_files_behind_access_control(run_people, tmp_path):
+    """A run's files (those of RUN_FILES only) for its owner and administrators; 404 for everyone else
+    and for every other file; the viewer for anyone; runs.js lists one's own runs; runs from before
+    the public mode belong to the first administrator; ETag and Range still work."""
+    a, b, admin = run_people["a"], run_people["b"], run_people["admin"]
+    jobs, ids = run_people["jobs"], run_people["ids"]
+    assert jobs.run(RUN_OLD)["user_id"] == ids["admin"] and jobs.run(RUN_OLD)["visibility"] == "private"
+    for name in web.RUN_FILES:
+        assert a.get(f"/runs/{RUN_A}/{name}").status_code == 200, name
+        assert admin.get(f"/runs/{RUN_A}/{name}").status_code == 200, name
+        for who in ("b", "pending", "blocked", "anonymous"):
+            assert run_people[who].get(f"/runs/{RUN_A}/{name}").status_code == 404, (who, name)
+    for name in ("run.json", "progress.json", "tiles/0.pkl.gz", "", "nothing.js"):
+        assert a.get(f"/runs/{RUN_A}/{name}").status_code == 404, name
+    assert b.get(f"/runs/{RUN_B}/map.html").status_code == 200 and a.get(f"/runs/{RUN_OLD}/map.html").status_code == 404
+    assert admin.get(f"/runs/{RUN_OLD}/map.html").status_code == 200
+    assert run_people["anonymous"].get("/runs/_viewer/viewer.js").status_code == 200
+    assert a.get("/runs/_viewer/../jobs.sqlite").status_code == 404
+
+    whole = a.get(f"/runs/{RUN_A}/lines.csv")
+    part = a.get(f"/runs/{RUN_A}/lines.csv", headers={"range": "bytes=0-9"})
+    assert part.status_code == 206 and part.content == whole.content[:10]
+    assert a.get(f"/runs/{RUN_A}/lines.csv", headers={"if-none-match": whole.headers["etag"]}).status_code == 304
+
+    listed = a.get("/runs/runs.js")
+    assert listed.status_code == 200 and listed.headers["content-type"].startswith("text/javascript")
+    runs = json.loads(listed.text.split("window.FINDALINE_RUNS = ")[1].split(";\n")[0])
+    assert [r["id"] for r in runs] == [RUN_A] and "window.FINDALINE_APP = {\"profiles\": true};" in listed.text
+    assert {r["id"] for r in json.loads(admin.get("/runs/runs.js").text.split(" = ")[1].split(";\n")[0])} == {RUN_OLD}
+    assert [r["id"] for r in a.get("/api/runs").json()["runs"]] == [RUN_A]
+    assert run_people["anonymous"].get("/runs/runs.js").status_code == 401
+    redirect = a.get("/runs/index.html", follow_redirects=False)
+    assert redirect.status_code == 303 and redirect.headers["location"] == "/"
+    assert a.get(f"/api/profile?run={RUN_B}&line=1,2,3,4", headers={"x-findaline-profile": "1"}).status_code == 404
+    assert a.get(f"/api/profile?run={RUN_A}&line=1,2,3,4", headers={"x-findaline-profile": "1"}).status_code == 503
+
+
+def test_run_file_path_tricks(run_people, tmp_path):
+    """Encoded dots and slashes, absolute paths, NUL bytes and symbolic links out of a run folder get
+    nothing; the folder's own files outside the list neither."""
+    import http.client
+    (tmp_path / "secret.txt").write_text("secret")
+    a = run_people["a"]
+    tricks = [f"/runs/%2e%2e/jobs.sqlite", f"/runs/{RUN_A}%2frun.json", f"/runs/{RUN_A}/..%2f..%2fjobs.sqlite",
+              f"/runs/{RUN_A}/%2e%2e/{RUN_B}/map.html", f"/runs/{RUN_A}/%2e%2e%2f{RUN_B}%2fmap.html",
+              f"/runs/{RUN_B}%2f..%2f{RUN_A}/map.html", "/runs/_viewer/%2e%2e%2fjobs.sqlite",
+              f"/runs/{RUN_A}/map.html%00", f"/runs/{RUN_A}/run.json%00map.html", "/runs/%2fetc%2fpasswd/map.html",
+              "/runs/C:%5cWindows/win.ini", f"/runs/{RUN_A}/map.html/", f"/runs/{RUN_A}/map.html%2f"]
+    for path in tricks:
+        assert a.get(path).status_code == 404, path
+    try:
+        os.symlink(tmp_path / "secret.txt", tmp_path / "runs" / RUN_A / "lines.geojson.tmp")
+        os.replace(tmp_path / "runs" / RUN_A / "lines.geojson.tmp", tmp_path / "runs" / RUN_A / "lines.geojson")
+    except OSError:  # Windows without the privilege of symbolic links
+        pytest.skip("no symbolic links here")
+    answer = a.get(f"/runs/{RUN_A}/lines.geojson")
+    assert answer.status_code == 404 and "secret" not in answer.text
 
 
 def test_jobs_database_gets_owners(tmp_path):
@@ -848,7 +973,7 @@ def test_no_server_paths_in_public_events(tmp_path, monkeypatch):
         monkeypatch.setenv(key, value)
     jobs = Jobs(str(tmp_path), public=True)
     params = {**CLIP, "northing": 254608, "easting": 553966, "radius": 150, "name": "Clip"}
-    job = jobs.add({"params": params, "geometry": None}, "clip")
+    job = jobs.add({"params": params, "geometry": None}, "clip", user_id=5)
     missing = str(tmp_path / "missing.tif")  # an expected error naming a file in the data folder: made relative
     failing = jobs.add({"params": {**params, "elevation_file": missing}, "geometry": None}, "fails")
     broken = jobs.add({"geometry": None}, "broken")  # no params: an unexpected KeyError
@@ -865,6 +990,8 @@ def test_no_server_paths_in_public_events(tmp_path, monkeypatch):
     finally:
         scheduler.stop()
     assert jobs.get(job)["status"] == "done", jobs.get(job)["error"]
+    saved = jobs.run(jobs.get(job)["run_id"])  # the run belongs to the job's owner
+    assert saved["user_id"] == 5 and saved["visibility"] == "private" and saved["bytes"] > 0
     assert jobs.get(broken)["error"] == f"internal error, ref {broken}"
     assert answer["code"] == 200, answer
     assert jobs.get(failing)["status"] == "failed" and "file not found: missing.tif" in jobs.get(failing)["error"]

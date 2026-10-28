@@ -42,7 +42,10 @@ import secrets
 import threading
 import time
 import webbrowser
-from typing import Dict, List, Optional
+from typing import Callable, Dict, List, Optional
+
+from starlette.exceptions import HTTPException as StarletteHTTPException
+from starlette.staticfiles import StaticFiles
 
 import accounts as ac
 import cache
@@ -157,8 +160,41 @@ def title(p: pm.SearchParams) -> str:
 # The routes anyone may request in the public mode (signing in and out, the page, which shows a
 # sign-in page to visitors, and its assets); every other route depends on current_user,
 # require_admin or run_access (tests/test_public.py checks it)
-PUBLIC_ROUTES = {"/", "/login/{provider}", "/auth/{provider}", "/logout", "/app"}
+PUBLIC_ROUTES = {"/", "/login/{provider}", "/auth/{provider}", "/logout", "/app", "/runs/index.html"}
 SSE_PER_USER = 3  # open event streams of one user (the public mode)
+# The files of a run the public site serves (what mapping.save_map and runs.save_results write, without
+# run.json: its parameters and data files are the owner's); never progress.json, tiles or other files
+RUN_FILES = ("map.html", "data.js", "lines.js", "lines.csv", "lines.geojson", "ATTRIBUTION.txt")
+VIEWER = "_viewer"  # mapping.VIEWER_FOLDER: the viewer bundle, the same for everyone
+SAFE_PART = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,199}")  # a run id, a token, a file name: no "..", no "/"
+
+
+class RunFiles(StaticFiles):
+    """The run folders of the public site, with access control (never a plain StaticFiles):
+    <first>/<file> serves a file of RUN_FILES of the run `resolve(request, first)` gives (None:
+    404, whether the run exists or not), _viewer/<asset> anyone. Starlette's StaticFiles does the
+    rest: the path within the folder (symbolic links out of it are refused), ETag, Range."""
+
+    def __init__(self, directory: str, resolve: Callable):
+        super().__init__(directory=directory)
+        self.resolve = resolve  # (request, first part of the path) -> the run's id, or None
+
+    async def get_response(self, path: str, scope):
+        from starlette.concurrency import run_in_threadpool
+        from starlette.requests import Request
+        root = scope.get("root_path", "")
+        route = scope["path"][len(root):] if scope["path"].startswith(root) else scope["path"]
+        parts = route.lstrip("/").split("/")
+        if len(parts) != 2 or not all(SAFE_PART.fullmatch(part) or part == VIEWER for part in parts):
+            raise StarletteHTTPException(404)
+        first, name = parts
+        if first != VIEWER:
+            if name not in RUN_FILES:
+                raise StarletteHTTPException(404)
+            first = await run_in_threadpool(self.resolve, Request(scope), first)
+            if first is None:
+                raise StarletteHTTPException(404)
+        return await super().get_response(os.path.join(first, name), scope)
 
 
 def create_app(data_dir: str, token: Optional[str] = None, port: int = PORT, start_scheduler: bool = True,
@@ -170,8 +206,7 @@ def create_app(data_dir: str, token: Optional[str] = None, port: int = PORT, sta
     values: by default from FINDALINE_LIMIT_* (and the public site's defaults in the public mode)."""
     from fastapi import Depends, FastAPI, HTTPException, Request
     from fastapi.concurrency import run_in_threadpool
-    from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
-    from fastapi.staticfiles import StaticFiles
+    from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
     from sse_starlette import EventSourceResponse
     from starlette.middleware.trustedhost import TrustedHostMiddleware
 
@@ -227,11 +262,6 @@ def create_app(data_dir: str, token: Optional[str] = None, port: int = PORT, sta
         path = request.url.path
         if changes and (public or origin is not None) and origin not in origins:
             response = JSONResponse({"detail": "foreign or missing Origin"}, status_code=403)
-        elif public and path.startswith("/runs/") and not signed_in(request):
-            # Until run files have their own access control: an approved user only
-            response = JSONResponse({"detail": "sign-in required"}, status_code=401)
-        elif public and path.startswith("/runs/") and not signed_in(request)[0].approved:
-            response = JSONResponse({"detail": "your account is not approved"}, status_code=403)
         elif changes and path != "/logout" and public and not signed_in(request):
             response = JSONResponse({"detail": "sign-in required"}, status_code=401)  # no session, no token
         elif changes and path != "/logout" and not csrf_ok(request, request.headers.get("x-findaline-token")):
@@ -364,15 +394,39 @@ def create_app(data_dir: str, token: Optional[str] = None, port: int = PORT, sta
             raise HTTPException(404, "no such job")
         return job
 
+    def may_open(user: ac.User, run_id: str) -> bool:
+        """Whether a user may open a run: on the public site its owner (an administrator: every run
+        with an owner's row); locally every saved run."""
+        if not SAFE_PART.fullmatch(run_id) or not os.path.isfile(os.path.join(runs_dir, run_id, "run.json")):
+            return False
+        if not public:
+            return True
+        row = jobs.run(run_id)
+        return row is not None and (row["user_id"] == user.id or user.admin)
+
     def run_access(run: str, user: ac.User = Depends(current_user)) -> str:
-        """A run its user may open: the run of one of their jobs (an administrator: every run)."""
-        meta_path = os.path.join(runs_dir, run, "run.json")
-        if os.path.basename(run) != run or run in ("", ".", "..") or not os.path.isfile(meta_path):
-            raise HTTPException(404, "no such run")
-        owner = jobs.run_owner(run)
-        if not user.admin and (owner is None or owner["user_id"] != user.id):
+        """A run its user may open (404 otherwise, also for runs of others)."""
+        if not may_open(user, run):
             raise HTTPException(404, "no such run")
         return run
+
+    def own_run(run: str, user: ac.User = Depends(run_access)) -> str:
+        """A run its user owns (sharing it): run_access, and the owner only."""
+        if public and (jobs.run(run) or {}).get("user_id") != user.id:
+            raise HTTPException(404, "no such run")
+        return run
+
+    def run_of_session(request: Request, run_id: str) -> Optional[str]:
+        """RunFiles of /runs: the run, if the request's user may open it."""
+        found = signed_in(request)
+        return run_id if found and found[0].approved and may_open(found[0], run_id) else None
+
+    if public:
+        # Runs from before the public mode (no row, or no owner) belong to the first administrator,
+        # as private runs; nothing is deleted. Made before anyone signs in, so the id stays.
+        jobs.adopt_runs(runs_dir, users.first_admin())
+        import mapping
+        mapping.install_viewer(runs_dir)  # the viewer of share links, also before the first run
 
     streams: Dict[Optional[int], int] = {}  # open event streams per user
 
@@ -487,13 +541,15 @@ def create_app(data_dir: str, token: Optional[str] = None, port: int = PORT, sta
         # connections; a client that takes no data for SEND_TIMEOUT seconds is dropped
         return EventSourceResponse(stream(), ping=PING, send_timeout=SEND_TIMEOUT)
 
+    def runs_of(user: ac.User) -> List[Dict]:
+        """The runs a user's lists show: their own on the public site (an administrator's too), all locally."""
+        return rn.list_runs(runs_dir, jobs.runs_of(user.id) if public else None)
+
     @app.get("/api/runs")
     def list_runs(user: ac.User = Depends(current_user)):
-        """The user's runs (an administrator's: all)."""
-        mine = None if user.admin else {job["run_id"] for job in jobs.all(user.id) if job["run_id"]}
+        """The user's runs (locally all)."""
         return {"runs": [{k: r.get(k) for k in ("id", "name", "created", "summary", "has_map")}
-                         | {"description": rn.params_summary(r)} for r in rn.list_runs(runs_dir)
-                         if mine is None or r["id"] in mine]}
+                         | {"description": rn.params_summary(r)} for r in runs_of(user)]}
 
     @app.get("/api/osm")
     async def osm_regions(lat: float, lon: float, user: ac.User = Depends(current_user)):
@@ -547,8 +603,24 @@ def create_app(data_dir: str, token: Optional[str] = None, port: int = PORT, sta
             raise HTTPException(400, "line: lat1,lon1,lat2,lon2")
         return await quick("profile", {"run": run, "line": points})  # one at a time in the quick lane
 
+    if public:
+        @app.get("/runs/runs.js")
+        def runs_js(user: ac.User = Depends(current_user)):
+            """The list of runs of the maps (their "Other runs"): the user's own, and whether the map may
+            compute profiles and measure (FINDALINE_APP)."""
+            listed = [rn._listed(r) for r in runs_of(user)]
+            return Response(f"window.FINDALINE_RUNS = {json.dumps(listed, ensure_ascii=False)};\n"
+                            f"window.FINDALINE_APP = {json.dumps({'profiles': True})};\n",
+                            media_type="text/javascript")
+
+        @app.get("/runs/index.html")
+        def runs_index():
+            return RedirectResponse("/", 303)  # the app lists the runs
+
     app.mount("/app", StaticFiles(directory=APP_DIST), name="app")
-    app.mount("/runs", StaticFiles(directory=runs_dir), name="runs")
+    # Locally the runs folder as before; on the public site only the files of RUN_FILES of one's own runs
+    app.mount("/runs", RunFiles(runs_dir, run_of_session) if public else StaticFiles(directory=runs_dir),
+              name="runs")
 
     # Cached orthophoto tiles only (maps reach them as ../../cache/<folder>/wm256/...)
     @app.get("/cache/{path:path}")

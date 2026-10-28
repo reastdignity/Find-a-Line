@@ -116,6 +116,9 @@ declare global {
     FINDALINE_RUN?: RunData;
     FINDALINE_RUNS?: RunInfo[];
     FINDALINE_LINES?: Record<string, RunLines>;
+    // Set by the public site's runs.js (web.py): whether this map may compute profiles and measure;
+    // undefined: from disk no, from a local server yes
+    FINDALINE_APP?: {profiles: boolean};
   }
 }
 

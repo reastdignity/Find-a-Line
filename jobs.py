@@ -81,6 +81,11 @@ MIGRATIONS = [
     # 5: the owner of a job (accounts.sqlite users.id; NULL: the local app's, or from before the accounts)
     """ALTER TABLE jobs ADD COLUMN user_id INTEGER;
        CREATE INDEX jobs_user ON jobs (user_id, created);""",
+    # 6: the owners of the runs (web.py serves a run's files to them only), who sees them (private;
+    # later demo), the sha256 of a run's share link and its size on disk
+    """CREATE TABLE runs (run_id TEXT PRIMARY KEY, user_id INTEGER, visibility TEXT NOT NULL DEFAULT 'private',
+                          share_hash TEXT UNIQUE, bytes INTEGER NOT NULL DEFAULT 0, created TEXT);
+       CREATE INDEX runs_user ON runs (user_id, created);""",
 ]
 
 
@@ -262,11 +267,59 @@ class Jobs:
                                   "WHERE j.user_id = ?", (user_id,)).fetchone()[0]
             return db.execute("SELECT COALESCE(MAX(seq), 0) FROM events").fetchone()[0]
 
-    def run_owner(self, run_id: str) -> Optional[Dict]:
-        """The job that saved a run ({"user_id": ...}), None if no job did."""
+    # --- The runs: their owners and share links (web.py serves their files by these) ---
+
+    def add_run(self, run_id: str, user_id: Optional[int], size: int):
+        """A run saved by a job of a user (None: the local app's); the job's owner wins over an owner
+        given by adopt_runs meanwhile."""
         with self._db() as db:
-            row = db.execute("SELECT user_id FROM jobs WHERE run_id = ? LIMIT 1", (run_id,)).fetchone()
+            db.execute("INSERT INTO runs (run_id, user_id, bytes, created) VALUES (?, ?, ?, ?) ON CONFLICT (run_id) "
+                       "DO UPDATE SET user_id = excluded.user_id, bytes = excluded.bytes",
+                       (run_id, user_id, size, datetime.now().isoformat(timespec="seconds")))
+
+    def run(self, run_id: str) -> Optional[Dict]:
+        with self._db() as db:
+            row = db.execute("SELECT * FROM runs WHERE run_id = ?", (run_id,)).fetchone()
         return dict(row) if row else None
+
+    def runs_of(self, user_id: int) -> Set[str]:
+        """The ids of a user's runs."""
+        with self._db() as db:
+            return {r[0] for r in db.execute("SELECT run_id FROM runs WHERE user_id = ?", (user_id,))}
+
+    def adopt_runs(self, runs_dir: str, user_id: Optional[int]) -> int:
+        """Give the runs without an owner to `user_id` (the first administrator), as private runs:
+        those of the folder without a row (saved before the public mode, or on the command line) and
+        rows without a user (the local app's). Runs in progress (no run.json yet) are left to their
+        job. Nothing is deleted. Returns how many runs were given."""
+        import runs as rn
+        found = []
+        if os.path.isdir(runs_dir):
+            for entry in os.scandir(runs_dir):
+                if entry.is_dir() and not entry.name.startswith((".", "_")) \
+                        and os.path.isfile(os.path.join(entry.path, "run.json")):
+                    found.append(entry.name)
+        with self._write() as db:
+            known = {r[0] for r in db.execute("SELECT run_id FROM runs")}
+            now = datetime.now().isoformat(timespec="seconds")
+            new = [run_id for run_id in found if run_id not in known]
+            for run_id in new:
+                db.execute("INSERT INTO runs (run_id, user_id, bytes, created) VALUES (?, ?, ?, ?)",
+                           (run_id, user_id, rn.folder_bytes(os.path.join(runs_dir, run_id)), now))
+            given = db.execute("UPDATE runs SET user_id = ? WHERE user_id IS NULL", (user_id,)).rowcount \
+                if user_id is not None else 0
+        return len(new) + given
+
+    def set_share(self, run_id: str, share_hash: Optional[str]):
+        """The sha256 of a run's share link (None: not shared); a new one replaces the old link."""
+        with self._db() as db:
+            db.execute("UPDATE runs SET share_hash = ? WHERE run_id = ?", (share_hash, run_id))
+
+    def shared_run(self, share_hash: str) -> Optional[str]:
+        """The run of a share link's sha256 (None if no run has it)."""
+        with self._db() as db:
+            row = db.execute("SELECT run_id FROM runs WHERE share_hash = ?", (share_hash,)).fetchone()
+        return row[0] if row else None
 
     # --- Workers and their leases ---
 
@@ -510,6 +563,8 @@ def run_phase(data_dir: str, job_id: str, phase: str, limits: Optional[Limits] =
         else:
             lines, run = search.search_lines(plan)
             result = search.save_run(plan, lines, ortho_confirm(limits or Limits(), on_event), run)
+            import runs as rn
+            jobs.add_run(result.run["id"], job["user_id"], rn.folder_bytes(result.run["path"]))  # its owner
             jobs.set(job_id, "done", when=working, run_id=result.run["id"], error=None)
         failed = False
     except (search.SearchError, ValueError, RuntimeError, requests.RequestException) as e:  # ValueError: parameters
