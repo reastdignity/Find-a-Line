@@ -28,6 +28,7 @@ compose*.yaml
 .gitattributes
 .dockerignore
 Dockerfile
+deploy/
 docs/
 tests/
 tools/

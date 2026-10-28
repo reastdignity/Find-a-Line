@@ -5,8 +5,18 @@
 # - findaline.env: the settings of the site (copy findaline.env.example);
 # - secrets/: one file per secret (secrets/README.md), readable by uid 10001;
 # - optionally .env next to this file (copy .env.example): resources and the Slovak mirror.
-# The web service publishes no port: the reverse proxy reaches it in its own network (added by
-# the deployment, docs/deployment.md). For a local test copy compose.override.example.yaml to
+# - the network findaline-proxy, shared with the reverse proxy (SWAG) only:
+#     docker network create --internal --subnet 172.30.0.0/24 --ip-range 172.30.0.128/25 \
+#       --opt com.docker.network.bridge.name=br-fal-proxy findaline-proxy
+#   with SWAG joined to it at the fixed address FINDALINE_TRUSTED_PROXY, 172.30.0.2, outside the
+#   range the containers get their addresses from (docs/deployment.md).
+#
+# Networks (docs/deployment.md, "Networks"): SWAG reaches the web service in findaline-proxy,
+# which is internal (no way out). The web service also needs the internet (the OAuth providers'
+# token endpoints, Google's metadata and keys), through its own network `web`; the worker gets
+# out through `worker` and shares no network with the web service or SWAG. The bridges have
+# fixed names (br-fal-*), so the host's firewall can keep all three away from the LAN. The web
+# service publishes no port; for a local test copy compose.override.example.yaml to
 # compose.override.yaml.
 
 name: findaline
@@ -21,6 +31,13 @@ x-image: &image
   security_opt: ["no-new-privileges:true"]
   restart: unless-stopped
   env_file: [findaline.env]
+  # Public resolvers: the host's may be the router on the LAN, which the firewall rules of
+  # docs/deployment.md keep the containers away from (Docker's embedded DNS forwards from the
+  # container's network); CONTAINER_DNS_1/_2 in .env change them
+  dns: ["${CONTAINER_DNS_1:-9.9.9.9}", "${CONTAINER_DNS_2:-1.1.1.1}"]
+  logging:
+    driver: json-file
+    options: {max-size: "10m", max-file: "5"}
 
 services:
   web:
@@ -38,7 +55,10 @@ services:
       - findaline_session_secret
       - findaline_github_client_secret
       - findaline_google_client_secret
-    networks: [web]
+    networks:
+      web:
+      proxy:
+        aliases: [findaline-web]   # the name SWAG's findaline.subdomain.conf proxies to
     # GET / with the public host as Host (TrustedHostMiddleware answers 400 to any other);
     # the host comes from the same settings as the server's (settings.PublicSettings)
     healthcheck:
@@ -81,10 +101,19 @@ volumes:
   data:        # SQLite in WAL mode: a local volume, the same uid in both services
   no-mirror:
 
-# One network each: the worker never shares one with the web service or the proxy
+# The worker never shares a network with the web service or the proxy; no IPv6 in any of them
 networks:
+  proxy:
+    name: findaline-proxy
+    external: true   # created once by hand (above), joined by SWAG too
   web:
+    enable_ipv6: false
+    driver_opts:
+      com.docker.network.bridge.name: br-fal-web
   worker:
+    enable_ipv6: false
+    driver_opts:
+      com.docker.network.bridge.name: br-fal-worker
 
 secrets:
   findaline_session_secret:

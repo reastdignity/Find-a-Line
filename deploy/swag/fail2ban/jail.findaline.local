@@ -1,0 +1,14 @@
+# Find-a-Line: append to /config/fail2ban/jail.local (SWAG copies it to /etc/fail2ban at start).
+# Bans an address that gets more than 100 refusals (401, 403, 429) in 10 minutes for an hour.
+# Normal use stays far below: an expired session or a pending account gives a few 401/403 per
+# page load, the app's own rate limits a few 429 per minute at most, and SWAG's limit_req only
+# refuses beyond 20 requests per second (with a burst of 200). SWAG's [DEFAULT] ignoreip skips
+# the LAN, so test it from an outside address.
+[findaline]
+enabled  = true
+port     = http,https
+filter   = findaline
+logpath  = /config/log/nginx/findaline.access.log
+maxretry = 100
+findtime = 600
+bantime  = 3600

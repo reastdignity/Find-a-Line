@@ -93,6 +93,8 @@ jobs:
             python3 -c "import secrets; print(secrets.token_urlsafe(48))" > "secrets/$name"
           done
           : > secrets/opentopography_api_key  # empty: no NASADEM
+          docker network create --internal --subnet 172.30.0.0/24 --ip-range 172.30.0.128/25 \
+            --opt com.docker.network.bridge.name=br-fal-proxy findaline-proxy
 
       - name: Compose files
         run: docker compose config --quiet
@@ -126,4 +128,6 @@ jobs:
 
       - name: Clean up
         if: always()
-        run: docker compose down --volumes
+        run: |
+          docker compose down --volumes
+          docker network rm findaline-proxy || true
