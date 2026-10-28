@@ -1,0 +1,42 @@
+/* Design tokens of the new interfaces (prototypes B and C). Scoped to the root class .ui, never
+   :root, so the old app and the result viewer keep their look (and their light form controls).
+   The theme follows the system unless the .ui element has data-theme="light" or "dark". */
+.ui {
+  --bg: #f3f5f2; --surface: #ffffff; --surface-2: #e9eee9; --ink: #17201c; --ink-2: #45524b; --muted: #6c7a73; --line: #d2dad4;
+  --accent: #2350c8; --accent-soft: #e1e8fa; --on-accent: #ffffff;
+  --ok: #1d7a47; --ok-soft: #e0f1e6; --warn: #995500; --warn-soft: #fbefd9; --bad: #b3261e; --bad-soft: #fbe4e1;
+  --map-bg: #ecebdf; --water: #93c3e3; --rock: #8a7b63;
+  --clear: #e10fd6; --trees: #ef8300; --fav: #f0c400; --halo: #ffffff;
+  --terrain: #bba680; --tree-fill: #80ae6b; --limit: #d62728;
+  --shadow: 0 1px 2px rgb(20 30 25 / .08), 0 8px 24px rgb(20 30 25 / .10);
+  --focus: 0 0 0 3px color-mix(in srgb, var(--accent) 45%, transparent);
+  --display: "Barlow Condensed", "Arial Narrow", "Roboto Condensed", system-ui, sans-serif;
+  --font: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --mono: ui-monospace, "Cascadia Mono", "SF Mono", Menlo, Consolas, monospace;
+  --touch: 36px;  /* the height of buttons and inputs; 44px on coarse pointers */
+  color-scheme: light;
+}
+@media (pointer: coarse) { .ui { --touch: 44px; } }
+
+@media (prefers-color-scheme: dark) {
+  .ui:not([data-theme="light"]) {
+    --bg: #0e1311; --surface: #161c19; --surface-2: #1f2723; --ink: #e5ebe7; --ink-2: #b1bcb6; --muted: #85928b; --line: #2c3631;
+    --accent: #86a4ff; --accent-soft: #1f2a48; --on-accent: #0a1020;
+    --ok: #62c78e; --ok-soft: #163023; --warn: #e6a94f; --warn-soft: #382a12; --bad: #ff8a80; --bad-soft: #3a1a18;
+    --map-bg: #1a201c; --water: #24475e; --rock: #948a72;
+    --clear: #ff4cf4; --trees: #ff9f30; --fav: #ffd84a; --halo: #0e1311;
+    --terrain: #6e5f44; --tree-fill: #3f6b36; --limit: #ff6b6b;
+    --shadow: 0 1px 2px rgb(0 0 0 / .4), 0 8px 24px rgb(0 0 0 / .35);
+    color-scheme: dark;
+  }
+}
+.ui[data-theme="dark"] {
+  --bg: #0e1311; --surface: #161c19; --surface-2: #1f2723; --ink: #e5ebe7; --ink-2: #b1bcb6; --muted: #85928b; --line: #2c3631;
+  --accent: #86a4ff; --accent-soft: #1f2a48; --on-accent: #0a1020;
+  --ok: #62c78e; --ok-soft: #163023; --warn: #e6a94f; --warn-soft: #382a12; --bad: #ff8a80; --bad-soft: #3a1a18;
+  --map-bg: #1a201c; --water: #24475e; --rock: #948a72;
+  --clear: #ff4cf4; --trees: #ff9f30; --fav: #ffd84a; --halo: #0e1311;
+  --terrain: #6e5f44; --tree-fill: #3f6b36; --limit: #ff6b6b;
+  --shadow: 0 1px 2px rgb(0 0 0 / .4), 0 8px 24px rgb(0 0 0 / .35);
+  color-scheme: dark;
+}
