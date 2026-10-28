@@ -180,6 +180,16 @@ Each is an environment variable `FINDALINE_LIMIT_<NAME>`; nothing is limited by 
 | `DOWNLOAD_MB_MAX` | 3000 | Largest download of a search (its estimate), MB |
 | `ORTHO_MINUTES` | 10 | Orthophoto that would take longer to download is not cached (the map loads it online) |
 | `NOT_ALLOWED` | `["ortho=always", "update", "coastline=world", "threads", "tile_size"]` | Options (or values of them) the page may not set, a JSON list |
+| `JOBS_ACTIVE_MAX` | 2 | Searches of a user waiting or running at once |
+| `JOBS_DAY_MAX` | 20 | Searches a user may start in 24 hours (*run again* counts too) |
+| `KM2_DAY_MAX` | 250 | km² of the search areas of a user in 24 hours (counted by the worker once it knows the area, circles too) |
+| `RUNS_GB_MAX` | 5 | GB of a user's saved runs; no new search above it (*delete* in *Runs* frees it) |
+| `NOMINATIM_DAY_MAX` | 50 | Requests to Nominatim not answered from its cache (`osm:` areas, run names, countries) of a user's searches, estimates and profiles in 24 hours |
+| `ESTIMATE_RATE` / `PROFILE_RATE` | `20/minute;300/hour` / `30/minute;500/hour` | Estimates / profiles a user may ask for (the notation of the `limits` library) |
+| `QUEUE_MAX` | 50 | Searches waiting or running on the site at once (everyone) |
+| `FREE_DISK_GB_MIN` | 20 | No new searches while the data folder's disk has less free space, GB (everyone) |
+
+On the public site there are three kinds of accounts. A *user* has all the limits above. An administrator can make a user *without limits*: the limits on options, the search limits, the quotas and the rates do not apply to them, and they may set the options of `NOT_ALLOWED`; they still see only their own searches and runs, and have no administrator's rights. *Administrators* are without limits too. The time limits, `QUEUE_MAX` and `FREE_DISK_GB_MIN` apply to everyone. The sources `nasadem` (it uses the server's OpenTopography key) and `malta2012` (its licence is not settled) are offered to administrators only. A profile computed on a map of the public site must lie in the run's area (with a margin of its `--max-length`) and be at most `--max-length` long.
 
 Several places at once: give `--point LAT,LON` (WGS84) once per place, optionally with a name for the run, `--point LAT,LON,NAME`. They are searched one after another with the same options, and each is saved as its own run. Example: `--point 50.15595,19.75627,"Żabi Koń" --point 50.17332,19.74092`
 

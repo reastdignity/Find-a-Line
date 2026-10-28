@@ -427,7 +427,7 @@ def test_signup_modes_and_login_rate(tmp_path, settings, account_settings, provi
 
 # The people of the authorization matrix: (provider id, status); "admin" is FINDALINE_ADMINS
 PEOPLE = {"a": ("11", "approved"), "b": ("12", "approved"), "pending": ("13", "pending"),
-          "blocked": ("14", "blocked"), "admin": ("1", "approved")}
+          "blocked": ("14", "blocked"), "admin": ("1", "approved"), "unlimited": ("15", "approved")}
 DENIED = {"anonymous": 401, "pending": 403, "blocked": 403}  # whatever the route, before its own checks
 
 
@@ -438,6 +438,8 @@ def session_of(data_dir, account_settings, who: str):
     user = users.sign_in("github", subject, who)
     if user.status != status and not user.admin:
         users.set_status(user.id, status)
+    if who == "unlimited":
+        users.set_unlimited(user.id, True)
     cookie, csrf = users.new_session(user.id)
     return user.id, cookie, csrf
 
@@ -726,7 +728,7 @@ def test_run_files_behind_access_control(run_people, tmp_path):
     redirect = a.get("/runs/index.html", follow_redirects=False)
     assert redirect.status_code == 303 and redirect.headers["location"] == "/"
     assert a.get(f"/api/profile?run={RUN_B}&line=1,2,3,4", headers={"x-findaline-profile": "1"}).status_code == 404
-    assert a.get(f"/api/profile?run={RUN_A}&line=1,2,3,4", headers={"x-findaline-profile": "1"}).status_code == 503
+    assert a.get(f"/api/profile?run={RUN_A}&line=1,2,3,4", headers={"x-findaline-profile": "1"}).status_code == 400  # far
 
 
 def test_run_file_path_tricks(run_people, tmp_path):
@@ -837,7 +839,7 @@ def test_demo_runs_and_the_anonymous_page(run_people, tmp_path):
     assert (runs[RUN_A]["own"], runs[RUN_A]["demo"], runs[RUN_B]["own"], runs[RUN_B]["demo"]) == (True, False, False, True)
     assert a.post(f"/api/runs/{RUN_B}/share").status_code == 404  # a demo of someone else: no share link
     profile = {"x-findaline-profile": "1"}
-    assert a.get(f"/api/profile?run={RUN_B}&line=1,2,3,4", headers=profile).status_code == 503  # to the worker
+    assert a.get(f"/api/profile?run={RUN_B}&line=1,2,3,4", headers=profile).status_code == 400  # past access
     assert anonymous.get(f"/api/profile?run={RUN_B}&line=1,2,3,4", headers=profile).status_code == 401
 
     page = anonymous.get("/").text
@@ -847,6 +849,213 @@ def test_demo_runs_and_the_anonymous_page(run_people, tmp_path):
     assert "waiting for an administrator" in page and f"/runs/{RUN_B}/map.html" in page
     assert admin.post(f"/api/runs/{RUN_B}/demo", json={"demo": False}).status_code == 200
     assert anonymous.get(f"/runs/{RUN_B}/map.html").status_code == 404 and RUN_B not in anonymous.get("/").text
+
+
+def _clients(app, data_dir, account_settings, who=("a", "b", "unlimited", "admin")) -> dict:
+    """A TestClient per person, signed in (with the CSRF token and the site's Origin)."""
+    clients = {}
+    for name in who:
+        client = TestClient(app, base_url=URL)
+        client.headers["origin"] = URL
+        user_id, cookie, csrf = session_of(data_dir, account_settings, name)
+        client.cookies.set(ac.SESSION_COOKIE, cookie, domain="lines.example.org")
+        client.headers["x-findaline-token"] = csrf
+        client.user_id = user_id
+        clients[name] = client
+    return clients
+
+
+def test_quota_race(tmp_path):
+    """Jobs.admission runs in the insert's write transaction: twelve requests at once of a user with
+    at most two jobs waiting or running queue exactly two."""
+    import threading
+
+    from jobs import Jobs, QuotaExceeded
+    from settings import Limits
+    jobs = Jobs(str(tmp_path))
+    limits = Limits(jobs_active_max=2)
+    start, added, refused = threading.Barrier(12), [], []
+
+    def one():
+        start.wait()
+        try:
+            added.append(jobs.add({"params": {}}, "race", 7, check=jobs.admission(7, limits, True)))
+        except QuotaExceeded as e:
+            refused.append(e.status)
+    threads = [threading.Thread(target=one) for _ in range(12)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert len(added) == 2 and refused == [429] * 10
+    assert len([j for j in jobs.all(7) if j["status"] == "queued"]) == 2
+    jobs.add({"params": {}}, "another user", 8, check=jobs.admission(8, limits, True))  # their own count
+    jobs.add({"params": {}}, "no limits", 7, check=jobs.admission(7, limits, False))
+
+
+def test_tiers_and_quotas(tmp_path, settings, account_settings, providers, monkeypatch):
+    """A user has the request limits, the quotas and the rates of the site, and no nasadem or
+    malta2012; a user without limits has none of them (the resource fields too) but no admin rights
+    and no other users' data; an administrator has everything; the server's safeguards (queue, free
+    disk) refuse everyone. Refusals come before the worker is asked (it does not run here: 503)."""
+    import jobs as jb
+    from settings import Limits
+    point = {"lat": 50.1, "lon": 19.7, "radius": 100}
+    request = {"params": point, "geometry": None}
+    limits = Limits.load(public=True).model_copy(update={"jobs_day_max": 4, "estimate_rate": "2/minute"})
+    app = _public_app(tmp_path, settings, account_settings, providers, limits=limits)
+    people = _clients(app, tmp_path, account_settings)
+    a, unlimited, admin = people["a"], people["unlimited"], people["admin"]
+    jobs = app.state.jobs
+
+    def sources(client):
+        fields = {f["name"]: f for f in client.get("/api/schema").json()["fields"]}
+        return "threads" in fields, {"nasadem", "malta2012"} & set(fields["source"]["choices"])
+    assert sources(a) == (False, set()) and sources(unlimited) == (True, set())
+    assert sources(admin) == (True, {"nasadem", "malta2012"})
+    assert a.post("/api/jobs", json={"params": {**point, "threads": 2}}).status_code == 400
+    assert a.post("/api/jobs", json={"params": {**point, "max_length": 5000}}).status_code == 400
+    assert unlimited.post("/api/jobs", json={"params": {**point, "source": "nasadem"}}).status_code == 400
+    assert unlimited.post("/api/jobs", json={"params": {**point, "source": "malta2012"}}).status_code == 400
+    big = unlimited.post("/api/jobs", json={"params": {**point, "threads": 2, "max_length": 5000,
+                                                       "update": "stale", "coastline": "world"}})
+    assert big.status_code == 200, big.text
+    assert jobs.get(big.json()["id"])["unlimited"] == 1
+    assert admin.post("/api/jobs", json={"params": {**point, "source": "nasadem"}}).status_code == 200
+    # No admin rights or other users' data for a user without limits
+    assert unlimited.post("/api/osm", json={"action": "download", "region": "malta"}).status_code == 403
+    assert unlimited.post("/api/runs/x/demo", json={"demo": True}).status_code == 403
+    first = a.post("/api/jobs", json=request).json()["id"]
+    assert jobs.get(first)["unlimited"] == 0
+    assert unlimited.get(f"/api/jobs/{first}/events").status_code == 404
+    assert unlimited.delete(f"/api/jobs/{first}").status_code == 404
+
+    # Two jobs at once, four a day
+    assert a.post("/api/jobs", json=request).status_code == 200
+    third = a.post("/api/jobs", json=request)
+    assert third.status_code == 429 and "at most 2" in third.text
+    for _ in range(2):
+        assert unlimited.post("/api/jobs", json=request).status_code == 200  # three at once
+    for job in jobs.all(a.user_id):
+        a.delete(f"/api/jobs/{job['id']}")
+    assert a.post("/api/jobs", json=request).status_code == 200
+    again = a.post(f"/api/jobs/{first}/again")  # run again counts as well
+    assert again.status_code == 200
+    for job in jobs.all(a.user_id):
+        a.delete(f"/api/jobs/{job['id']}")
+    day = a.post("/api/jobs", json=request)
+    assert day.status_code == 429 and "4 searches in 24 hours" in day.text
+    assert unlimited.delete(f"/api/jobs/{big.json()['id']}").status_code == 200
+    assert unlimited.post(f"/api/jobs/{big.json()['id']}/again").status_code == 200
+
+    # The size of the runs and the km² of the last 24 hours (B: a fresh user)
+    b = people["b"]
+    jobs.add_run("big-run", b.user_id, int(6e9))
+    refused = b.post("/api/jobs", json=request)
+    assert refused.status_code == 429 and "delete some in Runs" in refused.text
+    jobs.delete_run("big-run", str(tmp_path / "runs"))
+    jobs.use(b.user_id, "km2", 250, limits.km2_day_max)
+    refused = b.post("/api/jobs", json=request)
+    assert refused.status_code == 429 and "km²" in refused.text
+    with pytest.raises(jb.QuotaExceeded):
+        jobs.use(b.user_id, "km2", 1, limits.km2_day_max)
+    jobs.add_run("big-run-2", unlimited.user_id, int(6e9))
+    jobs.use(unlimited.user_id, "km2", 1000, None)
+    assert unlimited.post("/api/jobs", json=request).status_code == 200
+
+    # Rates of estimates: refused before the (missing) worker
+    assert [b.post("/api/estimate", json=request).status_code for _ in range(3)] == [503, 503, 429]
+    assert {unlimited.post("/api/estimate", json=request).status_code for _ in range(3)} == {503}
+    assert b.post("/api/estimate", json={"params": {**point, "threads": 2}}).status_code == 400
+
+    # The server's safeguards: everyone
+    small = limits.model_copy(update={"queue_max": 1})
+    app2 = _public_app(tmp_path, settings, account_settings, providers, limits=small)
+    for client in _clients(app2, tmp_path, account_settings, ("admin", "unlimited")).values():
+        full = client.post("/api/jobs", json=request)
+        assert full.status_code == 503 and "queue is full" in full.text
+    for job in jobs.waiting_or_running():
+        jobs.request_cancel(job["id"])
+
+    class Disk:
+        free = 5e9
+    monkeypatch.setattr(jb.shutil, "disk_usage", lambda path: Disk())
+    for client in (admin, unlimited, b):
+        short = client.post("/api/jobs", json=request)
+        assert short.status_code == 503 and "disk" in short.text
+    for client in people.values():
+        client.close()
+
+
+def test_nominatim_and_area_quotas_in_the_worker(tmp_path, monkeypatch):
+    """The worker counts a user's uncached Nominatim requests (osm.BEFORE_REQUEST) and refuses the one
+    over the quota before it is sent; cached answers are free; the km² of a search are counted when
+    its area is known; a user without limits (None) counts nothing."""
+    import osm
+    from jobs import Jobs, QuotaExceeded, charge_area, nominatim_quota
+    from settings import Limits
+    jobs = Jobs(str(tmp_path))
+    sent = []
+
+    class Answer:
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return []
+    monkeypatch.setattr(osm, "_nominatim_turn", lambda cache_dir: None)
+    monkeypatch.setattr(osm.requests, "get", lambda url, **kwargs: sent.append(kwargs["params"]["q"]) or Answer())
+    monkeypatch.setattr(osm, "BEFORE_REQUEST", None)
+    cache_dir = str(tmp_path / "nominatim")  # not the data folder's cache (its layout marker)
+    nominatim_quota(jobs, 7, Limits(nominatim_day_max=2))
+    osm.search("one", cache_dir)
+    osm.search("two", cache_dir)
+    osm.search("one", cache_dir)  # cached: not counted
+    with pytest.raises(QuotaExceeded) as refused:
+        osm.search("three", cache_dir)
+    assert sent == ["one", "two"] and "Nominatim" in str(refused.value)
+    nominatim_quota(jobs, 8, Limits(nominatim_day_max=2))  # another user
+    osm.search("three", cache_dir)
+    nominatim_quota(jobs, 7, None)  # without limits
+    assert osm.BEFORE_REQUEST is None
+    osm.search("four", cache_dir)
+    assert sent == ["one", "two", "three", "four"]
+    monkeypatch.setattr(osm, "BEFORE_REQUEST", None)
+
+    plan = _plan(tmp_path, None, northing=254608, easting=553966, radius=150)  # 0.07 km²
+    charge_area(jobs, 7, plan, Limits(km2_day_max=0.1))
+    with pytest.raises(QuotaExceeded):
+        charge_area(jobs, 7, plan, Limits(km2_day_max=0.1))
+    charge_area(jobs, 7, plan, None)
+    charge_area(jobs, None, plan, Limits(km2_day_max=0.1))  # the local app: nobody to count
+
+
+def test_profiles_and_deleting_runs(run_people, tmp_path):
+    """Profiles of the public site: points in the run's box with a margin of its --max-length, at most
+    --max-length apart, and the rate of a user; the owner deletes a run (folder and row), nobody else."""
+    a, b, admin = run_people["a"], run_people["b"], run_people["admin"]
+    jobs = run_people["jobs"]
+    meta = json.loads((tmp_path / "runs" / RUN_A / "run.json").read_text("utf-8"))
+    lat, lon, ml = meta["area"]["lat"], meta["area"]["lon"], meta["params"]["max_length"]
+    headers = {"x-findaline-profile": "1"}
+    profile = lambda client, *p: client.get(f"/api/profile?run={RUN_A}&line={','.join(map(str, p))}",  # noqa: E731
+                                            headers=headers)
+    assert profile(a, lat, lon, lat + 0.0003, lon).status_code == 503  # fine: on to the (missing) worker
+    far = profile(a, lat, lon, lat + 0.5, lon)
+    assert far.status_code == 400 and "area" in far.text
+    d = (150 + ml * 0.9) / 111320  # both corners inside the margin, too far apart
+    long = profile(a, lat - d, lon - d, lat + d, lon + d)
+    assert long.status_code == 400 and "apart" in long.text
+    assert profile(admin, lat, lon, lat + 0.5, lon).status_code == 400  # everyone on the public site
+
+    assert b.delete(f"/api/runs/{RUN_A}").status_code == 404
+    assert admin.delete(f"/api/runs/{RUN_A}").status_code == 404  # the owner only
+    assert a.delete(f"/api/runs/{RUN_A}").status_code == 200
+    assert not (tmp_path / "runs" / RUN_A).exists() and jobs.run(RUN_A) is None
+    assert a.get(f"/runs/{RUN_A}/map.html").status_code == 404 and a.get("/api/runs").json()["runs"] == []
+    with TestClient(web.create_app(str(tmp_path), token=TOKEN, start_scheduler=False)) as local:
+        assert local.delete(f"/api/runs/{RUN_B}", headers={"x-findaline-token": TOKEN}).status_code == 404
+    assert (tmp_path / "runs" / RUN_B).exists()
 
 
 def _edge(url: str, profile) -> str:
@@ -1000,6 +1209,38 @@ def test_jobs_database_gets_owners(tmp_path):
     assert search._search_hash(plan) == before
     plan.owner = 7
     assert search._search_hash(plan) != before
+
+
+def test_databases_get_the_tiers_and_usage(tmp_path, account_settings):
+    """accounts.sqlite of version 1 gets users.unlimited (its users: with limits), jobs.sqlite of
+    version 6 the jobs' and quick tasks' tier and the table usage (its jobs: with limits)."""
+    import sqlite3
+
+    import cache
+    import jobs as jb
+    db = sqlite3.connect(tmp_path / "accounts.sqlite")
+    cache.migrate(db, ac.MIGRATIONS[:1])
+    db.execute("INSERT INTO users (provider, subject, name, status) VALUES ('github', '11', 'a', 'approved')")
+    db.commit()
+    db.close()
+    users = ac.Accounts(str(tmp_path), account_settings)
+    user = users.users()[0]
+    assert user.name == "a" and not user.unlimited and user.limited
+    users.set_unlimited(user.id, True)
+    assert not users.user(user.id).limited and not users.user(user.id).admin
+    db = sqlite3.connect(tmp_path / "jobs.sqlite")
+    cache.migrate(db, jb.MIGRATIONS[:6])
+    db.execute("INSERT INTO jobs (id, created, status, request, title, user_id) VALUES ('old', "
+               "'2026-10-01T10:00:00', 'queued', '{}', 'Old job', 11)")
+    db.commit()
+    db.close()
+    jobs = jb.Jobs(str(tmp_path))
+    assert jobs.get("old")["unlimited"] == 0
+    jobs.use(11, "km2", 3, None)
+    db = sqlite3.connect(tmp_path / "jobs.sqlite")
+    assert db.execute("PRAGMA user_version").fetchone()[0] == len(jb.MIGRATIONS) >= 7
+    assert db.execute("SELECT amount FROM usage").fetchall() == [(3.0,)]
+    db.close()
 
 
 def test_local_headers(tmp_path):

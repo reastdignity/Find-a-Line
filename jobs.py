@@ -25,6 +25,7 @@ The job queue of the web application and its worker.
 
 import contextlib
 import json
+import math
 import multiprocessing
 import os
 import re
@@ -87,6 +88,13 @@ MIGRATIONS = [
     """CREATE TABLE runs (run_id TEXT PRIMARY KEY, user_id INTEGER, visibility TEXT NOT NULL DEFAULT 'private',
                           share_hash TEXT UNIQUE, bytes INTEGER NOT NULL DEFAULT 0, created TEXT);
        CREATE INDEX runs_user ON runs (user_id, created);""",
+    # 7: quotas: whether a job or a quick task is a user's without limits (the worker applies its
+    # Limits otherwise), the owner of a quick task, and what users used (km², Nominatim requests)
+    """ALTER TABLE jobs ADD COLUMN unlimited INTEGER NOT NULL DEFAULT 0;
+       ALTER TABLE quick ADD COLUMN user_id INTEGER;
+       ALTER TABLE quick ADD COLUMN unlimited INTEGER NOT NULL DEFAULT 0;
+       CREATE TABLE usage (user_id INTEGER NOT NULL, kind TEXT NOT NULL, at REAL NOT NULL, amount REAL NOT NULL);
+       CREATE INDEX usage_user ON usage (user_id, kind, at);""",
 ]
 
 
@@ -130,6 +138,20 @@ class Redact:
         return value
 
 
+class QuotaExceeded(ValueError):
+    """A quota or a safeguard refuses a job or a request (`status`: the HTTP status, 429 for a user's
+    quota, 503 for the server's safeguards). A ValueError, so code that goes on without an optional
+    lookup (a run's place name, the country of --source auto) goes on without it."""
+
+    def __init__(self, message: str, status: int = 429):
+        super().__init__(message)
+        self.status = status
+
+
+DAY = 86400.0  # seconds of the daily quotas (a moving 24 hours)
+USAGE = {"km2": "km² of search areas", "nominatim": "uncached Nominatim requests (place names, osm: areas)"}
+
+
 def _in(values: Iterable) -> str:
     """Placeholders for an SQL IN (...) of these values."""
     return "(" + ", ".join("?" * len(tuple(values))) + ")"
@@ -160,18 +182,84 @@ class Jobs:
         return os.path.join(self.data_dir, "work", "jobs", job_id)
 
     def add(self, request: Dict, title: str, user_id: Optional[int] = None,
-            check: Optional[Callable[[sqlite3.Connection], None]] = None) -> str:
+            check: Optional[Callable[[sqlite3.Connection], None]] = None, unlimited: bool = False) -> str:
         """Queue a job of a user (None: the local app's); `check(db)` runs in the same write
-        transaction before the job is added (a quota: it raises to refuse it)."""
+        transaction before the job is added (a quota: it raises to refuse it); `unlimited`: a job
+        of a user without limits (the worker's Limits do not apply to it, its time limits do)."""
         job_id = f"{datetime.now():%Y%m%d-%H%M%S}-{uuid.uuid4().hex[:6]}"
         created = datetime.now().isoformat(timespec="seconds")
         with self._write() as db:
             if check:
                 check(db)
-            db.execute("INSERT INTO jobs (id, created, status, request, title, user_id) "
-                       "VALUES (?, ?, 'queued', ?, ?, ?)", (job_id, created, json.dumps(request), title, user_id))
+            db.execute("INSERT INTO jobs (id, created, status, request, title, user_id, unlimited) "
+                       "VALUES (?, ?, 'queued', ?, ?, ?, ?)",
+                       (job_id, created, json.dumps(request), title, user_id, int(unlimited)))
         self.event(job_id, "status", {"status": "queued", "title": title, "created": created})
         return job_id
+
+    def admission(self, user_id: Optional[int], limits: Optional[Limits], limited: bool) -> Callable:
+        """The check of a new job (for add(check=...), so it runs in the insert's transaction and two
+        requests at once cannot both pass): the safeguards of the server for everyone (free disk,
+        queue length), the quotas of `limits` for a limited user (jobs at once and per day, size of
+        their runs, km² of the last 24 hours). Raises QuotaExceeded."""
+        def check(db: sqlite3.Connection):
+            if limits is None:
+                return
+            if limits.free_disk_gb_min is not None:
+                free = shutil.disk_usage(self.data_dir).free / 1e9
+                if free < limits.free_disk_gb_min:
+                    raise QuotaExceeded("the server is short of disk space: no new searches for now", 503)
+            active = WAITING + ACTIVE
+            if limits.queue_max is not None:
+                count = db.execute(f"SELECT COUNT(*) FROM jobs WHERE status IN {_in(active)}", active).fetchone()[0]
+                if count >= limits.queue_max:
+                    raise QuotaExceeded(f"the queue is full ({count} searches): try again later", 503)
+            if not limited or user_id is None:
+                return
+            if limits.jobs_active_max is not None:
+                count = db.execute(f"SELECT COUNT(*) FROM jobs WHERE user_id = ? AND status IN {_in(active)}",
+                                   (user_id, *active)).fetchone()[0]
+                if count >= limits.jobs_active_max:
+                    raise QuotaExceeded(f"at most {limits.jobs_active_max} of your searches may wait or run at once")
+            if limits.jobs_day_max is not None:
+                since = (datetime.now() - timedelta(seconds=DAY)).isoformat(timespec="seconds")
+                count = db.execute("SELECT COUNT(*) FROM jobs WHERE user_id = ? AND created >= ?",
+                                   (user_id, since)).fetchone()[0]
+                if count >= limits.jobs_day_max:
+                    raise QuotaExceeded(f"at most {limits.jobs_day_max} searches in 24 hours: try again later")
+            if limits.runs_gb_max is not None:
+                size = db.execute("SELECT COALESCE(SUM(bytes), 0) FROM runs WHERE user_id = ?",
+                                  (user_id,)).fetchone()[0]
+                if size >= limits.runs_gb_max * 1e9:
+                    raise QuotaExceeded(f"your runs take {size / 1e9:.1f} GB, at most {limits.runs_gb_max:g} GB: "
+                                        f"delete some in Runs")
+            if limits.km2_day_max is not None:
+                used = self._used(db, user_id, "km2")
+                if used >= limits.km2_day_max:
+                    raise QuotaExceeded(f"your searches covered {used:.0f} km² in 24 hours, at most "
+                                        f"{limits.km2_day_max:g} km²: try again later")
+        return check
+
+    @staticmethod
+    def _used(db: sqlite3.Connection, user_id: int, kind: str) -> float:
+        return db.execute("SELECT COALESCE(SUM(amount), 0) FROM usage WHERE user_id = ? AND kind = ? AND at > ?",
+                          (user_id, kind, time.time() - DAY)).fetchone()[0]
+
+    def use(self, user_id: int, kind: str, amount: float, limit: Optional[float]):
+        """Count what a user uses (USAGE: "km2", "nominatim") against its quota of 24 hours; over it,
+        QuotaExceeded and nothing is counted (checked and counted in one write transaction)."""
+        with self._write() as db:
+            used = self._used(db, user_id, kind)
+            if limit is not None and used + amount > limit:
+                raise QuotaExceeded(f"{USAGE[kind]}: {used:.0f} of at most {limit:g} in 24 hours used, "
+                                    f"{amount:.1f} more needed: try again later")
+            db.execute("INSERT INTO usage (user_id, kind, at, amount) VALUES (?, ?, ?, ?)",
+                       (user_id, kind, time.time(), amount))
+
+    def forget_usage(self) -> int:
+        """Delete what users used before the last two days (the quotas look at 24 hours)."""
+        with self._db() as db:
+            return db.execute("DELETE FROM usage WHERE at < ?", (time.time() - 2 * DAY,)).rowcount
 
     def get(self, job_id: str) -> Optional[Dict]:
         with self._db() as db:
@@ -330,6 +418,15 @@ class Jobs:
         with self._db() as db:
             return bool(db.execute("UPDATE runs SET visibility = ? WHERE run_id = ?", (visibility, run_id)).rowcount)
 
+    def delete_run(self, run_id: str, runs_dir: str):
+        """Delete a run: its folder, then its row (its share link and demo flag go with it). A folder
+        that cannot be deleted raises OSError and keeps its row (or adopt_runs would give it away)."""
+        folder = os.path.join(runs_dir, run_id)
+        if os.path.isdir(folder):
+            shutil.rmtree(folder)
+        with self._db() as db:
+            db.execute("DELETE FROM runs WHERE run_id = ?", (run_id,))
+
     def demo_runs(self) -> Set[str]:
         """The ids of the demo runs."""
         with self._db() as db:
@@ -390,11 +487,13 @@ class Jobs:
 
     # --- The quick lane ---
 
-    def quick_add(self, kind: str, request: Dict) -> int:
-        """A task for the quick lane ("estimate" or "profile"); its id."""
+    def quick_add(self, kind: str, request: Dict, user_id: Optional[int] = None, unlimited: bool = False) -> int:
+        """A task for the quick lane ("estimate" or "profile") of a user (`unlimited`: without the
+        worker's Limits); its id."""
         with self._db() as db:
-            return db.execute("INSERT INTO quick (kind, request, status, created) VALUES (?, ?, 'waiting', ?)",
-                              (kind, json.dumps(request), time.time())).lastrowid
+            return db.execute("INSERT INTO quick (kind, request, status, created, user_id, unlimited) "
+                              "VALUES (?, ?, 'waiting', ?, ?, ?)",
+                              (kind, json.dumps(request), time.time(), user_id, int(unlimited))).lastrowid
 
     def quick_take(self, task_id: int) -> Optional[Dict]:
         """The answer of a task once it is there ({"code", "body"}), removing the task; else None."""
@@ -519,10 +618,32 @@ def ortho_confirm(limits: Limits, on_event):
     return confirm
 
 
+def nominatim_quota(jobs: Jobs, user_id: Optional[int], limits: Optional[Limits]):
+    """Count the uncached Nominatim requests of this process's work (a job's phase, a quick task) for
+    its user, against Limits.nominatim_day_max: osm.BEFORE_REQUEST, which refuses a request over the
+    quota before it is sent (QuotaExceeded). None (no limits, no user): nothing is counted."""
+    import osm
+    osm.BEFORE_REQUEST = None
+    if limits is not None and limits.nominatim_day_max is not None and user_id is not None:
+        osm.BEFORE_REQUEST = lambda: jobs.use(user_id, "nominatim", 1, limits.nominatim_day_max)
+
+
+def charge_area(jobs: Jobs, user_id: Optional[int], plan, limits: Optional[Limits]):
+    """Count the km² of a search's area for its user against Limits.km2_day_max (QuotaExceeded over
+    it); known only here for osm:<name> and coast/cliffs areas. A circle counts as π r²."""
+    from area import Polygon, size_km2
+    if limits is None or limits.km2_day_max is None or user_id is None:
+        return
+    area = plan.area
+    km2 = size_km2(area.geometry) if isinstance(area, Polygon) else math.pi * area.radius ** 2 / 1e6
+    jobs.use(user_id, "km2", km2, limits.km2_day_max)
+
+
 def run_phase(data_dir: str, job_id: str, phase: str, limits: Optional[Limits] = None, public: bool = False):
     """A worker process: download the data of a job, or compute it. It ends the phase only if the
     job is still in it (not cancelled or failed by the worker meanwhile). With limits, a search
-    over them fails before its costly work (search.plan_search, check_estimate)."""
+    over them fails before its costly work (search.plan_search, check_estimate); a job of a user
+    without limits gets none, and the user's quotas (km², Nominatim) are counted here."""
     import requests
 
     import progress as pg
@@ -532,6 +653,9 @@ def run_phase(data_dir: str, job_id: str, phase: str, limits: Optional[Limits] =
     jobs = Jobs(data_dir, public)
     job = jobs.get(job_id)
     request = json.loads(job["request"])
+    if job["unlimited"]:
+        limits = None  # a user without limits: the time limits of the phase (Scheduler) still apply
+    nominatim_quota(jobs, job["user_id"], limits)
     sys.stdout = _EventWriter(jobs, job_id)
     pg.TEXT_INTERVAL = float("inf")  # the progress goes to the page as events, not as text
     last = [0.0]
@@ -572,6 +696,7 @@ def run_phase(data_dir: str, job_id: str, phase: str, limits: Optional[Limits] =
         plan = search.plan_search(params, paths, on_event, limits=limits)
         plan.owner = job["user_id"]  # a tiled search resumes only for the same user
         if phase == "download":
+            charge_area(jobs, job["user_id"], plan, limits)
             if limits and limits.download_mb_max:  # the estimate costs index requests
                 search.check_estimate(plan, search.estimate_search(plan))
             search.download_data(plan)
@@ -666,8 +791,12 @@ def run_quick(data_dir: str, worker_id: str, parent: int, limits: Optional[Limit
                     return
             time.sleep(QUICK_POLL)
             continue
+        task_limits = None if task["unlimited"] else limits  # a user without limits: none
+        nominatim_quota(jobs, task["user_id"], task_limits)
         try:
-            jobs.quick_answer(task["id"], 200, QUICK[task["kind"]](data_dir, json.loads(task["request"]), limits))
+            jobs.quick_answer(task["id"], 200, QUICK[task["kind"]](data_dir, json.loads(task["request"]), task_limits))
+        except QuotaExceeded as e:
+            jobs.quick_answer(task["id"], e.status, str(e))
         except (ValueError, search.SearchError, requests.RequestException) as e:  # ValueError: parameters
             jobs.quick_answer(task["id"], 400, cache.clean_error(e))
         except Exception as e:
@@ -756,6 +885,7 @@ class Scheduler:
         if self.limits.keep_events_days:
             self.jobs.forget_events(self.limits.keep_events_days)
         self.jobs.forget_quick()
+        self.jobs.forget_usage()
         unfinished = {job["id"] for job in self.jobs.waiting_or_running()}
         _remove_old(os.path.join(data, "work", "jobs"), KEEP_WORK_DAYS, keep=unfinished)
         for name in ("estimates", "profiles"):

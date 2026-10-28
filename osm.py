@@ -24,7 +24,7 @@ import math
 import os
 import sqlite3
 from datetime import datetime, timedelta, timezone
-from typing import Dict, List, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Tuple
 
 import requests
 from shapely.geometry import LineString, MultiLineString, Point, shape
@@ -165,6 +165,9 @@ MAX_ANSWER_BYTES = 5_000_000
 NOMINATIM_INTERVAL_MS = 1100
 NOMINATIM_WAIT_S = 300  # how long a request waits for its turn
 _limiters: Dict[str, object] = {}  # pyrate_limiter.Limiter per data folder, made once per process
+# Called before every request to Nominatim (not for cached answers); the web worker sets it per job
+# or quick task to count the requests of its user (jobs.nominatim_quota), None elsewhere
+BEFORE_REQUEST: Optional[Callable[[], None]] = None
 # The schema of nominatim.sqlite, one step per version (cache.migrate; never change a released step).
 # Version 1 is the schema the database had before it had versions, so an old one keeps its rows.
 MIGRATIONS = [
@@ -251,7 +254,10 @@ def _nominatim_turn(cache_dir: str):
 
 
 def _ask(url: str, params: Dict, timeout: int, cache_dir: str):
-    """One request to Nominatim, in its turn (_nominatim_turn); its JSON."""
+    """One request to Nominatim, in its turn (_nominatim_turn); its JSON. BEFORE_REQUEST, when set,
+    is called first (it raises to refuse the request: a user's quota)."""
+    if BEFORE_REQUEST is not None:
+        BEFORE_REQUEST()
     _nominatim_turn(cache_dir)
     response = requests.get(url, headers=cache.http_headers(), timeout=timeout, params=params)
     response.raise_for_status()

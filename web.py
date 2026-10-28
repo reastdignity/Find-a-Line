@@ -50,7 +50,7 @@ from starlette.staticfiles import StaticFiles
 import accounts as ac
 import cache
 import params as pm
-from jobs import TICK, Jobs, Scheduler, search_params
+from jobs import TICK, Jobs, QuotaExceeded, Scheduler, search_params
 from settings import AccountSettings, Limits, PublicSettings
 
 PORT = 8765
@@ -79,9 +79,10 @@ SECURITY_HEADERS = {
 }
 
 
-def schema(limits: Optional[Limits] = None) -> List[Dict]:
+def schema(limits: Optional[Limits] = None, hidden_sources=()) -> List[Dict]:
     """The fields of SearchParams the page may set (cli_only and web_only fields are left out),
-    with the bounds of `limits` (min/max; fields and choices they do not allow are left out)."""
+    with the bounds of `limits` (min/max; fields and choices they do not allow are left out) and
+    without the sources of `hidden_sources` (ADMIN_SOURCES for all but administrators)."""
     import typing
 
     import sources as src
@@ -96,7 +97,8 @@ def schema(limits: Optional[Limits] = None) -> List[Dict]:
         if typing.get_origin(kind) is typing.Literal:
             choices, kind = list(typing.get_args(kind)), "choice"
         elif name == "source":
-            choices, kind = pm.SOURCE_CHOICES[:1] + pm.SOURCE_CHOICES[2:], "choice"  # no local files
+            choices, kind = [c for c in pm.SOURCE_CHOICES[:1] + pm.SOURCE_CHOICES[2:]  # no local files
+                             if c not in hidden_sources], "choice"
         else:
             kind = {float: "number", int: "integer", bool: "boolean", str: "text"}.get(kind, "text")
         if choices and limits:
@@ -115,16 +117,16 @@ def schema(limits: Optional[Limits] = None) -> List[Dict]:
     return fields
 
 
-def check_request(request: Dict, limits: Optional[Limits] = None) -> Dict:
-    """Refuse what the web must not set, and values over `limits` (None: no limits); returns the
-    request with known keys only."""
+def check_request(request: Dict, limits: Optional[Limits] = None, hidden_sources=()) -> Dict:
+    """Refuse what the web must not set, values over `limits` (None: no limits) and the sources of
+    `hidden_sources`; returns the request with known keys only."""
     import sources as src
     params = request.get("params")
     if not isinstance(params, dict):
         raise ValueError("params missing")
     if limits:
         limits.check_request(params, src.MIN_RESOLUTION)
-    fields = {f["name"]: f for f in schema(limits)}
+    fields = {f["name"]: f for f in schema(limits, hidden_sources)}
     unknown = set(params) - set(fields)
     if unknown:
         raise ValueError(f"not allowed: {', '.join(sorted(unknown))}")
@@ -141,6 +143,34 @@ def check_request(request: Dict, limits: Optional[Limits] = None) -> Dict:
     if geometry is not None and area is not None:
         raise ValueError("either area or geometry")
     return {"params": params, "geometry": geometry}
+
+
+def profile_problem(folder: str, points: List[float]) -> Optional[str]:
+    """Why a profile of a run may not be computed on the public site (None: it may): both points in
+    the box of the run's area grown by its --max-length, and at most --max-length apart (1% and
+    2 m of slack for the projection)."""
+    import runs as rn
+    try:
+        with open(os.path.join(folder, "run.json"), encoding="utf-8") as f:
+            meta = json.load(f)
+        max_length = float(meta["params"]["max_length"])
+        box = rn._bbox(meta)
+    except (OSError, ValueError, KeyError, TypeError):
+        box = None
+    if box is None:
+        return "this run has no profiles"
+    lat1, lon1, lat2, lon2 = points
+    west, south, east, north = box
+    dlat = max_length / 111320
+    dlon = dlat / max(math.cos(math.radians((south + north) / 2)), 0.01)
+    if not all(south - dlat <= lat <= north + dlat and west - dlon <= lon <= east + dlon
+               for lat, lon in ((lat1, lon1), (lat2, lon2))):
+        return "the points must lie in the run's area (with a margin of its --max-length)"
+    mean = math.radians((lat1 + lat2) / 2)
+    length = 6371008.8 * math.hypot(math.radians(lat2 - lat1), math.radians(lon2 - lon1) * math.cos(mean))
+    if length > max_length * 1.01 + 2:
+        return f"the points are {length:.0f} m apart, at most {max_length:g} m (the run's --max-length)"
+    return None
 
 
 def title(p: pm.SearchParams) -> str:
@@ -164,6 +194,9 @@ def title(p: pm.SearchParams) -> str:
 PUBLIC_ROUTES = {"/", "/login/{provider}", "/auth/{provider}", "/logout", "/app", "/runs/index.html",
                  "/runs/runs.js", "/s/runs.js", "/s/index.html", "/cache/{path:path}"}
 SHARE_BYTES = 32  # the random part of a share link
+# Sources for administrators only on the public site: nasadem needs the server's OpenTopography key,
+# malta2012's licence is not settled (sources.MALTA_CREDITS)
+ADMIN_SOURCES = ("nasadem", "malta2012")
 SSE_PER_USER = 3  # open event streams of one user (the public mode)
 # The files of a run the public site serves (what mapping.save_map and runs.save_results write, without
 # run.json: its parameters and data files are the owner's); never progress.json, tiles or other files
@@ -211,6 +244,7 @@ def create_app(data_dir: str, token: Optional[str] = None, port: int = PORT, sta
     from fastapi.concurrency import run_in_threadpool
     from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
     from sse_starlette import EventSourceResponse
+    from limits import parse_many, storage, strategies
     from starlette.middleware.trustedhost import TrustedHostMiddleware
 
     import runs as rn
@@ -280,7 +314,6 @@ def create_app(data_dir: str, token: Optional[str] = None, port: int = PORT, sta
     if public:
         from starlette.middleware.sessions import SessionMiddleware
 
-        from limits import parse_many, storage, strategies
         # A sign-in in progress (Authlib's state, nonce and PKCE verifier): a signed cookie of ten minutes
         app.add_middleware(SessionMiddleware, secret_key=accounts.session_secret.get_secret_value(),
                            session_cookie=ac.OAUTH_COOKIE, max_age=ac.OAUTH_SECONDS, path="/", same_site="lax",
@@ -456,22 +489,57 @@ def create_app(data_dir: str, token: Optional[str] = None, port: int = PORT, sta
 
     streams: Dict[Optional[int], int] = {}  # open event streams per user
 
+    # --- The tiers of the accounts: limits of the site for users, none for users without limits
+    # and administrators; the safeguards of the server (Jobs.admission) for everyone ---
+
+    def unlimited(user: ac.User) -> bool:
+        """Whether a user of the public site is without limits (locally FINDALINE_LIMIT_* apply as before)."""
+        return public is not None and not user.limited
+
+    def user_limits(user: ac.User) -> Optional[Limits]:
+        """The limits of a user's requests, searches, quotas and rates (None: without limits)."""
+        return None if unlimited(user) else limits
+
+    def hidden_sources(user: ac.User) -> tuple:
+        return ADMIN_SOURCES if public and not user.admin else ()
+
+    rates = {}  # kind -> the parsed rates of Limits.<kind>_rate (requests of a user)
+    rate_limiter = strategies.MovingWindowRateLimiter(storage.MemoryStorage())
+    if public:
+        for kind in ("estimate", "profile"):
+            if getattr(limits, f"{kind}_rate"):
+                rates[kind] = parse_many(getattr(limits, f"{kind}_rate"))
+
+    def within_rate(kind: str, user: ac.User):
+        """429 when a limited user asks for more estimates or profiles than Limits allows (the limits
+        library, in the memory of this process)."""
+        if user.limited and kind in rates and not all([rate_limiter.hit(r, kind, str(user.id)) for r in rates[kind]]):
+            raise HTTPException(429, f"too many {kind}s: try again in a minute")
+
+    def queue(request: Dict, title: str, user: ac.User) -> str:
+        """Add a job after the quotas and safeguards (Jobs.admission, in the insert's transaction)."""
+        try:
+            return jobs.add(request, title, user.id, check=jobs.admission(user.id, limits, user.limited),
+                            unlimited=unlimited(user))
+        except QuotaExceeded as e:
+            raise HTTPException(e.status, str(e))
+
     @app.get("/api/schema")
     def get_schema(user: ac.User = Depends(current_user)):
-        return {"fields": schema(limits), "groups": pm.GROUPS}
+        return {"fields": schema(user_limits(user), hidden_sources(user)), "groups": pm.GROUPS}
 
-    def parse(body: Dict) -> Dict:
+    def parse(body: Dict, user: ac.User) -> Dict:
         try:
-            return check_request(body, limits)
+            return check_request(body, user_limits(user), hidden_sources(user))
         except ValueError as e:
             raise HTTPException(400, str(e))
 
-    async def quick(kind: str, request: Dict):
+    async def quick(kind: str, request: Dict, user: ac.User):
         """The answer of the worker's quick lane (jobs.QUICK) to a task: added to the table `quick`
         and awaited without holding a thread, so the server does no search work itself."""
         if not await run_in_threadpool(jobs.worker_alive):
             raise HTTPException(503, NO_WORKER)
-        task = await run_in_threadpool(jobs.quick_add, kind, request)
+        task = await run_in_threadpool(jobs.quick_add, kind, request, user.id, unlimited(user))
         looked = time.monotonic()
         while (answer := await run_in_threadpool(jobs.quick_take, task)) is None:
             await asyncio.sleep(QUICK_POLL)
@@ -486,16 +554,18 @@ def create_app(data_dir: str, token: Optional[str] = None, port: int = PORT, sta
 
     @app.post("/api/estimate")
     async def estimate(body: Dict, user: ac.User = Depends(current_user)):
-        return await quick("estimate", parse(body))
+        request = parse(body, user)
+        within_rate("estimate", user)
+        return await quick("estimate", request, user)
 
     @app.post("/api/jobs")
     async def add_job(body: Dict, user: ac.User = Depends(current_user)):
-        request = parse(body)
+        request = parse(body, user)
         try:
             params = await run_in_threadpool(search_params, request)
         except ValueError as e:
             raise HTTPException(400, str(e))
-        return {"id": await run_in_threadpool(jobs.add, request, title(params), user.id)}
+        return {"id": await run_in_threadpool(queue, request, title(params), user)}
 
     def seen_by(user: ac.User) -> Optional[int]:
         """The user whose jobs a user sees (None: everyone's, for an administrator)."""
@@ -519,8 +589,8 @@ def create_app(data_dir: str, token: Optional[str] = None, port: int = PORT, sta
         title = re.sub(r"( \(again\))+$", "", job["title"]) + " (again)"
         request = json.loads(job["request"])
         if "osm" not in request:
-            parse(request)  # the limits may have changed since
-        return {"id": jobs.add(request, title, user.id)}
+            parse(request, user)  # the limits (or the user's) may have changed since
+        return {"id": queue(request, title, user)}
 
     @app.get("/api/jobs/{job_id}/events")
     def job_events(job: Dict = Depends(visible_job)):
@@ -605,6 +675,17 @@ def create_app(data_dir: str, token: Optional[str] = None, port: int = PORT, sta
         jobs.set_share(run, ac.digest(token))
         return {"url": f"{public.public_url}/s/{token}/map.html"}
 
+    @app.delete("/api/runs/{run}")
+    def delete_run(run: str = Depends(own_run)):
+        """Delete an own run (its folder and row) on the public site; it no longer counts in the quota."""
+        if not public:
+            raise HTTPException(404, "runs are deleted in the runs folder")
+        try:
+            jobs.delete_run(run, runs_dir)
+        except OSError:
+            raise HTTPException(409, "the run is in use: try again in a moment")
+        return {"ok": True}
+
     @app.delete("/api/runs/{run}/share")
     def unshare_run(run: str = Depends(own_run)):
         """Revoke the share link of an own run."""
@@ -643,12 +724,14 @@ def create_app(data_dir: str, token: Optional[str] = None, port: int = PORT, sta
         if any(json.loads(j["request"]).get("osm", {}).get("region") == region for j in jobs.waiting_or_running()):
             raise HTTPException(409, f"{region} is already waiting or being downloaded in the queue")
         request = {"osm": {"action": action, "region": region}}
-        return {"id": await run_in_threadpool(jobs.add, request, f"OSM {action}: {region}", user.id)}
+        return {"id": await run_in_threadpool(queue, request, f"OSM {action}: {region}", user)}
 
     @app.get("/api/profile")
-    async def line_profile(request: Request, line: str, run: str = Depends(run_access)):
+    async def line_profile(request: Request, line: str, run: str = Depends(run_access),
+                           user: ac.User = Depends(current_user)):
         """The profile of a line of a saved run, computed from the cached data (search.profile_of_line,
-        in the worker's quick lane).
+        in the worker's quick lane). On the public site both points lie in the run's box with a margin
+        of its --max-length, at most --max-length apart.
 
         A GET that costs computing time: it needs the X-Findaline-Profile header, which a
         foreign website cannot send without a CORS preflight this server does not allow.
@@ -661,7 +744,12 @@ def create_app(data_dir: str, token: Optional[str] = None, port: int = PORT, sta
             points = []
         if len(points) != 4 or not all(math.isfinite(v) for v in points):
             raise HTTPException(400, "line: lat1,lon1,lat2,lon2")
-        return await quick("profile", {"run": run, "line": points})  # one at a time in the quick lane
+        if public:
+            problem = await run_in_threadpool(profile_problem, os.path.join(runs_dir, run), points)
+            if problem:
+                raise HTTPException(400, problem)
+        within_rate("profile", user)
+        return await quick("profile", {"run": run, "line": points}, user)  # one at a time in the quick lane
 
     if public:
         @app.get("/runs/runs.js")

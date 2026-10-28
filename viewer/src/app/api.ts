@@ -99,6 +99,7 @@ export const api = {
   runs: () => call<{runs: RunListed[]; public: boolean}>("GET", "/api/runs"),
   share: (id: string) => call<{url: string}>("POST", `/api/runs/${encodeURIComponent(id)}/share`),
   unshare: (id: string) => call<{ok: boolean}>("DELETE", `/api/runs/${encodeURIComponent(id)}/share`),
+  deleteRun: (id: string) => call<{ok: boolean}>("DELETE", `/api/runs/${encodeURIComponent(id)}`),
   osm: (lat: number, lon: number) => call<OsmState>("GET", `/api/osm?lat=${lat}&lon=${lon}`),
   osmJob: (action: "download" | "update", region: string) =>
     call<{id: string}>("POST", "/api/osm", {action, region}),

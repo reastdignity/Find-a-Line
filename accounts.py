@@ -13,7 +13,8 @@ accounts: its one user is LOCAL, an administrator.
 - A user is (provider, its id: Google's `sub`, GitHub's numeric id), no e-mail. New accounts
   are `pending` until an administrator approves them (FINDALINE_SIGNUP=approval), approved
   at once (open), or refused (closed). Administrators are FINDALINE_ADMINS (github:12345):
-  always approved, never blocked.
+  always approved, never blocked. An administrator can lift the limits of the site for a
+  user (users.unlimited) without making them an administrator.
 - Sessions are our own, so they can be revoked: a random token of SESSION_BYTES in the
   cookie SESSION_COOKIE (Secure, HttpOnly, SameSite=Lax), only its sha256 in the database;
   they end after SESSION_DAYS, or IDLE_DAYS without a request; every sign-in makes a new
@@ -50,6 +51,8 @@ MIGRATIONS = [
            hash TEXT PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users (id), csrf TEXT NOT NULL,
            created REAL NOT NULL, seen REAL NOT NULL);
        CREATE INDEX sessions_user ON sessions (user_id);""",
+    # 2: users without limits (set by an administrator; settings.Limits does not apply to them)
+    """ALTER TABLE users ADD COLUMN unlimited INTEGER NOT NULL DEFAULT 0;""",
 ]
 # The providers: Authlib's registration and how to read the user's id and name
 GITHUB = {"authorize_url": "https://github.com/login/oauth/authorize",
@@ -68,14 +71,22 @@ class User:
     name: str
     status: str         # pending, approved, blocked
     admin: bool
+    unlimited: bool = False  # without the limits of the site (set by an administrator)
 
     @property
     def approved(self) -> bool:
         return self.status == "approved"
 
+    @property
+    def limited(self) -> bool:
+        """Whether the limits of the site (request values, search, quotas, rates) apply: not to users
+        without limits and administrators (the safeguards of the server apply to everyone)."""
+        return not (self.admin or self.unlimited)
+
     def public(self) -> Dict:
         """What the page may know about its user."""
-        return {"name": self.name, "provider": self.provider, "status": self.status, "admin": self.admin}
+        return {"name": self.name, "provider": self.provider, "status": self.status, "admin": self.admin,
+                "unlimited": self.unlimited}
 
 
 LOCAL = User(None, "local", "", "local", "approved", True)
@@ -113,7 +124,7 @@ class Accounts:
     def _user(self, row) -> User:
         admin = (row["provider"], row["subject"]) in self.admins
         return User(row["id"], row["provider"], row["subject"], row["name"] or f"{row['provider']}:{row['subject']}",
-                    "approved" if admin else row["status"], admin)
+                    "approved" if admin else row["status"], admin, bool(row["unlimited"]))
 
     def user(self, user_id: int) -> Optional[User]:
         with self._db() as db:
@@ -168,6 +179,11 @@ class Accounts:
             db.execute("UPDATE users SET status = ? WHERE id = ?", (status, user_id))
         if status == "blocked":
             self.revoke(user_id)
+
+    def set_unlimited(self, user_id: int, unlimited: bool):
+        """Lift the limits of the site for a user, or set them again (the admin tab)."""
+        with self._db() as db:
+            db.execute("UPDATE users SET unlimited = ? WHERE id = ?", (int(bool(unlimited)), user_id))
 
     # --- Sessions ---
 
