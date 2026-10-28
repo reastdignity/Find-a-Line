@@ -204,7 +204,8 @@ SSE_PER_USER = 3  # open event streams of one user (the public mode)
 # run.json: its parameters and data files are the owner's); never progress.json, tiles or other files
 RUN_FILES = ("map.html", "data.js", "lines.js", "lines.csv", "lines.geojson", "ATTRIBUTION.txt")
 VIEWER = "_viewer"  # mapping.VIEWER_FOLDER: the viewer bundle, the same for everyone
-SAFE_PART = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,199}")  # a run id, a token, a file name: no "..", no "/"
+# A run id, a share token (token_urlsafe: may start with - or _), a file name: no leading dot (no ".."), no "/"
+SAFE_PART = re.compile(r"[A-Za-z0-9_-][A-Za-z0-9_.-]{0,199}")
 
 
 class RunFiles(StaticFiles):

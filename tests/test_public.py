@@ -801,6 +801,10 @@ def test_share_links(run_people, tmp_path):
     assert b.delete(f"/api/runs/{RUN_A}/share").status_code == 404
     assert a.delete(f"/api/runs/{RUN_A}/share").status_code == 200
     assert anonymous.get(f"/s/{renewed}/map.html").status_code == 404 and jobs.run(RUN_A)["share_hash"] is None
+    for odd in ("-" + "x" * 42, "_" + "y" * 42):  # token_urlsafe may start with either
+        jobs.set_share(RUN_A, ac.digest(odd))
+        assert anonymous.get(f"/s/{odd}/map.html").status_code == 200, odd
+    assert anonymous.get("/s/.hidden/map.html").status_code == 404
     again = a.post(f"/api/runs/{RUN_A}/share").json()["url"].split("/")[-2]
     users = ac.Accounts(str(tmp_path), a.app.state.account_settings)
     users.set_status(run_people["ids"]["a"], "blocked")
