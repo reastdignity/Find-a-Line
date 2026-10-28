@@ -4,8 +4,7 @@
 # Before `docker compose up -d --build`:
 # - findaline.env: the settings of the site (copy findaline.env.example);
 # - secrets/: one file per secret (secrets/README.md), readable by uid 10001;
-# - optionally .env next to this file (copy .env.example): resources, the Slovak mirror,
-#   OPENTOPOGRAPHY_API_KEY.
+# - optionally .env next to this file (copy .env.example): resources and the Slovak mirror.
 # The web service publishes no port: the reverse proxy reaches it in its own network (added by
 # the deployment, docs/deployment.md). For a local test copy compose.override.example.yaml to
 # compose.override.yaml.
@@ -61,7 +60,10 @@ services:
     pids_limit: 4096           # threads count: numba's per process, download pools
     environment:
       FINDALINE_MIRROR: /mirror
-      OPENTOPOGRAPHY_API_KEY: ${OPENTOPOGRAPHY_API_KEY:-}   # --source nasadem (admins only on the public site)
+    # --source nasadem (admins only on the public site): the key as a Docker secret, the
+    # worker's only (settings.ServiceKeys); an empty file means no key
+    secrets:
+      - opentopography_api_key
     volumes:
       - data:/data
       # The local mirror of the Slovak tiles (the folder above slovakia/), read-only; without
@@ -91,3 +93,5 @@ secrets:
     file: ./secrets/findaline_github_client_secret
   findaline_google_client_secret:
     file: ./secrets/findaline_google_client_secret
+  opentopography_api_key:
+    file: ./secrets/opentopography_api_key

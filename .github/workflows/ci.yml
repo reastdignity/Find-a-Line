@@ -92,6 +92,7 @@ jobs:
           for name in findaline_session_secret findaline_github_client_secret findaline_google_client_secret; do
             python3 -c "import secrets; print(secrets.token_urlsafe(48))" > "secrets/$name"
           done
+          : > secrets/opentopography_api_key  # empty: no NASADEM
 
       - name: Compose files
         run: docker compose config --quiet

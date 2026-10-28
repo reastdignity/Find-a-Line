@@ -172,6 +172,27 @@ def test_settings(monkeypatch, tmp_path):
             PublicSettings(**{**good.model_dump(), **wrong})
 
 
+def test_opentopography_key_from_a_secret(monkeypatch, tmp_path):
+    """The OpenTopography key comes from the environment or a Docker secret file (the worker's
+    in compose); the environment wins, an empty value is no key."""
+    import settings
+    from params import SearchParams
+    monkeypatch.delenv("OPENTOPOGRAPHY_API_KEY", raising=False)
+    monkeypatch.setattr(settings, "SECRETS_DIR", str(tmp_path / "nothing"))
+    assert settings.opentopography_key() is None
+    assert SearchParams(lat=50, lon=19).opentopo_key is None
+    (tmp_path / "opentopography_api_key").write_text("secret-key\n")
+    monkeypatch.setattr(settings, "SECRETS_DIR", str(tmp_path))
+    assert settings.opentopography_key() == "secret-key"
+    assert SearchParams(lat=50, lon=19).opentopo_key == "secret-key"
+    assert "secret-key" not in repr(settings.ServiceKeys.load())
+    monkeypatch.setenv("OPENTOPOGRAPHY_API_KEY", "env-key")
+    assert settings.opentopography_key() == "env-key"
+    monkeypatch.setenv("OPENTOPOGRAPHY_API_KEY", "")
+    monkeypatch.setattr(settings, "SECRETS_DIR", str(tmp_path / "nothing"))
+    assert settings.opentopography_key() is None
+
+
 def test_command_line(monkeypatch):
     """A non-loopback --host needs --public; --public needs its settings."""
     for key in SETTINGS:

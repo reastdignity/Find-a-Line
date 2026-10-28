@@ -196,8 +196,8 @@ Several places at once: give `--point LAT,LON` (WGS84) once per place, optionall
 #### The public site in Docker
 `Dockerfile` builds one image (Python and the locked dependencies, no build tools; it runs as uid 10001), and `compose.yaml` runs it twice: `web` (`findaline.py web --public`) and `worker` (`findaline.py worker --public`), sharing the data volume (`/data`). The root filesystem of both is read-only; the work goes to the volume and `/tmp`. Before `docker compose up -d --build`:
 - `findaline.env`: the settings of the site (`FINDALINE_PUBLIC_URL`, `FINDALINE_TRUSTED_PROXY`, `FINDALINE_CONTACT`, sign-in, `FINDALINE_LIMIT_*`), copied from `findaline.env.example`;
-- `secrets/`: one file per secret, listed in `secrets/README.md`; they reach the web service as Docker secrets, never the image;
-- optionally `.env` (from `.env.example`): the cores and memory of the services (`WORKER_CPUS`: the number of cores minus one), the folder of the Slovak tiles (`FINDALINE_MIRROR_DIR`), `OPENTOPOGRAPHY_API_KEY`.
+- `secrets/`: one file per secret, listed in `secrets/README.md`; they reach the services as Docker secrets (the sign-in secrets the web service, the OpenTopography key `opentopography_api_key` the worker), never the image;
+- optionally `.env` (from `.env.example`): the cores and memory of the services (`WORKER_CPUS`: the number of cores minus one), the folder of the Slovak tiles (`FINDALINE_MIRROR_DIR`).
 
 The web service publishes no port: a reverse proxy in front of it serves the site (its networks and the deployment on a home server come with `docs/deployment.md`). For a test on your own computer, copy `compose.override.example.yaml` to `compose.override.yaml`; the page is then at `http://127.0.0.1:8765/`.
 
@@ -214,7 +214,7 @@ The web service publishes no port: a reverse proxy in front of it serves the sit
 | `--coastline` | `overpass` | Where the sea is: `overpass`, `world` or `copernicus` (see *Sea, lakes and gaps*) |
 | `--shore-buffer` | 20 | Metres around the sea where pixels without data are still taken as water |
 | `--fill-gaps` | `on` | Fill gaps in the data on land from another source |
-| `--opentopo-key` | `OPENTOPOGRAPHY_API_KEY` | OpenTopography API key for `--source nasadem` |
+| `--opentopo-key` | `OPENTOPOGRAPHY_API_KEY` (environment or Docker secret) | OpenTopography API key for `--source nasadem` |
 | `--radius` | 1000 | Search radius around the centre, in metres |
 | `--resolution` | the data's own, at least 1 | Working resolution in metres, at least 1: by default 1 for LiDAR sources, 5 for Spain, 30 for `europe`/`nasadem` |
 | `--min-length` / `--max-length` | 30 / 1000 | Line length constraints, in metres |

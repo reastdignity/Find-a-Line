@@ -18,6 +18,7 @@ from typing import List, Literal, Optional
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 from pydantic_core import PydanticUndefined
 
+import settings
 import sources as src
 
 GROUPS = {
@@ -87,9 +88,10 @@ class SearchParams(BaseModel):
                                     "still taken as water", "data")
     fill_gaps: Literal["on", "off"] = field("on", "fill gaps in the data on land from another source (Malta "
                                                   "2012 from 2018, others from FABDEM 30 m)", "data")
-    opentopo_key: Optional[str] = field(lambda: os.environ.get("OPENTOPOGRAPHY_API_KEY"),
+    opentopo_key: Optional[str] = field(settings.opentopography_key,
                                         "OpenTopography API key for --source nasadem", "data", cli_only=True,
-                                        default_text="the OPENTOPOGRAPHY_API_KEY environment variable")
+                                        default_text="the OPENTOPOGRAPHY_API_KEY environment variable or "
+                                                     "Docker secret")
 
     # Search
     radius: float = field(1000, "search radius around the centre in metres", "search")

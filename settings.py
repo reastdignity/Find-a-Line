@@ -19,6 +19,8 @@ Settings and limits of the web app, from environment variables (pydantic-setting
   _SECRET, FINDALINE_ADMINS, FINDALINE_SIGNUP; secrets from the same Docker secrets folder
   (file names as the variables, in any case). A provider without its client id and secret
   is not offered.
+- ServiceKeys: API keys of data services (OPENTOPOGRAPHY_API_KEY), from the environment or a
+  Docker secret of the same name; params.SearchParams.opentopo_key defaults to it.
 """
 
 import ipaddress
@@ -310,6 +312,27 @@ class AccountSettings(BaseSettings):
                              "FINDALINE_GITHUB_CLIENT_SECRET, or FINDALINE_GOOGLE_CLIENT_ID and "
                              "FINDALINE_GOOGLE_CLIENT_SECRET")
         return settings
+
+
+class ServiceKeys(BaseSettings):
+    """API keys of data services: from the environment or a Docker secret of the same name in
+    lower case (/run/secrets/opentopography_api_key; compose gives it to the worker only). The
+    environment wins over the secret, as for the other settings."""
+    model_config = SettingsConfigDict(extra="ignore")
+
+    opentopography_api_key: Optional[SecretStr] = Field(
+        None, description="OpenTopography API key for --source nasadem (OPENTOPOGRAPHY_API_KEY)")
+
+    @classmethod
+    def load(cls, secrets_dir: Optional[str] = None) -> "ServiceKeys":
+        secrets_dir = secrets_dir or SECRETS_DIR
+        return cls(_secrets_dir=secrets_dir if os.path.isdir(secrets_dir) else None)
+
+
+def opentopography_key(secrets_dir: Optional[str] = None) -> Optional[str]:
+    """The OpenTopography API key (environment or Docker secret); None when not set or empty."""
+    key = ServiceKeys.load(secrets_dir).opentopography_api_key
+    return (key.get_secret_value().strip() or None) if key else None
 
 
 def describe_error(error, prefix: str) -> str:
