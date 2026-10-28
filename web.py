@@ -219,6 +219,7 @@ SHARE_BYTES = 32  # the random part of a share link
 # malta2012's licence is not settled (sources.MALTA_CREDITS)
 ADMIN_SOURCES = ("nasadem", "malta2012")
 SSE_PER_USER = 3  # open event streams of one user (the public mode)
+SESSION_CHECK = 30  # seconds between checks of the session inside an open event stream (the public mode)
 # A refusal by a rate or a quota is one row of the audit log per user and kind in this many seconds;
 # the others are counted, and the next row says how many there were ("repeated")
 REFUSAL_WINDOW = 600
@@ -721,22 +722,42 @@ def create_app(data_dir: str, token: Optional[str] = None, port: int = PORT, sta
     async def events(request: Request, since: int = 0, user: ac.User = Depends(current_user)):
         """The events of the user's jobs (an administrator's: of all) after `since`, as Server-Sent Events;
         at most SSE_PER_USER streams per user on the public site."""
-        # A reconnecting EventSource sends the last id it got
+        from starlette.background import BackgroundTask
+        # A reconnecting EventSource sends the last id it got (digits only: "²" is a digit to isdigit())
         last = request.headers.get("last-event-id", "")
-        start = max(since, int(last) if last.isdigit() else 0)
-        if public and streams.get(user.id, 0) >= SSE_PER_USER:
-            raise HTTPException(429, f"at most {SSE_PER_USER} open pages per user")
+        start = max(since, int(last) if last.isascii() and last.isdecimal() else 0)
+        released = []
+
+        def release():  # from the generator's end and from the response's background task: once
+            if public and not released:
+                released.append(True)
+                streams[user.id] -= 1
+                if not streams[user.id]:
+                    del streams[user.id]
+        if public:  # checked and counted with no await in between, so streams opened at once count
+            if streams.get(user.id, 0) >= SSE_PER_USER:
+                raise HTTPException(429, f"at most {SSE_PER_USER} open pages per user")
+            streams[user.id] = streams.get(user.id, 0) + 1
         whose = seen_by(user)
+        cookie = request.cookies.get(ac.SESSION_COOKIE)
 
         def look(seq: int):
             return jobs.events(seq, user_id=whose), jobs.worker_alive()
 
+        def still_signed_in() -> bool:
+            found = users.session(cookie)
+            return found is not None and found[0].approved and found[0].id == user.id
+
         async def stream():
-            # sse-starlette ends the generator when the client goes away (or the server stops)
-            seq, worker = start, None
-            streams[user.id] = streams.get(user.id, 0) + 1  # counted while the generator runs
+            # sse-starlette ends the generator when the client goes away (or the server stops); the
+            # public site ends it when the session ends (signed out, revoked, blocked)
+            seq, worker, checked = start, None, time.monotonic()
             try:
                 while True:
+                    if public and time.monotonic() - checked > SESSION_CHECK:
+                        checked = time.monotonic()
+                        if not await run_in_threadpool(still_signed_in):
+                            return
                     found, alive = await run_in_threadpool(look, seq)
                     for event in found:
                         seq = event["seq"]
@@ -746,10 +767,10 @@ def create_app(data_dir: str, token: Optional[str] = None, port: int = PORT, sta
                         yield {"data": json.dumps({"kind": "worker", "data": {"alive": alive}})}
                     await asyncio.sleep(TICK)
             finally:
-                streams[user.id] -= 1
+                release()
         # A comment every PING seconds keeps proxies from closing a quiet stream and finds dead
         # connections; a client that takes no data for SEND_TIMEOUT seconds is dropped
-        return EventSourceResponse(stream(), ping=PING, send_timeout=SEND_TIMEOUT)
+        return EventSourceResponse(stream(), ping=PING, send_timeout=SEND_TIMEOUT, background=BackgroundTask(release))
 
     def runs_of(user: Optional[ac.User]) -> List[Dict]:
         """The runs a user's lists show: on the public site their own (an administrator's too) and the
@@ -843,11 +864,17 @@ def create_app(data_dir: str, token: Optional[str] = None, port: int = PORT, sta
 
     @app.post("/api/admin/users/{user_id}")
     def admin_set_user(body: Dict, target: ac.User = Depends(other_user), admin: ac.User = Depends(require_admin)):
-        """Approve, block or unblock a user ({"status": "approved"|"blocked"}; blocking ends its sessions)
-        or lift its limits ({"unlimited": true|false})."""
+        """Approve, block or unblock a user ({"status": "approved"|"blocked"}; blocking ends its sessions,
+        cancels its waiting and running jobs and deletes its waiting estimates and profiles) or lift its
+        limits ({"unlimited": true|false})."""
         if body.get("status") in ("approved", "blocked"):
             users.set_status(target.id, body["status"])
-            record("user_status", admin, target.id, {"status": body["status"], "was": target.status})
+            detail = {"status": body["status"], "was": target.status}
+            if body["status"] == "blocked":
+                detail["cancelled"] = [job["id"] for job in jobs.waiting_or_running()
+                                       if job["user_id"] == target.id and jobs.request_cancel(job["id"])]
+                detail["quick_deleted"] = jobs.quick_forget_user(target.id)
+            record("user_status", admin, target.id, detail)
         elif isinstance(body.get("unlimited"), bool):
             users.set_unlimited(target.id, body["unlimited"])
             record("user_unlimited", admin, target.id, {"unlimited": body["unlimited"]})

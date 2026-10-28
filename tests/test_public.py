@@ -1536,6 +1536,87 @@ def test_rate_limiters_forget(tmp_path, settings, account_settings, providers, m
     client.close()
 
 
+def _stream(port, cookie, last: bytes = b""):
+    """A raw request of /api/events (headers as bytes); the socket."""
+    import socket
+    sock = socket.create_connection(("127.0.0.1", port), timeout=10)
+    sock.sendall(b"GET /api/events HTTP/1.1\r\nHost: lines.example.org\r\n"
+                 + f"Cookie: {ac.SESSION_COOKIE}={cookie}\r\n".encode()
+                 + (b"Last-Event-ID: " + last + b"\r\n" if last else b"") + b"\r\n")
+    return sock
+
+
+def test_event_streams_at_once_and_after_sign_out(tmp_path, settings, account_settings, providers, monkeypatch):
+    """Twenty streams of one user opened at once: SSE_PER_USER are accepted (review A, 2); a stream
+    ends when its session ends (blocked, signed out; review A, 3); a Last-Event-ID that is no number
+    (a Unicode digit) is 0, not an error (review A, 4b)."""
+    import threading
+
+    from jobs import Jobs
+    monkeypatch.setattr(web, "PING", 1)
+    monkeypatch.setattr(web, "SESSION_CHECK", 1)
+    user_id, cookie, _ = session_of(tmp_path, account_settings, "a")
+    with _public_server(tmp_path, settings, account_settings, providers) as port:
+        barrier, codes, socks = threading.Barrier(20), [], []
+
+        def one():
+            barrier.wait()
+            sock = _stream(port, cookie)
+            socks.append(sock)
+            codes.append(sock.recv(64).split(b"\r\n")[0])
+        threads = [threading.Thread(target=one) for _ in range(20)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(30)
+        assert sum(code.startswith(b"HTTP/1.1 200") for code in codes) == web.SSE_PER_USER, codes
+        for sock in socks:
+            sock.close()
+        odd = _stream(port, session_of(tmp_path, account_settings, "b")[1], bytes([0xB2]))
+        assert odd.recv(64).startswith(b"HTTP/1.1 200")
+        odd.close()
+
+        jobs = Jobs(str(tmp_path))
+        jobs.add({"params": {}}, "a's job", user_id)
+        deadline = time.time() + 15
+        while time.time() < deadline:  # the closed streams are released at their next ping
+            sock = _stream(port, cookie)
+            if sock.recv(64).startswith(b"HTTP/1.1 200"):
+                break
+            sock.close()
+            time.sleep(0.5)
+        users = ac.Accounts(str(tmp_path), account_settings)
+        users.set_status(user_id, "blocked")
+        ended, deadline = False, time.time() + 15
+        while time.time() < deadline and not ended:
+            ended = sock.recv(4096).endswith(b"0\r\n\r\n")  # the end of the chunked answer
+        sock.close()
+        assert ended
+
+
+def test_blocking_cancels_the_jobs(tmp_path, settings, account_settings, providers):
+    """Blocking a user cancels their waiting and running jobs and deletes their waiting estimates and
+    profiles, with an audit entry; other users' work stays (review A, 7)."""
+    import audit
+    app = _public_app(tmp_path, settings, account_settings, providers)
+    people = _clients(app, tmp_path, account_settings, ("a", "b", "admin"))
+    a, b, admin = people["a"], people["b"], people["admin"]
+    jobs = app.state.jobs
+    first, second = (a.post("/api/jobs", json={"params": POINT}).json()["id"] for _ in range(2))
+    other = b.post("/api/jobs", json={"params": POINT}).json()["id"]
+    jobs.quick_add("estimate", {}, a.user_id)
+    kept = jobs.quick_add("estimate", {}, b.user_id)
+    assert admin.post(f"/api/admin/users/{a.user_id}", json={"status": "blocked"}).status_code == 200
+    assert {jobs.get(j)["status"] for j in (first, second)} == {"cancelled"} and jobs.get(other)["status"] == "queued"
+    assert jobs.claim("queued", "downloading", "w1")["id"] == other
+    assert [r[0] for r in jobs._db().execute("SELECT id FROM quick")] == [kept]
+    entry = [e for e in audit.Audit(str(tmp_path)).entries() if e["action"] == "user_status"][-1]
+    assert entry["detail"]["cancelled"] == [first, second] or set(entry["detail"]["cancelled"]) == {first, second}
+    assert entry["detail"]["quick_deleted"] == 1
+    for client in people.values():
+        client.close()
+
+
 def test_request_limits(monkeypatch, tmp_path):
     """The public site's limits on request values (each overridable, `none` for no limit) refuse
     values over them and fields it does not allow, and give the form its min/max; locally, and for

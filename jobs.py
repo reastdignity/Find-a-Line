@@ -546,6 +546,11 @@ class Jobs:
                               "VALUES (?, ?, 'waiting', ?, ?, ?)",
                               (kind, json.dumps(request), time.time(), user_id, int(unlimited))).lastrowid
 
+    def quick_forget_user(self, user_id: int) -> int:
+        """Delete the waiting tasks of a user (blocked); how many."""
+        with self._db() as db:
+            return db.execute("DELETE FROM quick WHERE user_id = ? AND status = 'waiting'", (user_id,)).rowcount
+
     def quick_ahead(self, task_id: int) -> int:
         """Tasks of the quick lane waiting or running before this one."""
         with self._db() as db:
