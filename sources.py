@@ -56,7 +56,6 @@ from progress import progress
 
 DOWNLOAD_THREADS = 4
 RETRIES = 3
-HEADERS = {"User-Agent": "Find-a-Line/1.0 (highline finder)"}
 VALID_MIN = -500  # metres; anything lower is treated as "no data"
 # Finest working resolution: finer grids bring nothing for highlines (clearances are
 # metres; 0.5 m LiDAR grids are partly interpolated) and cost 4x per halving
@@ -68,7 +67,7 @@ def _get(url: str, params=None, timeout: int = 300, binary_types=("image", "octe
     last_error = None
     for attempt in range(RETRIES):
         try:
-            response = requests.get(url, params=params, timeout=timeout, headers=HEADERS)
+            response = requests.get(url, params=params, timeout=timeout, headers=cache.http_headers())
             content_type = response.headers.get("content-type", "")
             if response.status_code == 404:
                 return None
@@ -357,7 +356,7 @@ class WcsTiles(Layer):
         """(left, bottom, right, top) of the coverage in the service CRS, or None if unknown."""
         if self._extent is None:
             try:
-                response = requests.get(self.url, timeout=60, headers=HEADERS, params={
+                response = requests.get(self.url, timeout=60, headers=cache.http_headers(), params={
                     "SERVICE": "WCS", "VERSION": "2.0.1", "REQUEST": "DescribeCoverage", "COVERAGEID": self.coverage})
                 response.raise_for_status()
                 text = response.text
@@ -832,7 +831,7 @@ class SheetTiles(IndexedTiles):
         self._years: Optional[List[str]] = None
 
     def _wfs(self, **params) -> str:
-        response = requests.get(self.index_url, timeout=300, headers=HEADERS,
+        response = requests.get(self.index_url, timeout=300, headers=cache.http_headers(),
                                 params={"SERVICE": "WFS", "VERSION": "2.0.0", **params})
         response.raise_for_status()
         return response.text
@@ -918,7 +917,7 @@ class StacTiles(IndexedTiles):
         url = self.index_url
         params = {"bbox": f"{lon},{lat},{lon + osm.TILE_DEG},{lat + osm.TILE_DEG}", "limit": 100}
         while url:  # pages of 100 items
-            response = requests.get(url, params=params, timeout=120, headers=HEADERS)
+            response = requests.get(url, params=params, timeout=120, headers=cache.http_headers())
             response.raise_for_status()
             page = response.json()
             for item in page["features"]:

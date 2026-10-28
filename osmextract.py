@@ -32,7 +32,6 @@ import osm
 from progress import progress
 
 INDEX_URL = "https://download.geofabrik.de/index-v1.json"
-HEADERS = {"User-Agent": "Find-a-Line/1.0 (highline finder)"}
 DIFF_BATCH_KB = 100 * 1024  # diffs kept in memory at a time while updating
 
 
@@ -40,7 +39,7 @@ def _index(cache_dir: str, refresh: bool = False) -> Dict[str, Dict]:
     """The Geofabrik regions by id (cached in cache/osm/geofabrik-index.json)."""
     path = os.path.join(cache_dir, "osm", "geofabrik-index.json")
     if refresh or not os.path.exists(path):
-        response = requests.get(INDEX_URL, headers=HEADERS, timeout=120)
+        response = requests.get(INDEX_URL, headers=cache.http_headers(), timeout=120)
         response.raise_for_status()
         os.makedirs(os.path.dirname(path), exist_ok=True)
         with cache.replacing(path) as f:
@@ -275,7 +274,7 @@ def download(cache_dir: str, name: str):
     pbf, outline, themes = _paths(cache_dir, _country(regions, rid), rid)
     url = feature["properties"]["urls"]["pbf"]
     os.makedirs(os.path.dirname(pbf), exist_ok=True)
-    with requests.get(url, stream=True, headers=HEADERS, timeout=120) as response:
+    with requests.get(url, stream=True, headers=cache.http_headers(), timeout=120) as response:
         response.raise_for_status()
         total = int(response.headers.get("content-length", 0))
         progress.download.start(f"OSM extract {rid}", total / 1e6, unit="MB")
@@ -305,6 +304,7 @@ def update(cache_dir: str, rid: str, pbf: str) -> bool:
         download(cache_dir, rid)
         return True
     server = ReplicationServer(header.url)
+    server.set_request_parameter("headers", cache.http_headers())
     newest = server.get_state_info()
     if newest is None:
         raise RuntimeError(f"the replication service {header.url} does not answer")

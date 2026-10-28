@@ -30,7 +30,6 @@ OVERPASS_URL = "https://overpass-api.de/api/interpreter"
 # Tried in turn when a server is overloaded (502, 504, timeouts); both serve the whole planet
 OVERPASS_URLS = [OVERPASS_URL, "https://maps.mail.ru/osm/tools/overpass/api/interpreter"]
 NOMINATIM_URL = "https://nominatim.openstreetmap.org/reverse"
-HEADERS = {"User-Agent": "Find-a-Line/1.0 (highline finder)"}
 TILE_DEG = 0.25
 # What each theme holds: (OSM type, key, value); the Overpass queries and the
 # extracts (osmextract.py) use the same list
@@ -87,7 +86,7 @@ def fetch_tile(theme: str, lat: float, lon: float, cache_dir: str):
     error = None
     for url in OVERPASS_URLS:
         try:
-            response = requests.get(url, params={"data": query}, headers=HEADERS, timeout=120)
+            response = requests.get(url, params={"data": query}, headers=cache.http_headers(), timeout=120)
             response.raise_for_status()
             break
         except requests.RequestException as e:
@@ -144,7 +143,7 @@ def search(name: str, cache_dir: str) -> Dict:
     db.close()
     if row:
         return json.loads(row[0])
-    response = requests.get(SEARCH_URL, headers=HEADERS, timeout=30,
+    response = requests.get(SEARCH_URL, headers=cache.http_headers(), timeout=30,
                             params={"q": name, "format": "jsonv2", "polygon_geojson": 1, "limit": 5})
     response.raise_for_status()
     time.sleep(1)  # Nominatim usage policy: at most one request per second
@@ -170,7 +169,7 @@ def reverse(lat: float, lon: float, cache_dir: str, **params) -> Dict:
     db.close()
     if row:
         return json.loads(row[0])
-    response = requests.get(NOMINATIM_URL, headers=HEADERS, timeout=15, params=query)
+    response = requests.get(NOMINATIM_URL, headers=cache.http_headers(), timeout=15, params=query)
     response.raise_for_status()
     answer = response.json()
     time.sleep(1)  # Nominatim usage policy: at most one request per second

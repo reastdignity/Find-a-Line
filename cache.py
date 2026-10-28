@@ -44,6 +44,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Dict, Iterable, List, Optional
 
 LAYOUT = 1
+USER_AGENT = "Find-a-Line/1.0 (highline finder)"  # of every request (http_headers)
 # Days after which `update stale` checks data again
 TTL_DAYS = {
     "live": 730,         # tiles of services that serve the current state (IGN Spain, WMS orthophotos)
@@ -173,6 +174,16 @@ def remove_work(path: str):
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def http_headers() -> Dict[str, str]:
+    """Headers of every request to a data service: one User-Agent naming the app.
+
+    With FINDALINE_CONTACT set (a public site) it carries the operator's contact too, as
+    the Nominatim and Overpass usage policies ask of an application with many users.
+    """
+    contact = " ".join(os.environ.get("FINDALINE_CONTACT", "").split())  # no line breaks in a header
+    return {"User-Agent": f"{USER_AGENT[:-1]}; contact: {contact})" if contact else USER_AGENT}
 
 
 def clean_url(url: Optional[str]) -> Optional[str]:

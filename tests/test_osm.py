@@ -49,3 +49,12 @@ def test_regions_at_a_point(tmp_path):
     assert osmextract.regions_at(cache_dir, 50.1, 10.1) == [
         {"id": "island", "name": "Island", "depth": 1, "downloaded": True}]
     assert [r["id"] for r in osmextract.regions_at(cache_dir, 51, 11)] == ["mainland"]
+
+
+def test_user_agent(monkeypatch):
+    """One User-Agent for every request; a public site adds its operator's contact."""
+    import cache
+    monkeypatch.delenv("FINDALINE_CONTACT", raising=False)
+    assert cache.http_headers() == {"User-Agent": "Find-a-Line/1.0 (highline finder)"}
+    monkeypatch.setenv("FINDALINE_CONTACT", " admin@example.org\r\n")
+    assert cache.http_headers() == {"User-Agent": "Find-a-Line/1.0 (highline finder; contact: admin@example.org)"}

@@ -37,7 +37,6 @@ from progress import progress
 
 WORLD_URL = "https://osmdata.openstreetmap.de/download/water-polygons-split-4326.zip"
 WORLD_MB = 910
-HEADERS = {"User-Agent": "Find-a-Line/1.0 (highline finder)"}
 MARGIN_DEG = 0.02  # the coastline is fetched a little beyond the grid, so faces close properly
 
 
@@ -97,7 +96,7 @@ def world_newer(cache_dir: str) -> bool:
     if not shapefile:
         return True
     folder = os.path.dirname(os.path.dirname(shapefile))
-    response = requests.head(WORLD_URL, headers=HEADERS, timeout=60, allow_redirects=True)
+    response = requests.head(WORLD_URL, headers=cache.http_headers(), timeout=60, allow_redirects=True)
     response.raise_for_status()
     modified = response.headers.get("Last-Modified")
     day = email.utils.parsedate_to_datetime(modified).date().isoformat() if modified else ""
@@ -122,7 +121,7 @@ def world_polygons(cache_dir: str, update: Optional[str] = None) -> str:
     if shapefile and not (cache.stale(cache.info(cache_dir, shapefile), cache.TTL_DAYS["water-polygons"], update)
                           and world_newer(cache_dir)):
         return shapefile
-    with requests.get(WORLD_URL, stream=True, headers=HEADERS, timeout=120) as response:
+    with requests.get(WORLD_URL, stream=True, headers=cache.http_headers(), timeout=120) as response:
         response.raise_for_status()
         modified = response.headers.get("Last-Modified")
         day = email.utils.parsedate_to_datetime(modified).date() if modified else date.today()
