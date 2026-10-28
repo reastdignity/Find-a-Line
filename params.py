@@ -43,6 +43,7 @@ def field(default, help: str, group: str, *, default_text: Optional[str] = None,
 
 
 MAX_NAME = 100  # characters of a run name
+MAX_AREA_TEXT = 200  # characters of --within, and of an --area that is no file (osm:<name>)
 
 
 class SearchParams(BaseModel):
@@ -222,6 +223,12 @@ class SearchParams(BaseModel):
             raise ValueError("--prominence-span and --drop-radius must be positive")
         if self.tile_size is not None and self.tile_size < 100:
             raise ValueError("--tile-size must be at least 100 m")
+        for option, text in (("--area", self.area), ("--within", self.within)):
+            if text is not None and any(unicodedata.category(c) == "Cc" for c in text):
+                raise ValueError(f"{option}: no control characters")
+        if (self.within and len(self.within) > MAX_AREA_TEXT) or (
+                self.area and self.area.startswith("osm:") and len(self.area) > MAX_AREA_TEXT):
+            raise ValueError(f"--area osm:<name> and --within: at most {MAX_AREA_TEXT} characters")
         if self.within and self.area is None and self.geometry is None:
             raise ValueError("--within limits --area; give --area too")
         if self.within and not self.within.startswith("osm:"):

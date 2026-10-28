@@ -53,7 +53,9 @@ def test_values_checked(client, tmp_path):
     point = {"lat": 50.1, "lon": 19.7}
     for params in ({"lat": 91, "lon": 19.7}, {**point, "source": "files"}, {**point, "slope_threshold": 0},
                    {**point, "ortho_detail": -1}, {**point, "name": "x" * 101}, {**point, "name": "a\nb"},
-                   {"area": "coast", "within": "36.1,14.2,36.0,14.3"}, {"area": "coast", "within": "nan,1,2,3"}):
+                   {"area": "coast", "within": "36.1,14.2,36.0,14.3"}, {"area": "coast", "within": "nan,1,2,3"},
+                   {"area": "osm:" + "A" * 197}, {"area": "coast", "within": "osm:" + "A" * 197},
+                   {"area": "osm:Gozo\u0000"}, {"area": "coast", "within": "osm:Go\nzo"}):
         response = client.post("/api/jobs", json={"params": params}, headers=headers)
         assert response.status_code == 400, params
     for text in ('{"params": {"lat": NaN, "lon": 19.7}}', '{"params": {"lat": 50, "lon": 19.7, "radius": Infinity}}'):
@@ -63,6 +65,19 @@ def test_values_checked(client, tmp_path):
                            headers=headers)
     assert response.status_code == 200, response.text
     assert Jobs(str(tmp_path)).get(response.json()["id"])["title"] == "50.10000, 19.70000 (r 100 m)"
+
+
+def test_long_area_names(client):
+    """--area osm:<name> and --within have at most 200 characters (review B, poc_long_area); a job's
+    title at most MAX_TITLE."""
+    import params as pm
+    headers = {"x-findaline-token": TOKEN}
+    name = "osm:" + "A" * 196
+    response = client.post("/api/jobs", json={"params": {"area": name}}, headers=headers)
+    assert response.status_code == 200, response.text
+    titles = [j["title"] for j in client.get("/api/jobs").json()["jobs"]]
+    assert len(titles[0]) == web.MAX_TITLE and titles[0].endswith("…")
+    assert web.title(pm.SearchParams(area="osm:Gozo")) == "osm:Gozo"
 
 
 def test_geometry_checked(client, tmp_path):

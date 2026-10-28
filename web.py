@@ -189,8 +189,11 @@ def profile_problem(folder: str, points: List[float]) -> Optional[str]:
     return None
 
 
+MAX_TITLE = 120  # characters of a job's title (the queue lists them, each event of the job repeats none)
+
+
 def title(p: pm.SearchParams) -> str:
-    """The title of a job in the queue, from its validated parameters."""
+    """The title of a job in the queue, from its validated parameters (at most MAX_TITLE characters)."""
     circle = p.geometry is None and p.area is None
     if p.geometry is not None:
         where = "drawn area"
@@ -200,7 +203,8 @@ def title(p: pm.SearchParams) -> str:
         where = f"{p.lat:.5f}, {p.lon:.5f}"
     else:
         where = f"N {p.northing:.0f}, E {p.easting:.0f}"
-    return (p.name or where) + (f" (r {p.radius:g} m)" if circle else "")
+    text = (p.name or where) + (f" (r {p.radius:g} m)" if circle else "")
+    return text if len(text) <= MAX_TITLE else text[:MAX_TITLE - 1] + "…"
 
 
 # The routes anyone may request in the public mode (signing in and out, the page, which shows a
