@@ -209,19 +209,33 @@ command of section 3). Two sets of rules:
   (other Docker networks; their own bridge stays allowed), 192.168.0.0/16, 169.254.0.0/16 (link
   local, cloud metadata) and 100.64.0.0/10 (carrier-grade NAT, Tailscale); other containers,
   SWAG included, are not affected (SWAG may keep proxying to services on the LAN);
-- traffic from these bridges to the host itself (`INPUT`, `ufw`): nothing.
+- traffic from these bridges to the host itself (`INPUT`, `ufw`): nothing. A `ufw deny in on
+  br-fal-...` rule alone is not enough: the stock `/etc/ufw/before.rules` accepts ICMP echo, the
+  DHCP client, mDNS and SSDP (UPnP) before any user rule, so a container could still reach the
+  host's `avahi-daemon` or `minissdpd`. The rule of `deploy/firewall/ufw-before.rules` drops
+  everything from the bridges to the host ahead of those accepts (only replies to connections
+  the host opened pass); it goes into `before.rules`, which `ufw` loads at every start.
 
 ```sh
 sudo cp /etc/ufw/after.rules /etc/ufw/after.rules.bak
+sudo cp /etc/ufw/before.rules /etc/ufw/before.rules.bak
 cat /srv/find-a-line/deploy/firewall/ufw-after.rules | sudo tee -a /etc/ufw/after.rules
+sudo sed -i '/^# ok icmp codes for INPUT/e cat /srv/find-a-line/deploy/firewall/ufw-before.rules' /etc/ufw/before.rules
+sudo grep -n -B3 -A1 'br-fal' /etc/ufw/before.rules
 sudo ufw insert 1 deny in on br-fal-proxy
 sudo ufw insert 1 deny in on br-fal-web
 sudo ufw insert 1 deny in on br-fal-worker
 sudo ufw enable        # answer y: the SSH rule above keeps your session
 sudo ufw reload
 sudo iptables -S DOCKER-USER
+sudo iptables -S ufw-before-input | head -8
 sudo ufw status numbered
 ```
+
+`grep` must show the rule after the `INVALID` lines and before `# ok icmp codes for INPUT`
+(if that line is missing in your `before.rules`, put the rule by hand after the line
+`-A ufw-before-input -m conntrack --ctstate INVALID -j DROP`); `iptables -S ufw-before-input`
+lists `-A ufw-before-input -i br-fal-+ -j DROP` before the first `-p icmp` rule.
 
 `iptables -S DOCKER-USER` must list the rules of `ufw-after.rules`. If it listed rules of your
 own before (`sudo iptables -S DOCKER-USER` before the `tee`), add them to the block in

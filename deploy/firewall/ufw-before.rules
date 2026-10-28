@@ -1,0 +1,9 @@
+# Find-a-Line: insert this rule into /etc/ufw/before.rules, before the line
+# "# ok icmp codes for INPUT" (docs/deployment.md, "Firewall"), then `sudo ufw reload`.
+# The stock before.rules accepts ICMP echo, the DHCP client, mDNS and SSDP (UPnP) before any
+# user rule, so `ufw deny in on br-fal-...` alone would still let the containers of
+# Find-a-Line reach the host's dhclient, avahi-daemon or minissdpd. This rule drops every packet
+# from their bridges to the host itself that is not a reply to a connection the host opened (the
+# replies are accepted by the RELATED,ESTABLISHED rule just above it, invalid packets are
+# dropped there too). Their DNS does not come here (compose.yaml: dns, public resolvers).
+-A ufw-before-input -i br-fal-+ -j DROP
