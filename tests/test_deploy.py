@@ -1,12 +1,14 @@
-"""The deployment files behind SWAG (deploy/swag): the fail2ban filter and the masking of the
-access log, with Python's re (fail2ban's own engine; nginx's PCRE patterns differ only in the
-spelling of named groups). nginx itself is checked by hand (docs/deployment.md, `nginx -t`)."""
+"""The deployment files: what each service of compose.yaml may write, and the files behind SWAG
+(deploy/swag): the fail2ban filter and the masking of the access log, with Python's re
+(fail2ban's own engine; nginx's PCRE patterns differ only in the spelling of named groups).
+nginx itself is checked by hand (docs/deployment.md, `nginx -t`)."""
 
 import configparser
 import os
 import re
 
-SWAG = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "deploy", "swag")
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+SWAG = os.path.join(ROOT, "deploy", "swag")
 HOST = r"(?P<host>[0-9A-Fa-f:.]+|[\w\-.^_]*\w)"  # what fail2ban puts for <HOST> (simplified)
 
 
@@ -85,3 +87,52 @@ def test_access_log_masking():
         "https://findaline.example.org/s/<token>/map.html"
     for url in ("https://findaline.example.org/s/_viewer/map.html", "https://findaline.example.org/app/", "-"):
         assert referer(url) == url
+
+
+def _services():
+    """The services of compose.yaml (its own layout, without a YAML library): {name: {"volumes":
+    [(source, target, options)], "environment": {name: value}, key: value}}; a tmpfs mount is
+    ("tmpfs", target, "")."""
+    with open(os.path.join(ROOT, "compose.yaml"), encoding="utf-8") as f:
+        lines = [line.split(" #")[0].rstrip() for line in f.read().splitlines()]
+    services, current, section = {}, None, None
+    for line in lines[lines.index("services:") + 1:]:
+        if line and not line.startswith(" "):
+            break  # the next top-level key
+        if re.fullmatch(r"  [\w-]+:", line):
+            current = services[line.strip()[:-1]] = {"volumes": [], "environment": {}}
+        elif current is None or not line.strip() or line.strip().startswith("#"):
+            continue
+        elif match := re.fullmatch(r"    ([\w-]+):(?: (.*))?", line):
+            section = match.group(1)
+            if match.group(2):
+                current[section] = match.group(2)
+        elif section == "volumes" and line.startswith("      - "):
+            item = line[8:]
+            short = re.fullmatch(r"(.+?):(/[^:]*)(?::(\w+))?", item)  # source:target[:options]
+            current["volumes"].append(("tmpfs", None, "") if item == "type: tmpfs"
+                                      else (short.group(1), short.group(2), short.group(3) or ""))
+        elif section == "volumes" and (match := re.fullmatch(r"        target: (\S+)", line)):
+            current["volumes"][-1] = ("tmpfs", match.group(1), "")
+        elif section == "environment" and (match := re.fullmatch(r"      (\w+): (.*)", line)):
+            current["environment"][match.group(1)] = match.group(2)
+    return services
+
+
+def test_compose_volumes():
+    """What each service can write (docs/deployment.md, "What each service can write"): the
+    accounts volume is the web service's only; numba's compiled code, the home and matplotlib's
+    settings are in each service's own tmpfs, never in the shared data volume; no swap beyond the
+    memory limit."""
+    services = _services()
+    assert set(services) == {"web", "worker"}
+    web, worker = services["web"], services["worker"]
+    assert web["volumes"] == [("data", "/data", ""), ("accounts", "/accounts", ""), ("tmpfs", "/tmp", "")]
+    assert worker["volumes"] == [("data", "/data", ""), ("${FINDALINE_MIRROR_DIR:-no-mirror}", "/mirror", "ro"),
+                                 ("tmpfs", "/tmp", "")]
+    assert web["environment"]["FINDALINE_ACCOUNTS_DIR"] == "/accounts"
+    assert "FINDALINE_ACCOUNTS_DIR" not in worker["environment"]
+    for service in (web, worker):
+        for name in ("HOME", "NUMBA_CACHE_DIR", "MPLCONFIGDIR"):
+            assert service["environment"][name].startswith("/tmp/"), name
+        assert service["memswap_limit"] == service["mem_limit"]

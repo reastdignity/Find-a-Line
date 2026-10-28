@@ -314,7 +314,7 @@ and read it:
 ```sh
 docker compose exec web python -c "
 import sqlite3
-for row in sqlite3.connect('/data/accounts.sqlite').execute('SELECT id, provider, subject, name, status FROM users'):
+for row in sqlite3.connect('/accounts/accounts.sqlite').execute('SELECT id, provider, subject, name, status FROM users'):
     print(row)"
 ```
 
@@ -339,12 +339,34 @@ Slovakia), so the coast and cliffs come without Overpass.
 
 The containers' logs are rotated by Docker (10 MB, 5 files each: compose.yaml, `logging`).
 
-## 10. The data volume and the Slovak mirror
-Everything the site writes is in the named volume `findaline_data`
-(`/var/lib/docker/volumes/findaline_data/_data` on the host): `cache/` (downloaded data,
-re-downloadable), `runs/` (the users' runs), `work/` (temporary), `jobs.sqlite`,
-`accounts.sqlite`, `audit.sqlite`, `home/` (numba's compiled code). Both services use it as uid
-10001; SQLite in WAL mode needs it on a local file system (no NFS or SMB).
+## 10. The volumes and the Slovak mirror
+What the site keeps is in two named volumes (under `/var/lib/docker/volumes/` on the host):
+- `findaline_data`, both services, at `/data`: `cache/` (downloaded data, re-downloadable),
+  `runs/` (the users' runs), `work/` (temporary), `jobs.sqlite` (the queue, through which the
+  two services talk), `audit.sqlite`;
+- `findaline_accounts`, the web service only, at `/accounts`: `accounts.sqlite` (the users and
+  their sessions).
+
+Both services run as uid 10001; SQLite in WAL mode needs the volumes on a local file system (no
+NFS or SMB).
+
+**What each service can write.** The worker runs the searches: it parses data from many outside
+services, so it is the likelier one to be compromised by a bug in a parser; the web service
+faces the visitors. Neither may plant what the other trusts:
+- the accounts and sessions are not in the shared volume: a compromised worker cannot add a
+  user, an administrator or a session (the web service alone mounts `findaline_accounts`);
+- numba's compiled code (pickles, loaded by every search process), the home folder and
+  matplotlib's settings are in each service's own `/tmp` (a tmpfs, `HOME`, `NUMBA_CACHE_DIR`,
+  `MPLCONFIGDIR` in compose.yaml): a compromised web service cannot leave code for the worker to
+  load, and the worker compiles its code again after each start of its container (a few
+  seconds, in the first search).
+
+An accepted residual risk: the worker writes the runs, including each run's `data.js`, which
+its map page loads as a script. A compromised worker can therefore change what the map of a run
+shows or does in the visitor's browser (its own origin, with the page's Content-Security-Policy),
+and change or delete the runs, the cache and the queue. The viewer itself (its scripts and
+styles) comes from the image, not from the volume. Keeping the worker from being compromised
+(the image's updates, section 13) and its network isolation (section 5) are the defence here.
 
 The Slovak tiles (`tools/sk_tiles.py`) are not downloaded by the site: copy the local mirror
 (the folder above `slovakia/`) to the server, e.g. `/srv/findaline-mirror`, make it readable

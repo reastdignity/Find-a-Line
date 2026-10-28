@@ -1,5 +1,8 @@
 # The public site: `web` (the page and the API) and `worker` (the searches) from one image,
-# sharing the data volume; they talk only through jobs.sqlite in it.
+# sharing the data volume; they talk only through jobs.sqlite in it. What only one of them may
+# write is not in the shared volume (docs/deployment.md, "What each service can write"): the
+# accounts and sessions are in the web service's own volume, and each service compiles numba's
+# code into its own /tmp, so neither loads code or sessions the other could have planted.
 #
 # Before `docker compose up -d --build`:
 # - findaline.env: the settings of the site (copy findaline.env.example);
@@ -26,7 +29,7 @@ x-image: &image
   build: .
   init: true                 # tini as PID 1: forwards SIGTERM, reaps the phases' processes
   user: "10001:10001"
-  read_only: true            # writes go to /data (the volume) and /tmp only
+  read_only: true            # writes go to the volumes and /tmp only
   cap_drop: [ALL]
   security_opt: ["no-new-privileges:true"]
   restart: unless-stopped
@@ -44,10 +47,19 @@ services:
     <<: *image
     command: ["web", "--public", "--host", "0.0.0.0", "--port", "8765", "--no-browser"]
     mem_limit: ${WEB_MEMORY:-1g}
+    memswap_limit: ${WEB_MEMORY:-1g}   # the same: no swap on top of the limit
     cpus: ${WEB_CPUS:-1}
     pids_limit: 256
+    environment:
+      FINDALINE_ACCOUNTS_DIR: /accounts
+      # The home, numba's compiled code and matplotlib's settings of this service only, gone at
+      # every restart (the image's defaults are in the shared /data)
+      HOME: /tmp/home
+      NUMBA_CACHE_DIR: /tmp/numba
+      MPLCONFIGDIR: /tmp/matplotlib
     volumes:
       - data:/data
+      - accounts:/accounts         # accounts.sqlite: users and sessions, the web service's only
       - type: tmpfs
         target: /tmp
         tmpfs: {size: 67108864}   # 64 MB (mode 1777, the default)
@@ -76,10 +88,17 @@ services:
     # them) and WORKER_MEMORY to what the host can spare; the search sizes its tiles and threads
     # from these limits (search.cgroup_limits)
     mem_limit: ${WORKER_MEMORY:-8g}
+    memswap_limit: ${WORKER_MEMORY:-8g}   # the same: no swap on top of the limit
     cpus: ${WORKER_CPUS:-3}
     pids_limit: 4096           # threads count: numba's per process, download pools
     environment:
       FINDALINE_MIRROR: /mirror
+      # numba's compiled code (loaded by every phase's process), the home and matplotlib's
+      # settings in the worker's own /tmp: compiled once per start of the container (a few
+      # seconds), never from files the web service could have written
+      HOME: /tmp/home
+      NUMBA_CACHE_DIR: /tmp/numba
+      MPLCONFIGDIR: /tmp/matplotlib
     # --source nasadem (admins only on the public site): the key as a Docker secret, the
     # worker's only (settings.ServiceKeys); an empty file means no key
     secrets:
@@ -99,6 +118,7 @@ services:
 
 volumes:
   data:        # SQLite in WAL mode: a local volume, the same uid in both services
+  accounts:    # accounts.sqlite (WAL), the web service's only
   no-mirror:
 
 # The worker never shares a network with the web service or the proxy; no IPv6 in any of them

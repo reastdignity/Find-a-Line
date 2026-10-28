@@ -34,8 +34,9 @@ RUN python -m compileall -q -l --invalidation-mode unchecked-hash .
 # Runtime: Python and the environment, no uv, no build tools
 FROM ${PYTHON_IMAGE}
 # uid 10001; its home, numba's cache and matplotlib's settings live in the data volume (the root
-# filesystem is read-only). /data is created here owned by the user, so a new named volume takes
-# that owner when it is first mounted.
+# filesystem is read-only; compose.yaml moves them to each service's own /tmp). /data and
+# /accounts (the web service's accounts volume, compose.yaml) are created here owned by the
+# user, so a new named volume takes that owner when it is first mounted.
 # libexpat1: the wheels of rasterio (its GDAL) and osmium link to the system's libexpat.so.1,
 # which the slim image no longer has
 RUN apt-get update \
@@ -43,8 +44,8 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 RUN groupadd --gid 10001 findaline \
     && useradd --uid 10001 --gid 10001 --no-create-home --home-dir /data/home --shell /usr/sbin/nologin findaline \
-    && mkdir -p /data/home \
-    && chown -R 10001:10001 /data
+    && mkdir -p /data/home /accounts \
+    && chown -R 10001:10001 /data /accounts
 COPY --from=build /opt/findaline /opt/findaline
 ENV PATH=/opt/findaline/.venv/bin:$PATH \
     VIRTUAL_ENV=/opt/findaline/.venv \
