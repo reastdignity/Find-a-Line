@@ -195,8 +195,9 @@ Each is an environment variable `FINDALINE_LIMIT_<NAME>`; nothing is limited by 
 | `KM2_DAY_MAX` | 250 | km² of the search areas of a user in 24 hours (counted by the worker once it knows the area, circles too) |
 | `RUNS_GB_MAX` | 5 | GB of a user's saved runs; no new search above it (*delete* in *Runs* frees it) |
 | `DOWNLOAD_MB_DAY_MAX` | 10000 | MB a user's searches may download in 24 hours: the estimate of each (the tiles not cached yet), counted when its download starts |
-| `NOMINATIM_DAY_MAX` | 50 | Requests to Nominatim not answered from its cache (`osm:` areas, run names, countries) of a user's searches, estimates and profiles in 24 hours |
+| `NOMINATIM_DAY_MAX` | 50 | Requests to Nominatim not answered from its cache (`osm:` areas, run names, countries, place lookups) of a user's searches, estimates, profiles and lookups in 24 hours |
 | `ESTIMATE_RATE` / `PROFILE_RATE` | `20/minute;300/hour` / `30/minute;500/hour` | Estimates / profiles a user may ask for (the notation of the `limits` library); one estimate or profile of a user waits at a time |
+| `PLACE_RATE` | `10/minute;100/hour` | Place lookups (the place box of a new search) a user may ask for; their uncached Nominatim requests count toward `NOMINATIM_DAY_MAX` |
 | `JOB_RATE` | `10/minute;60/hour` | Requests to start a search a user may send, refused ones too |
 | `QUEUE_MAX` | 50 | Searches waiting or running on the site at once (everyone) |
 | `FREE_DISK_GB_MIN` | 20 | No new searches while the data folder's disk has less free space, GB (everyone); a search fails when it is short before its download or its computing |

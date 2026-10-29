@@ -11,8 +11,8 @@ import { Logo } from "../../ui/icons";
 import { storedTheme, uiHref } from "../../ui/choice";
 import { api, type RunListed } from "../../app/api";
 import { baseLayers } from "../../layers";
-import type { Line, Ortho, RunData } from "../../types";
-import { loadRun } from "../load";
+import type { Line, RunData } from "../../types";
+import { loadRun, orthoForApp } from "../load";
 import { ResultModel } from "../model";
 import { ResultMap, type Padding } from "../ResultMap";
 import { FilterBar } from "./FilterBar";
@@ -29,13 +29,6 @@ const PANEL = 384 + 16;  // the panel's width and its margin (result.css .r-pane
 function linkedLine(hash: string): string | null {
   if (!hash || hash === "#") return null;
   return new URLSearchParams(hash.slice(1)).get("line");
-}
-
-/** The orthophoto's cache folder is relative to the run's map.html; the app's page is elsewhere. */
-function orthoForApp(ortho: Ortho | null, runId: string): Ortho | null {
-  if (!ortho || !ortho.cache) return ortho;
-  const map = `${location.origin}/runs/${encodeURIComponent(runId)}/map.html`;
-  return {...ortho, cache: new URL(ortho.cache, map).pathname};
 }
 
 function RunPicker() {

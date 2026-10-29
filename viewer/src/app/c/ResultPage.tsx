@@ -9,20 +9,13 @@ import { useEffect, useMemo, useRef, useState } from "preact/hooks";
 import { Button, IconButton, Sheet, type Snap } from "../../ui/components";
 import { Icon } from "../../ui/icons";
 import { baseLayers } from "../../layers";
-import type { Line, Ortho, RunData } from "../../types";
-import { loadRun } from "../../result/load";
+import type { Line, RunData } from "../../types";
+import { loadRun, orthoForApp } from "../../result/load";
 import { ResultModel } from "../../result/model";
 import { ResultMap, type Padding } from "../../result/ResultMap";
 import { FilterBar, LineDetails, LinesTable, ProfileDock, ResultSummary, RunActions, useModel } from "../../result/view";
 import { editHash, parseRoute, runHash } from "./route";
 import { when } from "./Home";
-
-/** The orthophoto's cache folder is relative to the run's map.html; the app's page is elsewhere. */
-export function orthoForApp(ortho: Ortho | null, runId: string): Ortho | null {
-  if (!ortho || !ortho.cache) return ortho;
-  const map = `${location.origin}/runs/${encodeURIComponent(runId)}/map.html`;
-  return {...ortho, cache: new URL(ortho.cache, map).pathname};
-}
 
 /** A model of the run; its list sorted by clearance, largest first, unless the user chose a sorting. */
 function modelOf(data: RunData): ResultModel {

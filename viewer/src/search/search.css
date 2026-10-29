@@ -4,6 +4,16 @@
 .ui .s-panel { display: flex; flex-direction: column; gap: 14px; }
 .ui .s-panel .u-h.s-gap { margin-top: 6px; }
 .ui .s-where { display: flex; flex-direction: column; gap: 12px; }
+/* The place box (PlaceBox) */
+.ui .s-placebox { display: flex; flex-direction: column; gap: 6px; }
+.ui .s-placebox-input { position: relative; }
+.ui .s-placebox-input > svg { position: absolute; left: 10px; top: 50%; transform: translateY(-50%); color: var(--muted); pointer-events: none; }
+.ui .s-placebox-input .u-input { padding-left: 34px; }
+.ui .s-placebox-error { color: var(--bad); }
+.ui .s-placebox-list { list-style: none; margin: 0; padding: 4px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); box-shadow: var(--shadow); }
+.ui .s-placebox-list li { display: flex; flex-direction: column; gap: 2px; padding: 8px 10px; border-radius: 8px; cursor: pointer; min-width: 0; }
+.ui .s-placebox-list li span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ui .s-placebox-list li.u-on, .ui .s-placebox-list li:hover { background: var(--accent-soft); }
 .ui .s-hint { margin: 0; font-size: 12.5px; color: var(--muted); }
 .ui .s-point { display: flex; align-items: center; gap: 6px; color: var(--ink-2); }
 .ui .s-point .u-ic { width: 15px; height: 15px; color: var(--accent); }

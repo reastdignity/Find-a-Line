@@ -305,7 +305,9 @@ SESSION_CHECK = 30  # seconds between checks of the session inside an open event
 # A refusal by a rate or a quota is one row of the audit log per user and kind in this many seconds;
 # the others are counted, and the next row says how many there were ("repeated")
 REFUSAL_WINDOW = 600
-RATE_NAMES = {"estimate": "estimates", "profile": "profiles", "job": "searches started"}  # Limits.<kind>_rate
+PLACE_CHARS_MAX = 200  # of a name the place box looks up
+RATE_NAMES = {"estimate": "estimates", "profile": "profiles", "place": "place lookups",  # Limits.<kind>_rate
+              "job": "searches started"}
 # The files of a run the public site serves (what mapping.save_map and runs.save_results write, without
 # run.json: its parameters and data files are the owner's); never progress.json, tiles or other files
 RUN_FILES = ("map.html", "data.js", "lines.js", "lines.csv", "lines.geojson", "ATTRIBUTION.txt")
@@ -677,7 +679,7 @@ def create_app(data_dir: str, token: Optional[str] = None, port: int = PORT, sta
     rate_limiter = strategies.SlidingWindowCounterRateLimiter(storage.MemoryStorage())
     app.state.limiters = {**getattr(app.state, "limiters", {}), "rate": rate_limiter}
     if public:
-        for kind in ("estimate", "profile", "job"):
+        for kind in RATE_NAMES:
             if getattr(limits, f"{kind}_rate"):
                 rates[kind] = parse_many(getattr(limits, f"{kind}_rate"))
 
@@ -778,6 +780,16 @@ def create_app(data_dir: str, token: Optional[str] = None, port: int = PORT, sta
         request, _ = await run_in_threadpool(parse, body, user)
         await run_in_threadpool(within_rate, "estimate", user)
         return await quick("estimate", request, user, client)
+
+    @app.post("/api/place")
+    async def place(body: Dict, client: Request, user: ac.User = Depends(current_user)):
+        """The places of a name ({"q"}) for the place box: Nominatim through the quick lane (the
+        worker's network, the shared rate and the user's quota of uncached requests)."""
+        q = body.get("q") if isinstance(body, dict) else None
+        if not isinstance(q, str) or not q.strip() or len(q) > PLACE_CHARS_MAX:
+            raise HTTPException(400, f"a place name of 1 to {PLACE_CHARS_MAX} characters")
+        await run_in_threadpool(within_rate, "place", user)
+        return await quick("place", {"q": q.strip()}, user, client)
 
     @app.post("/api/jobs")
     async def add_job(body: Dict, user: ac.User = Depends(current_user)):
@@ -1171,28 +1183,52 @@ APP_HTML = """<!doctype html>
 """
 
 
+# The logo's mark (as LogoMark in viewer/src/ui/icons.tsx) and the providers' marks of the sign-in buttons
+LOGO_SVG = ('<svg viewBox="0 0 32 20" aria-hidden="true"><path class="u-lg" d="M3 5 Q16 15 29 5"/>'
+            '<circle cx="3" cy="5" r="2.6"/><circle cx="29" cy="5" r="2.6"/></svg>')
+PROVIDER_SVG = {
+    "github": '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 0c4.42 0 8 3.58 8 8a8.013 8.013 0 0 1-5.45 '
+              '7.59c-.4.08-.55-.17-.55-.38 0-.27.01-1.13.01-2.2 0-.75-.25-1.23-.54-1.48 1.78-.2 3.65-.88 3.65-3.95 '
+              '0-.88-.31-1.59-.82-2.15.08-.2.36-1.02-.08-2.12 0 0-.67-.22-2.2.82-.64-.18-1.32-.27-2-.27-.68 0-1.36.09-2 '
+              '.27-1.53-1.03-2.2-.82-2.2-.82-.44 1.1-.16 1.92-.08 2.12-.51.56-.82 1.28-.82 2.15 0 3.06 1.86 3.75 3.64 '
+              '3.95-.23.2-.44.55-.51 1.07-.46.21-1.61.55-2.33-.66-.15-.24-.6-.83-1.23-.82-.67.01-.27.38.01.53.34.19.73.9'
+              '.82 1.13.16.45.68 1.31 2.69.94 0 .67.01 1.3.01 1.49 0 .21-.15.45-.55.38A7.995 7.995 0 0 1 0 8c0-4.42 '
+              '3.58-8 8-8Z"/></svg>',
+    "google": '<svg viewBox="0 0 48 48" aria-hidden="true"><path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 '
+              '3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 '
+              '9.5z"/><path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 '
+              '5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z"/><path fill="#FBBC05" d="M10.53 '
+              '28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 '
+              '2.56 10.78l7.97-6.19z"/><path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.15 '
+              '1.45-4.92 2.3-8.16 2.3-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"/></svg>',
+}
+PAGE_FOOTER = ('<footer class="p-footer"><a href="/">Find-a-Line</a><a href="/privacy">Privacy</a>'
+               '<a href="/about">About / data licences</a></footer>')
+# The sign-in, privacy and about pages of the public site: server-rendered, no script, no inline styles;
+# the kit's look (viewer/src/ui/pages.css, in /app/app.css), the theme of the system
 SIGNIN_HTML = """<!doctype html>
-<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Find-a-Line</title>
 <link rel="stylesheet" href="/app/app.css">
-</head><body><div class="fa-signin">
-<h1>Find-a-Line</h1>
-<p>Finds possible highlines in elevation data.</p>
+</head><body class="ui p-body"><main class="p-page p-signin">
+<header class="p-brand"><h1 class="u-logo">{logo}Find-a-Line</h1>
+<p class="p-lead">Finds possible highlines in elevation data.</p></header>
 {body}
-<p class="fa-footer"><a href="/privacy">Privacy</a> · <a href="/about">About / data licences</a></p>
-</div></body></html>
+{footer}
+</main></body></html>
 """
 
-# The privacy and about pages of the public site (server-rendered, no script, no inline styles)
 PAGE_HTML = """<!doctype html>
-<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{title} · Find-a-Line</title>
 <link rel="stylesheet" href="/app/app.css">
-</head><body><div class="fa-signin fa-page">
-<h1>{title}</h1>
+</head><body class="ui p-body"><main class="p-page p-doc">
+<header class="p-brand"><a class="u-logo" href="/">{logo}Find-a-Line</a></header>
+<article class="p-card p-prose"><h1 class="u-h u-xl">{title}</h1>
 {body}
-<p class="fa-footer"><a href="/">Find-a-Line</a> · <a href="/privacy">Privacy</a> · <a href="/about">About / data licences</a></p>
-</div></body></html>
+</article>
+{footer}
+</main></body></html>
 """
 
 
@@ -1241,11 +1277,11 @@ def privacy_page(contact: str, keep_events_days: Optional[float]) -> str:
         "your IP address.",
         "No analytics, no advertising, no tracking cookies.",
     ]
-    body = ["<p>What this site stores about you, why, and for how long.</p><dl class='fa-facts'>"]
+    body = ["<p>What this site stores about you, why, and for how long.</p><dl class='p-facts'>"]
     body += [f"<dt>{e(name)}</dt><dd>{e(text)}</dd>" for name, text in items]
     body.append("</dl><ul>" + "".join(f"<li>{e(text)}</li>" for text in facts) + "</ul>")
     body.append(f"<p>Questions, or to have your account and data deleted: {e(contact)}.</p>")
-    return PAGE_HTML.format(title="Privacy", body="\n".join(body))
+    return PAGE_HTML.format(title="Privacy", body="\n".join(body), logo=LOGO_SVG, footer=PAGE_FOOTER)
 
 
 def about_page(contact: str) -> str:
@@ -1262,7 +1298,7 @@ def about_page(contact: str) -> str:
             credits.setdefault(credit.data, credit)
     credits.setdefault(src.WATER_MASK_CREDIT.data, src.WATER_MASK_CREDIT)
     rows = [f"<li><b>{e(c.data)}</b>: {e(c.attribution)}. Licence: {link(c.licence, c.url)}."
-            + (f" <span class='fa-hint'>{e(c.notice)}</span>" if c.notice else "") + "</li>" for c in credits.values()]
+            + (f" <span class='u-small'>{e(c.notice)}</span>" if c.notice else "") + "</li>" for c in credits.values()]
     orthos = {s.ortho.name: s.ortho.attribution for s in src.SOURCES.values() if s.ortho is not None}
     body = [
         "<p>Find-a-Line finds possible highlines in elevation data: anchors on steep ground, every pair checked for "
@@ -1279,7 +1315,8 @@ def about_page(contact: str) -> str:
         "shared only for non-commercial use, under the same licence.</p>",
         f"<p>Contact: {e(contact)}.</p>",
     ]
-    return PAGE_HTML.format(title="About / data licences", body="\n".join(body))
+    return PAGE_HTML.format(title="About / data licences", body="\n".join(body), logo=LOGO_SVG,
+                            footer=PAGE_FOOTER)
 
 
 def demo_list(demos: List[Dict]) -> str:
@@ -1292,11 +1329,13 @@ def demo_list(demos: List[Dict]) -> str:
     items = []
     for run in demos:
         summary = run.get("summary") or {}
-        link = (f"<a href='/runs/{e(quote(run['id'], safe=''))}/map.html'>{e(run.get('name') or run['id'])}</a>"
-                if run.get("has_map") else e(run.get("name") or run["id"]))
-        items.append(f"<li>{link} <span class='fa-hint'>{summary.get('spots', 0)} spots, {summary.get('lines', 0)} "
-                     f"lines · {e(rn.params_summary(run))}</span></li>")
-    return "<h2>Examples</h2><ul class='fa-demos'>" + "".join(items) + "</ul>"
+        inner = (f"<b>{e(run.get('name') or run['id'])}</b><span class='u-small'>{summary.get('spots', 0)} spots · "
+                 f"{summary.get('lines', 0)} lines</span><span class='u-small'>{e(rn.params_summary(run))}</span>")
+        items.append(f"<li><a class='p-ex' href='/runs/{e(quote(run['id'], safe=''))}/map.html'>{inner}"
+                     f"<span class='p-open'>Open map ›</span></a></li>" if run.get("has_map")
+                     else f"<li><div class='p-ex'>{inner}</div></li>")
+    return ("<section class='p-examples'><h2 class='u-h'>Examples</h2><ul class='p-cards'>" + "".join(items)
+            + "</ul></section>")
 
 
 def signin_page(providers: List[str], user=None, csrf: Optional[str] = None, note: str = "",
@@ -1305,21 +1344,22 @@ def signin_page(providers: List[str], user=None, csrf: Optional[str] = None, not
     (pending or blocked): sign-in links, or the account's state and signing out; the demo runs
     (their maps, read-only). No script, and nothing that changes state but signing out."""
     e = html.escape
-    parts = [f"<p class='fa-error'>{e(note)}</p>"] if note else []
+    card = [f"<p class='p-error' role='alert'>{e(note)}</p>"] if note else []
     if user is None:
-        parts.append("<p>Sign in to search:</p><p class='fa-signin-links'>" + " ".join(
-            f"<a class='fa-signin-link' href='/login/{p}'>Sign in with {ac.NAMES[p]}</a>" for p in providers) + "</p>")
-        parts.append("<p class='fa-hint'>A new account waits for an administrator's approval. The site keeps your "
-                     "provider's user id and display name, no e-mail address.</p>")
+        card.append("<h2 class='u-h'>Sign in to search</h2><div class='p-providers'>" + "".join(
+            f"<a class='p-provider p-{p}' href='/login/{p}'>{PROVIDER_SVG.get(p, '')}Sign in with {ac.NAMES[p]}</a>"
+            for p in providers) + "</div>")
+        card.append("<p class='u-small'>A new account waits for an administrator's approval. The site keeps your "
+                    "provider's user id and display name, no e-mail address.</p>")
     else:
         state = ("is waiting for an administrator's approval" if user.status == "pending"
                  else "is blocked")
-        parts.append(f"<p>Your account <b>{e(user.name)}</b> ({e(ac.NAMES.get(user.provider, user.provider))}) "
-                     f"{state}.</p>")
-        parts.append(f"<form method='post' action='/logout'><input type='hidden' name='csrf' value='{e(csrf or '')}'>"
-                     "<button type='submit'>Sign out</button></form>")
-    parts.append(demo_list(demos or []))
-    return SIGNIN_HTML.format(body="\n".join(parts))
+        card.append(f"<p>Your account <b>{e(user.name)}</b> ({e(ac.NAMES.get(user.provider, user.provider))}) "
+                    f"{state}.</p>")
+        card.append(f"<form method='post' action='/logout'><input type='hidden' name='csrf' value='{e(csrf or '')}'>"
+                    "<button class='u-btn' type='submit'>Sign out</button></form>")
+    parts = ["<section class='p-card'>" + "\n".join(card) + "</section>", demo_list(demos or [])]
+    return SIGNIN_HTML.format(body="\n".join(parts), logo=LOGO_SVG, footer=PAGE_FOOTER)
 
 
 async def _disconnect(receive):

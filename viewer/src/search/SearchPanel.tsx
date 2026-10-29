@@ -10,6 +10,7 @@ import { parseValue, withValue } from "../app/request";
 import type { PlaceMap } from "../app/PlaceMap";
 import { Button, Field, Progress, Range, RangePair, Segmented, StatusChip, type Option } from "../ui/components";
 import { Icon } from "../ui/icons";
+import { PlaceBox } from "./PlaceBox";
 import { fmt, KEY_FIELDS, useSearch, withinLimits, type SearchMode, type SearchState } from "./useSearch";
 import "./search.css";
 
@@ -47,6 +48,7 @@ function Where({s, phone}: {s: SearchState; phone?: boolean}) {
     {s.areas === 1 ? "1 area" : `${s.areas} separate areas`}
     {s.shapes !== s.areas && ` (${s.shapes} shapes; those that overlap or touch are one area)`}</p>;
   return <div class="s-where">
+    {s.mode !== "file" && <PlaceBox place={s.place} />}
     <Segmented label="Where" options={phone ? PHONE_MODES : MODES} value={s.mode} onChange={s.setMode} />
     {s.mode === "point" && <>
       <p class="s-hint s-point">{s.point ? <><Icon name="pin" />Centre {s.point[0].toFixed(5)}, {s.point[1].toFixed(5)}

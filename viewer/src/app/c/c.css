@@ -3,7 +3,7 @@
 
 .ui.c-app { flex-direction: column; }
 .ui .c-main { flex: 1; min-height: 0; position: relative; overflow-y: auto; }
-.ui .c-main-new, .ui .c-main-run, .ui .c-main-admin, .ui .c-main-osm { display: flex; overflow: hidden; }
+.ui .c-main-new, .ui .c-main-run, .ui .c-main-osm { display: flex; overflow: hidden; }
 .ui.c-has-nav .c-main { padding-bottom: calc(64px + env(safe-area-inset-bottom, 0px)); }
 .ui .c-error { color: var(--bad); font-weight: 500; margin: 0; }
 .ui .c-app-error { padding: 8px 20px; background: var(--bad-soft); }
@@ -152,11 +152,23 @@
   .ui .c-col-details { width: 320px; }
 }
 
-/* Pages with an old panel (Admin, OSM): the old app's light look */
+/* Admin (AdminC) and the OSM extracts (OsmC, a panel beside its map: MapPage) */
+.ui .c-admin { max-width: 960px; }
+.ui .c-admin-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
+.ui .c-admin-row { display: flex; flex-direction: column; gap: 4px; padding: 10px 0; border-top: 1px solid var(--line); min-width: 0; }
+.ui .c-admin-row:first-child { border-top: 0; }
+.ui .c-admin-head { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; min-width: 0; }
+.ui .c-admin-head b { overflow-wrap: anywhere; }
+.ui .c-admin-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin-top: 4px; }
+.ui .c-admin-workers { margin: 10px 0 0; padding-left: 18px; }
+.ui .c-check { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: var(--ink-2); cursor: pointer; }
+.ui .c-user-pending { background: var(--warn); }
+.ui .c-user-blocked { background: var(--bad); }
+.ui .c-user-approved { background: var(--ok); }
 .ui .c-mappage { flex: 1; min-width: 0; display: flex; }
-.ui .c-oldpanel { width: 440px; flex: none; overflow-y: auto; padding: 16px 20px; background: #fafafa; color: #222; color-scheme: light;
-  border-right: 1px solid var(--line); font-size: 13px; }
-.ui .c-oldpanel .u-h { margin-bottom: 8px; color: #222; }
+.ui .c-sidepanel { width: 440px; flex: none; overflow-y: auto; padding: 16px 20px; background: var(--surface);
+  border-right: 1px solid var(--line); display: flex; flex-direction: column; gap: 10px; }
+.ui .c-osm { display: flex; flex-direction: column; gap: 10px; }
 .ui .c-mappage .c-newmap { flex: 1; }
 
 /* Phones */
@@ -180,7 +192,7 @@
 .ui.c-narrow .c-bar .s-bar-line { flex-basis: 100%; order: 5; }
 .ui.c-narrow .c-bar .s-start { flex: 1 1 100%; order: 6; }
 .ui.c-narrow .c-mappage { flex-direction: column; overflow-y: auto; }
-.ui.c-narrow .c-oldpanel { width: auto; border-right: 0; overflow: visible; }
+.ui.c-narrow .c-sidepanel { width: auto; border-right: 0; overflow: visible; }
 .ui.c-narrow .c-mappage .c-newmap { flex: none; height: 50vh; }
 .ui .c-result-phone { position: relative; overflow: hidden; }
 .ui .c-result-phone .c-col-map { position: absolute; inset: 0; }

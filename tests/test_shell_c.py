@@ -35,7 +35,15 @@ window.ESTIMATES = [];
 window.COPIED = [];
 Object.defineProperty(navigator, "clipboard", {value: {writeText: (text) => { COPIED.push(text); return Promise.resolve(); }}});
 const realFetch = window.fetch;
+window.PLACES = [];
 window.fetch = (url, init) => {
+  if (String(url).startsWith("/api/place")) {  // the place box: two places, the second a point
+    PLACES.push(JSON.parse(init.body).q);
+    return Promise.resolve(new Response(JSON.stringify({places: [
+      {name: "Kraków, Polska", lat: 50.06, lon: 19.94, bbox: [49.97, 19.79, 50.13, 20.22], type: "city"},
+      {name: "Giewont, Polska", lat: 49.2508, lon: 19.9339, bbox: null, type: "peak"}]}),
+      {headers: {"content-type": "application/json"}}));
+  }
   if (!String(url).startsWith("/api/estimate")) return realFetch(url, init);
   ESTIMATES.push(JSON.parse(init.body));
   return new Promise((resolve) => setTimeout(() => resolve(new Response(JSON.stringify({source: "test", resolution: 1,
@@ -442,10 +450,14 @@ run({
   admin(next) {
     if (!ADMIN) return next();
     location.hash = "#admin";
-    wait(() => $$(".fa-admin h3").length > 2, () => {
-      result.admin = $$(".fa-admin h3").map((h) => h.textContent);
-      location.hash = "#home";
-      wait(() => $(".c-cards, .c-empty"), next);
+    wait(() => $$(".c-admin .u-panel-head h2").length > 3, () => {
+      result.admin = $$(".c-admin .u-panel-head h2").map((h) => h.textContent);
+      location.hash = "#osm";  // the extracts' own page, beside its map
+      wait(() => $$(".c-osm > p, .c-osm .c-admin-row").length > 1, () => {  // the intro and the regions
+        result.osm = $$(".c-osm h2").map((h) => h.textContent);
+        location.hash = "#home";
+        wait(() => $(".c-cards, .c-empty"), next);
+      });
     });
   },
   share(next) {
@@ -557,7 +569,8 @@ def test_shell_c_public(tmp_path, clip_run, monkeypatch):
         r = signed_in({"id": 1, "login": "admin"}, True, "edge-admin")  # adopts nothing: A's run has its owner
         assert "timeout" not in r and "error" not in r, json.dumps(r)
         assert "Admin" in r["account"] and r["name"] == "admin", r
-        assert {"Users", "All searches", "Runs"} <= set(r["admin"]), r
+        assert {"Server", "Users", "All searches", "Runs", "OpenStreetMap extracts"} <= set(r["admin"]), r
+        assert r["osm"] == ["At the map centre", "Downloaded"] and "OpenStreetMap extracts" in r["account"], r
         assert r["csp"] == []
         r = signed_in({"id": 11, "login": "a"}, False, "edge-a")
         assert "timeout" not in r and "error" not in r, json.dumps(r)

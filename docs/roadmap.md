@@ -173,10 +173,12 @@ Users found the app hard to navigate.
   - The choice between B, C and D (D is the user's current preference).
   - Then:
     - the winner's result view in `map.html` (from disk and share links), removing the copies noted in `result/model.ts`;
-    - the old app removed;
-    - the orthophoto in B's results;
-    - a place-name search box;
-    - the old Admin/OSM panels in the new look.
+    - the old app removed (next, the user: after the three items below).
+  - Done (2026-10-29):
+    - the orthophoto in B's results: `PlaceMap.setRunOrtho` puts the run's layer into the one map's layer switch while its result is shown (C and D had it already); `orthoForApp` is one function in `result/load.ts`.
+    - a place-name box at the top of the search panel (B, C, D): a name looked up on Enter only (Nominatim's usage policy allows no lookups while typing), `POST /api/place` → the worker's quick lane (`jobs.quick_place`, `osm.places`: up to 5 matches with their boxes, cached in the table `places` of `nominatim.sqlite`, migration 2), the rate `place_rate` and the user's `nominatim_day_max`; picking a match moves the map, the centre is still set by a click. Decided: own component (`search/PlaceBox.tsx`), not leaflet-control-geocoder, which would still need an adapter to `/api/place`, brings its own light styles and sits on the map rather than in the panel.
+    - the sign-in, privacy and about pages (server-rendered, no script) in the kit's look: `ui/pages.css` in `/app/app.css`, the theme of the system (a page without a script cannot read the app's choice); the sign-in card with the providers' marks (Google's button after its branding guidelines, GitHub's mark monochrome), the demo runs as cards.
+    - Admin and OSM in the new look (C and D): `app/c/AdminC.tsx` a page of panels without a map (server, users, searches, runs, a link to the extracts), `app/c/OsmC.tsx` the extracts beside the map (also for administrators of the public site, as the old Admin tab had them). B keeps the old panels until the old app goes.
   - Small fixes noticed (2026-10-29):
     - Done: on phones (B, C, D) a selected row leaves the sheet at half the map, and at full it stays below the top bar (`Sheet` measured its parent, which in the result is `display: contents`, so it had no height and grew with its content; it measures its positioned ancestor now, `top` keeps room for the bar).
     - Done: the map's controls in the dark theme, one set of rules in `ui/ui.css` for every prototype instead of copies per shell (D had none; Leaflet's light grey of focused and disabled buttons and the white layers box are covered).

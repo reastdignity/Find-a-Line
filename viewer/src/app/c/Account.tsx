@@ -1,7 +1,7 @@
 // C's account: the user (the public site: name, privacy and about, sign out; Admin for administrators),
-// the OSM extracts locally, the theme and the way to the other interfaces. A menu under the header's
-// account button on desktops, a page (#account) on phones. The Admin and OSM pages embed the old app's
-// panels next to a map they need (the OSM regions around its centre).
+// the OSM extracts locally and for administrators, the theme and the way to the other interfaces. A menu
+// under the header's account button on desktops, a page (#account) on phones. The Admin page (AdminC) is a
+// page of panels; the OSM page (OsmC) a panel next to the map it needs (the regions around its centre).
 
 import { useEffect, useRef, useState } from "preact/hooks";
 import type { ComponentChildren } from "preact";
@@ -9,11 +9,11 @@ import { Button, Segmented, type Theme } from "../../ui/components";
 import { Icon } from "../../ui/icons";
 import { storeTheme, uiHref, type UiChoice } from "../../ui/choice";
 import { Popover } from "../../result/view";
-import { AdminPanel } from "../Admin";
 import { api, user } from "../api";
-import { OsmPanel } from "../OsmPanel";
 import { PlaceMap } from "../PlaceMap";
 import type { Job } from "../api";
+import { AdminC } from "./AdminC";
+import { OsmC } from "./OsmC";
 import { go } from "./route";
 
 const THEMES = [{value: "auto" as const, label: "Auto"}, {value: "light" as const, label: "Light"},
@@ -33,7 +33,7 @@ export function AccountBody({theme, setTheme, onPick, tries = TRIES_C}:
     </div>
     <nav class="c-account-links">
       {!user.local && user.admin && <a class="c-menu-item" href="#admin" onClick={pick}><Icon name="user" />Admin</a>}
-      {user.local && <a class="c-menu-item" href="#osm" onClick={pick}><Icon name="layers" />OpenStreetMap extracts</a>}
+      {(user.local || user.admin) && <a class="c-menu-item" href="#osm" onClick={pick}><Icon name="layers" />OpenStreetMap extracts</a>}
       {!user.local && <a class="c-menu-item" href="/privacy" target="_blank"><Icon name="info" />Privacy</a>}
       {!user.local && <a class="c-menu-item" href="/about" target="_blank"><Icon name="info" />About and data licences</a>}
       {tries.map((ui) => ui === "old"
@@ -60,7 +60,7 @@ export function AccountMenu({theme, setTheme, tries}: {theme: Theme; setTheme(t:
   </Popover>;
 }
 
-/** A page with an old panel on the left and the map it uses on the right. */
+/** A page with a panel on the left and the map it uses on the right (below it on phones). */
 export function MapPage({title, children}: {title: string; children: (place: PlaceMap) => ComponentChildren}) {
   const ref = useRef<HTMLDivElement>(null);
   const [place, setPlace] = useState<PlaceMap | null>(null);
@@ -74,7 +74,7 @@ export function MapPage({title, children}: {title: string; children: (place: Pla
     return () => { observer.disconnect(); placeMap.map.remove(); };
   }, []);
   return <div class="c-mappage">
-    <aside class="c-oldpanel" aria-label={title}>
+    <aside class="c-sidepanel" aria-label={title}>
       <h1 class="u-h">{title}</h1>
       {place && children(place)}
     </aside>
@@ -84,13 +84,11 @@ export function MapPage({title, children}: {title: string; children: (place: Pla
 
 export function AdminPage({jobs}: {jobs: Job[]}) {
   if (user.local || !user.admin) return <div class="c-page"><p>Administrators of the public site only.</p></div>;
-  return <MapPage title="Admin">{(place) => <AdminPanel place={place} jobs={jobs} onStarted={() => go("#home")} />}</MapPage>;
+  return <AdminC jobs={jobs} />;
 }
 
 export function OsmPage() {
-  if (!user.local) return <div class="c-page"><p>On the local app only.</p></div>;
-  return <MapPage title="OpenStreetMap extracts">{(place) =>
-    <><p class="u-small">The regions around the map's centre.</p>
-      <OsmPanel place={place} onStarted={() => go("#home")} /></>}</MapPage>;
+  if (!user.local && !user.admin) return <div class="c-page"><p>The local app and administrators only.</p></div>;
+  return <MapPage title="OpenStreetMap extracts">{(place) => <OsmC place={place} onStarted={() => go("#home")} />}</MapPage>;
 }
 

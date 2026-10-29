@@ -10,6 +10,7 @@ import shadowUrl from "leaflet/dist/images/marker-shadow.png";
 import { render } from "preact";
 import { useEffect, useRef, useState } from "preact/hooks";
 import "./app.css";
+import "../ui/pages.css";
 import { api, user, type Field, type RunListed, type SearchRequest } from "./api";
 import { JobList } from "./Jobs";
 import { useJobs } from "./useJobs";

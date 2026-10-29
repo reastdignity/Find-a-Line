@@ -607,13 +607,13 @@ class Jobs:
 
     def quick_add(self, kind: str, request: Dict, user_id: Optional[int] = None, unlimited: bool = False,
                   one_waiting: bool = False) -> int:
-        """A task for the quick lane ("estimate" or "profile") of a user (`unlimited`: without the
+        """A task for the quick lane (a kind of QUICK) of a user (`unlimited`: without the
         worker's Limits); its id. With `one_waiting` (the public site), QuotaExceeded while another
         task of the same user waits (checked in the insert's transaction)."""
         with self._write() as db:
             if one_waiting and user_id is not None and db.execute(
                     "SELECT 1 FROM quick WHERE user_id = ? AND status = 'waiting' LIMIT 1", (user_id,)).fetchone():
-                raise QuotaExceeded("another estimate or profile of yours is still waiting: try again when it "
+                raise QuotaExceeded("another estimate, profile or place lookup of yours is still waiting: try again when it "
                                     "is answered")
             return db.execute("INSERT INTO quick (kind, request, status, created, user_id, unlimited) "
                               "VALUES (?, ?, 'waiting', ?, ?, ?)",
@@ -924,7 +924,14 @@ def quick_profile(data_dir: str, request: Dict, limits: Optional[Limits] = None)
         cache.remove_work(paths.work)
 
 
-QUICK = {"estimate": quick_estimate, "profile": quick_profile}
+def quick_place(data_dir: str, request: Dict, limits: Optional[Limits] = None) -> Dict:
+    """The places of a name (/api/place: {"q": name}) for the app's place box; Nominatim through
+    osm.places (cached, counted by nominatim_quota)."""
+    import osm
+    return {"places": osm.places(request["q"], os.path.join(data_dir, "cache"))}
+
+
+QUICK = {"estimate": quick_estimate, "profile": quick_profile, "place": quick_place}
 
 
 def run_quick(data_dir: str, worker_id: str, parent: int, limits: Optional[Limits] = None, public: bool = False):

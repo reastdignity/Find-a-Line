@@ -173,7 +173,10 @@ BEFORE_REQUEST: Optional[Callable[[], None]] = None
 MIGRATIONS = [
     """CREATE TABLE IF NOT EXISTS search (query TEXT PRIMARY KEY, answer TEXT, fetched_at TEXT);
     CREATE TABLE IF NOT EXISTS reverse (query TEXT PRIMARY KEY, answer TEXT, fetched_at TEXT);""",
+    # 2: the places of a name (places(): the web app's place box), apart from the areas of `search`
+    "CREATE TABLE IF NOT EXISTS places (query TEXT PRIMARY KEY, answer TEXT, fetched_at TEXT);",
 ]
+PLACES_MAX = 5  # matches of a name the place box lists
 
 
 def _nominatim_db(cache_dir: str) -> sqlite3.Connection:
@@ -273,6 +276,22 @@ def search(name: str, cache_dir: str) -> Dict:
     # The first match with an area (a peak or a bus stop is a point)
     answer = next((r for r in found if r.get("geojson", {}).get("type") in ("Polygon", "MultiPolygon")), {})
     return _store(cache_dir, "search", name, answer)
+
+
+def places(name: str, cache_dir: str) -> List[Dict]:
+    """The Nominatim matches of a name to move a map to (the web app's place box, no outlines): at
+    most PLACES_MAX of {"name", "lat", "lon", "bbox": [S, W, N, E], "type"}; [] if none. Cached per
+    name (stripped, case folded), apart from search()'s areas."""
+    key = " ".join(name.split()).casefold()
+    answer = _cached(cache_dir, "places", key)
+    if answer is None:
+        found = _ask(SEARCH_URL, {"q": key, "format": "jsonv2", "limit": PLACES_MAX}, 30, cache_dir)
+        matches = [{"name": r.get("display_name", ""), "lat": float(r["lat"]), "lon": float(r["lon"]),
+                    # Nominatim's box is [S, N, W, E] as strings
+                    "bbox": [float(r["boundingbox"][i]) for i in (0, 2, 1, 3)] if r.get("boundingbox") else None,
+                    "type": r.get("type") or r.get("category") or ""} for r in found if "lat" in r and "lon" in r]
+        answer = _store(cache_dir, "places", key, {"places": matches[:PLACES_MAX]} if matches else {})
+    return answer.get("places", [])
 
 
 def reverse(lat: float, lon: float, cache_dir: str, **params) -> Dict:

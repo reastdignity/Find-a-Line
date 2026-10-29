@@ -1,0 +1,58 @@
+/* The server-rendered pages of the public site (web.py: SIGNIN_HTML, PAGE_HTML: sign-in, privacy, about) in
+   the kit's look: no script, so the theme follows the system (tokens.css); classes p-*, under .ui. */
+
+.ui.p-body { height: 100%; overflow-y: auto; }
+.ui .p-page { max-width: 760px; margin: 0 auto; padding: 40px 16px 24px; display: flex; flex-direction: column; gap: 20px; }
+.ui .p-signin { max-width: 680px; }
+.ui .p-brand { display: flex; flex-direction: column; align-items: center; gap: 6px; text-align: center; }
+.ui .p-brand .u-logo { font-size: 30px; text-decoration: none; }
+.ui .p-brand .u-logo svg { width: 40px; height: 24px; }
+.ui .p-doc .p-brand { align-items: flex-start; }
+.ui .p-doc .p-brand .u-logo { font-size: 22px; }
+.ui .p-doc .p-brand .u-logo svg { width: 30px; height: 18px; }
+.ui .p-lead { margin: 0; color: var(--ink-2); font-size: 15px; }
+.ui .p-card { background: var(--surface); border: 1px solid var(--line); border-radius: 14px; box-shadow: var(--shadow);
+  padding: 22px 24px; display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+.ui .p-card > * { margin: 0; }
+.ui .p-signin .p-card { align-self: center; width: 100%; max-width: 400px; align-items: stretch; text-align: center; }
+.ui .p-error { color: var(--bad); background: var(--bad-soft); border-radius: 8px; padding: 8px 12px; text-align: left; }
+.ui .p-providers { display: flex; flex-direction: column; gap: 10px; }
+.ui .p-card form { display: flex; justify-content: center; }
+
+/* Sign-in buttons with the providers' marks. Google's follows its branding guidelines (white or dark
+   fill, its grey stroke, the four-colour G unchanged, 40 px high); GitHub's mark is monochrome. */
+.ui .p-provider { display: inline-flex; align-items: center; justify-content: center; gap: 10px; height: 40px; padding: 0 12px;
+  border-radius: 4px; font: 500 14px/20px Roboto, var(--font); text-decoration: none; cursor: pointer; }
+.ui .p-provider svg { width: 20px; height: 20px; flex: none; }
+.ui .p-google { background: #ffffff; border: 1px solid #747775; color: #1f1f1f; }
+.ui .p-google:hover { background: #f2f2f2; }
+.ui .p-github { background: #24292f; border: 1px solid #24292f; color: #ffffff; }
+.ui .p-github:hover { background: #32383f; }
+.ui .p-github svg { fill: currentColor; }
+@media (prefers-color-scheme: dark) {
+  .ui .p-google { background: #131314; border-color: #8e918f; color: #e3e3e3; }
+  .ui .p-google:hover { background: #1e1f20; }
+  .ui .p-github { background: #f6f8fa; border-color: #f6f8fa; color: #1f2328; }
+  .ui .p-github:hover { background: #e6eaef; }
+}
+
+/* The demo runs as cards (as C's Home) */
+.ui .p-examples { display: flex; flex-direction: column; gap: 10px; }
+.ui .p-cards { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 12px; }
+.ui .p-ex { height: 100%; display: flex; flex-direction: column; gap: 4px; padding: 14px 16px; background: var(--surface);
+  border: 1px solid var(--line); border-radius: 14px; color: var(--ink); text-decoration: none; min-width: 0; }
+.ui .p-ex b { overflow-wrap: anywhere; }
+.ui a.p-ex:hover { border-color: var(--accent); box-shadow: var(--shadow); }
+.ui .p-open { margin-top: auto; padding-top: 6px; color: var(--accent); font-weight: 500; }
+
+/* Privacy and about: text */
+.ui .p-prose { line-height: 1.55; }
+.ui .p-prose h2 { font: 600 18px/1.2 var(--display); margin: 10px 0 0; }
+.ui .p-prose ul { padding-left: 1.2em; display: flex; flex-direction: column; gap: 4px; }
+.ui .p-facts dt { font-weight: 600; margin-top: 10px; }
+.ui .p-facts dt:first-child { margin-top: 0; }
+.ui .p-facts dd { margin: 2px 0 0; color: var(--ink-2); }
+
+.ui .p-footer { display: flex; flex-wrap: wrap; justify-content: center; gap: 4px 14px; padding-top: 12px; border-top: 1px solid var(--line);
+  color: var(--muted); font-size: 12.5px; }
+.ui .p-footer a { color: var(--ink-2); }

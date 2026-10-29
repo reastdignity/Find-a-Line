@@ -105,6 +105,9 @@ export interface OsmRegion { id: string; name: string; depth: number; downloaded
 export interface OsmExtract { id: string; mb: number; data: string | null; checked: string | null }
 export interface OsmState { regions: OsmRegion[]; extracts: OsmExtract[] }
 
+/** A match of the place box (/api/place, osm.places): bbox [S, W, N, E] or null for a point. */
+export interface Place { name: string; lat: number; lon: number; bbox: [number, number, number, number] | null; type: string }
+
 export interface SearchRequest {
   params: Record<string, unknown>;
   geometry: GeoJSON | null;
@@ -143,6 +146,7 @@ export const api = {
   usage: () => call<Usage>("GET", "/api/usage"),
   /** `signal` aborts the request: the server forgets its waiting task (a newer one replaces it). */
   estimate: (request: SearchRequest, signal?: AbortSignal) => call<Estimate>("POST", "/api/estimate", request, signal),
+  places: (q: string) => call<{places: Place[]}>("POST", "/api/place", {q}),
   start: (request: SearchRequest) => call<{id: string}>("POST", "/api/jobs", request),
   jobs: () => call<{jobs: Job[]; seq: number; worker: boolean}>("GET", "/api/jobs"),
   jobEvents: (id: string) => call<{events: JobEvent[]}>("GET", `/api/jobs/${encodeURIComponent(id)}/events`),

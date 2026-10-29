@@ -10,7 +10,7 @@ import type { FeatureCollection, GeoJSON } from "geojson";
 import L from "leaflet";
 import { baseLayers } from "../layers";
 import { COLORS } from "../style";
-import type { Line } from "../types";
+import type { Line, Ortho } from "../types";
 
 export type Mode = "point" | "draw" | "file" | "preset";
 const COLOR = "#1f77b4";
@@ -29,6 +29,9 @@ export class PlaceMap {
   private mode: Mode = "point";
   private hidden = false;    // setSearchVisible(false)
   private controls: L.ControlPosition;  // of the zoom buttons, the layers and the drawing tools
+  private layers: L.Control.Layers;
+  private first: L.Layer;    // the default base layer
+  private ortho: L.Layer | null = null;  // the orthophoto of the run shown (setRunOrtho)
   onPoint: (lat: number, lon: number) => void = () => {};
   onDrawn: () => void = () => {};
 
@@ -40,8 +43,8 @@ export class PlaceMap {
     if (options.controls) L.control.zoom({position: options.controls}).addTo(this.map);
     L.control.scale().addTo(this.map);
     const layers = baseLayers(null, MAX_ZOOM);
-    Object.values(layers)[0].addTo(this.map);
-    L.control.layers(layers, {}, {position: options.controls ?? "topright"}).addTo(this.map);
+    this.first = Object.values(layers)[0].addTo(this.map);
+    this.layers = L.control.layers(layers, {}, {position: options.controls ?? "topright"}).addTo(this.map);
     this.drawn.addTo(this.map);
     this.shown.addTo(this.map);
     this.preview.addTo(this.map);
@@ -90,6 +93,22 @@ export class PlaceMap {
     if (mode === "draw") this.drawn.addTo(this.map); else this.drawn.remove();
     if (mode === "file") this.shown.addTo(this.map); else this.shown.remove();
     this.map.getContainer().style.cursor = point ? "crosshair" : "";
+  }
+
+  /** The orthophoto of a run among the base layers while its result is shown (null: none, as when
+   *  the result is left); a layer it replaces is taken off the map too, the default layer shown then. */
+  setRunOrtho(ortho: Ortho | null, maxZoom = MAX_ZOOM) {
+    if (this.ortho) {
+      this.layers.removeLayer(this.ortho);
+      if (this.map.hasLayer(this.ortho)) {
+        this.ortho.remove();
+        this.first.addTo(this.map);
+      }
+      this.ortho = null;
+    }
+    if (!ortho) return;
+    this.ortho = baseLayers(ortho, maxZoom)[ortho.name] ?? null;
+    if (this.ortho) this.layers.addBaseLayer(this.ortho, ortho.name);
   }
 
   /** The centre of the circle and its radius in metres. */

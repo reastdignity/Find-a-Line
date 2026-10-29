@@ -112,7 +112,7 @@ def test_nominatim_cache_migration_keeps_rows(tmp_path, monkeypatch):
     assert osm.search("Nowhere", cache_dir) == {}
     assert asked == []
     db = sqlite3.connect(os.path.join(cache_dir, "osm", "nominatim.sqlite"))
-    assert db.execute("PRAGMA user_version").fetchone()[0] == len(osm.MIGRATIONS) == 1
+    assert db.execute("PRAGMA user_version").fetchone()[0] == len(osm.MIGRATIONS) == 2
     assert db.execute("SELECT COUNT(*) FROM search").fetchone()[0] == 2
     db.close()
 
@@ -151,6 +151,26 @@ def test_nominatim_large_answers_are_simplified(tmp_path, monkeypatch):
     assert len(json.dumps(first)) <= osm.MAX_ANSWER_BYTES
     assert first["name"] == "Big" and len(first["geojson"]["coordinates"][0]) < 5000
     assert osm.search("Big", cache_dir) == first and asked == ["Big"]
+
+
+def test_places_of_a_name(tmp_path, monkeypatch):
+    """osm.places: the matches of a name with their boxes as [S, W, N, E], at most PLACES_MAX, cached per
+    name stripped and case folded, apart from search()'s areas; none is [] (stored, asked again later)."""
+    import osm
+    cache_dir = str(tmp_path)
+    town = {"display_name": "Kraków, Polska", "lat": "50.06", "lon": "19.94", "type": "city",
+            "boundingbox": ["49.97", "50.13", "19.79", "20.22"]}
+    peak = {"display_name": "Giewont", "lat": "49.25", "lon": "19.93", "category": "natural"}
+    asked = _fake_nominatim(monkeypatch, {"kraków": [town] * 7, "giewont": [peak]})
+    places = osm.places("  Kraków ", cache_dir)
+    assert len(places) == osm.PLACES_MAX
+    assert places[0] == {"name": "Kraków, Polska", "lat": 50.06, "lon": 19.94, "bbox": [49.97, 19.79, 50.13, 20.22],
+                         "type": "city"}
+    assert osm.places("KRAKÓW", cache_dir) == places and asked == ["kraków"]
+    assert osm.places("Giewont", cache_dir)[0]["bbox"] is None
+    assert osm.places("Nowhere", cache_dir) == [] and osm.places("nowhere", cache_dir) == []
+    assert asked == ["kraków", "giewont", "nowhere"]
+    assert osm.search("Kraków", cache_dir) == {} and asked[-1] == "Kraków"  # its own table
 
 
 @contextlib.contextmanager

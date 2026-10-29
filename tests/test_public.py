@@ -1572,6 +1572,25 @@ def test_public_time_limits_and_one_waiting_estimate(tmp_path, settings, account
         client.close()
 
 
+def test_place_lookup(tmp_path, settings, account_settings, providers):
+    """/api/place: signed-in users only, a name of 1 to PLACE_CHARS_MAX characters, the place rate of a
+    limited user; answered by the worker's quick lane (503 without one)."""
+    from settings import Limits
+    limits = Limits.load(public=True).model_copy(update={"place_rate": "2/minute"})
+    app = _public_app(tmp_path, settings, account_settings, providers, limits=limits)
+    with TestClient(app, base_url=URL) as visitor:
+        headers = {"x-findaline-token": TOKEN, "origin": URL}
+        assert visitor.post("/api/place", json={"q": "Kraków"}, headers=headers).status_code == 401
+    people = _clients(app, tmp_path, account_settings, ("a", "unlimited"))
+    a = people["a"]
+    for body in ({}, {"q": " "}, {"q": 5}, {"q": "x" * (web.PLACE_CHARS_MAX + 1)}):
+        assert a.post("/api/place", json=body).status_code == 400, body
+    assert [a.post("/api/place", json={"q": "Kraków"}).status_code for _ in range(3)] == [503, 503, 429]
+    assert {people["unlimited"].post("/api/place", json={"q": "Kraków"}).status_code for _ in range(3)} == {503}
+    for client in people.values():
+        client.close()
+
+
 def test_new_jobs_rate_and_quota_before_validation(tmp_path, settings, account_settings, providers,
                                                     monkeypatch):
     """/api/jobs refuses a user over a quota before it validates the request (a large drawn geometry

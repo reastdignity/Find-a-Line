@@ -106,6 +106,18 @@ play({
       result.searchHidden = !window.FINDALINE_PLACE.searchVisible;
       result.pill = text(".b-pill-name");
       result.sameMap = window.FINDALINE_MAP === window.FINDALINE_PLACE.map;
+      // A run's orthophoto joins the base layers of the one map and leaves with the result (the clip's
+      // run has none: given by hand), the default layer shown again when it was the one shown
+      const place = window.FINDALINE_PLACE, labels = () => $$(".leaflet-control-layers-base label").map((l) => l.textContent.trim());
+      const shown = () => labels().filter((_, k) => $$(".leaflet-control-layers-base input")[k].checked);
+      const before = labels();
+      place.setRunOrtho({name: "Test ortho", url: null, layer: "", attribution: "", base: {url: "/cache/none/{z}/{x}/{y}.jpg",
+                         max_zoom: 18}, cache: null}, 21);
+      const added = labels();
+      $$(".leaflet-control-layers-base label").find((l) => l.textContent.trim() === "Test ortho").querySelector("input").click();
+      const chosen = shown();
+      place.setRunOrtho(null);
+      result.ortho = [before.includes("Test ortho"), added.includes("Test ortho"), chosen, labels().includes("Test ortho"), shown()];
       next();
     });
   },
@@ -232,6 +244,7 @@ def test_search_follows_into_results(tmp_path, monkeypatch):
     assert re.search(r"^\d+ lines in \d+ spots$", r["counts"]) and not r["toast"], r
     assert r["hash"] == "#run=" + urllib.parse.quote(run_id, safe=""), r
     assert r["sort"] == ["clr", True] and r["searchHidden"] and r["sameMap"], r
+    assert r["ortho"] == [False, True, ["Test ortho"], False, ["OpenTopoMap"]], r
     assert r["title"] == r["expected"] and r["eyebrow"].startswith(f"Spot 1 of {r['spots']}"), r
     assert r["profile"].startswith("Profile: ") and r["lineHash"], r
     assert r["stepped"][0].startswith(f"Spot 2 of {r['spots']}") and r["stepped"][1] == 1, r

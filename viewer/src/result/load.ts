@@ -2,7 +2,7 @@
 // (script-src 'self') allows and web.RunFiles serves only to who may open the run. The lines of
 // other runs still come from their lines.js (others.loadLines).
 
-import type { RunData, RunInfo } from "../types";
+import type { Ortho, RunData, RunInfo } from "../types";
 
 const loaded = new Map<string, Promise<RunData>>();
 
@@ -30,6 +30,14 @@ export function loadRun(id: string, base = "/runs/"): Promise<RunData> {
   loaded.set(id, promise);
   promise.catch(() => { if (loaded.get(id) === promise) loaded.delete(id); });
   return promise;
+}
+
+/** The run's orthophoto for the app's page: its cache folder is relative to the run's map.html
+ * (`<base><id>/map.html`), the app's page is elsewhere. */
+export function orthoForApp(ortho: Ortho | null, runId: string, base = "/runs/"): Ortho | null {
+  if (!ortho || !ortho.cache) return ortho;
+  const map = `${location.origin}${base}${encodeURIComponent(runId)}/map.html`;
+  return {...ortho, cache: new URL(ortho.cache, map).pathname};
 }
 
 /** Forget a loaded run (e.g. after it was deleted). */

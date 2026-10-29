@@ -27,15 +27,28 @@ run({
     $(".c-new").click();
     wait(() => window.FINDALINE_PLACE && $(".s-panel") && $(".c-bar .s-start"), () => {
       result.newPage = [location.hash, text(".s-card.u-on b")];
-      window.FINDALINE_PLACE.map.fire("click", {latlng: POINT});
-      wait(() => text(".c-bar .s-bar-line").startsWith("Ready"), () => {
-        $(".c-bar .s-start").click();
-        wait(() => location.hash === "#home" && $(".c-card-new"), () => {
-          job = $(".c-card-new").dataset.job;
-          result.started = [job, $(".c-card-new").dataset.status];
-          next();
-        });
-      });
+      // The place box: Enter looks the name up, ↓ and Enter pick the second match, the map goes there
+      const box = $(".s-placebox input"), key = (k) => box.dispatchEvent(new KeyboardEvent("keydown", {key: k, bubbles: true}));
+      box.value = "Giewont";
+      box.dispatchEvent(new Event("input", {bubbles: true}));
+      later(() => { key("Enter"); wait(() => $$(".s-placebox-list li").length === 2, () => {
+        result.places = [PLACES.slice(), $$(".s-placebox-list li b").map((b) => b.textContent)];
+        key("ArrowDown");
+        later(() => { key("Enter"); later(() => {
+          const c = window.FINDALINE_PLACE.map.getCenter();
+          result.went = [Math.abs(c.lat - 49.2508) < 1e-3 && Math.abs(c.lng - 19.9339) < 1e-3,
+                         window.FINDALINE_PLACE.map.getZoom(), box.value, !$(".s-placebox-list")];
+          window.FINDALINE_PLACE.map.fire("click", {latlng: POINT});
+          wait(() => text(".c-bar .s-bar-line").startsWith("Ready"), () => {
+            $(".c-bar .s-start").click();
+            wait(() => location.hash === "#home" && $(".c-card-new"), () => {
+              job = $(".c-card-new").dataset.job;
+              result.started = [job, $(".c-card-new").dataset.status];
+              next();
+            });
+          });
+        }); }, 100);
+      }); }, 100);
     });
   },
   progress(next) {
@@ -151,6 +164,7 @@ def test_shell_d_desktop(data, tmp_path):
     assert set(r["home"][0]) == {SMALL, BIG} and r["home"][1] and r["home"][2], r
     assert all(t in r["account"] for t in ("Old interface", "Try B", "Try C")) and "Try D" not in r["account"], r
     assert r["newPage"] == ["#new", "Typical highline"] and r["started"][1] == "waiting" and r["done"] == 1, r
+    assert r["places"] == [["Giewont"], ["Kraków", "Giewont"]] and r["went"] == [True, 15, "Giewont", True], r
     layout = r["layout"]
     assert layout["hash"] == f"#run={SMALL}" and not layout["header"] and layout["name"] == "Small run", r
     assert layout["panelRight"] and layout["panelTall"] and layout["dockBottom"] and layout["dockLeftOfPanel"], r
