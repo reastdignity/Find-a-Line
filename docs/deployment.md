@@ -91,16 +91,20 @@ timer, SSH, the free disk).
     ```sh
     sudo fallocate -l 200G /srv/findaline-docker.img   # allocated whole, not a sparse file
     sudo chmod 600 /srv/findaline-docker.img
-    sudo mkfs.ext4 -E nodiscard -L findaline-docker /srv/findaline-docker.img
+    sudo mkfs.ext4 -E nodiscard,lazy_itable_init=0,lazy_journal_init=0 -L findaline-docker /srv/findaline-docker.img
     sudo mkdir -p /srv/docker
     echo '/srv/findaline-docker.img /srv/docker ext4 loop,nofail,X-fstrim.notrim 0 0' | sudo tee -a /etc/fstab
     sudo systemctl daemon-reload && sudo mount /srv/docker
     ```
     The image must stay allocated whole: a hole gives its space back to the system disk, and once
-    that is full, writes into the image fail. `mkfs` would punch holes without `nodiscard`, and
-    Ubuntu's weekly `fstrim.timer` without `X-fstrim.notrim`; never run `fstrim` on it by hand
-    (`deploy/vps.sh check` finds holes; `sudo fallocate -l 200G /srv/findaline-docker.img` fills
-    them again). To grow it later, online: `sudo fallocate -l 300G /srv/findaline-docker.img`,
+    that is full, writes into the image fail. The loop device zeroes ranges of the image by
+    punching holes in the file: `mkfs` would discard the whole image without `nodiscard`, the
+    kernel would zero the inode tables after the first mount without the two `lazy_..._init=0`
+    (about 1.5% of the image), Ubuntu's weekly `fstrim.timer` would trim it without
+    `X-fstrim.notrim`; never run `fstrim` on it by hand. ext4 still zeroes small ranges now and
+    then: `deploy/vps.sh check` reports more than 1 GiB of holes, and
+    `sudo fallocate -l 200G /srv/findaline-docker.img` (the image's size; `setup` does it too) fills
+    them again, safely while it is mounted. To grow it later, online: `sudo fallocate -l 300G /srv/findaline-docker.img`,
     then with `D=$(findmnt -no SOURCE /srv/docker)`: `sudo losetup -c $D && sudo resize2fs $D`.
 
   With `nofail` the server boots without the file system, so Docker must wait for it, or it would

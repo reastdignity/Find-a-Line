@@ -211,6 +211,13 @@ EOF
     fi
 }
 
+# Bytes of the disk image that are not allocated (holes)
+image_holes() {
+    local size blocks unit
+    read -r size blocks unit < <(stat -c '%s %b %B' "$IMAGE_FILE")
+    echo $((blocks * unit >= size ? 0 : size - blocks * unit))
+}
+
 # Without a block volume: a file of $DISK_IMAGE on the system disk with an ext4 of its own,
 # mounted at $DATA_ROOT (section 1, Disk). The file is allocated whole (fallocate, not a sparse
 # file), so the searches can fill it but never the system disk.
@@ -219,6 +226,10 @@ disk_image() {
     if awk -v dir="$DATA_ROOT" '$1 !~ /^#/ && $2 == dir { found = 1 } END { exit !found }' /etc/fstab; then
         mountpoint -q "$DATA_ROOT" || mount "$DATA_ROOT"
         note "$DATA_ROOT: $(df -h --output=size "$DATA_ROOT" | tail -n 1 | tr -d ' ') (in /etc/fstab already)"
+        if [ -f "$IMAGE_FILE" ] && [ "$(image_holes)" -gt 0 ]; then
+            note "$IMAGE_FILE: $(numfmt --to=iec "$(image_holes)") of holes filled again"
+            fallocate -l "$(stat -c %s "$IMAGE_FILE")" "$IMAGE_FILE"
+        fi
         return 0
     fi
     mountpoint -q "$DATA_ROOT" && die "$DATA_ROOT is mounted already, not from /etc/fstab"
@@ -237,8 +248,10 @@ disk_image() {
             || die "--disk-image $DISK_IMAGE leaves less than 10 GB of $(numfmt --to=iec "$free") free"
         fallocate -l "$bytes" "$IMAGE_FILE"
         chmod 600 "$IMAGE_FILE"
-        # nodiscard: mkfs would punch holes in the file, making it sparse again
-        mkfs.ext4 -q -E nodiscard -L findaline-docker "$IMAGE_FILE"
+        # nodiscard: mkfs would punch holes in the file, making it sparse again; no lazy init:
+        # the kernel would zero the inode tables after mounting, which the loop device does by
+        # punching holes (about 1.5% of the file)
+        mkfs.ext4 -q -E nodiscard,lazy_itable_init=0,lazy_journal_init=0 -L findaline-docker "$IMAGE_FILE"
         note "made $IMAGE_FILE ($DISK_IMAGE, ext4)"
     fi
     mkdir -p "$DATA_ROOT"
@@ -696,11 +709,16 @@ except OSError as e:
     [ "$free" -ge 20 ] && ok "$free GB free for Docker" || bad "$free GB free for Docker: the site accepts no searches below 20"
     if [ -f "$IMAGE_FILE" ]; then
         # Holes in the disk image (a trim, a copy) give its space back to the system disk, which
-        # a full one would then need for writes into the image
-        local size blocks unit
-        read -r size blocks unit < <(stat -c '%s %b %B' "$IMAGE_FILE")
-        [ $((blocks * unit)) -ge "$size" ] && ok "$IMAGE_FILE allocated whole" \
-            || bad "$IMAGE_FILE has holes: sudo fallocate -l $size $IMAGE_FILE (section 1, Disk)"
+        # a full one would then need for writes into the image. ext4 in the image zeroes small
+        # ranges now and then, which the loop device does by punching holes: up to 1 GiB is fine
+        # (setup fills them again)
+        local holes
+        holes=$(image_holes)
+        if [ "$holes" -le $((1024 ** 3)) ]; then
+            ok "$IMAGE_FILE allocated whole$([ "$holes" -gt 0 ] && echo " but $(numfmt --to=iec "$holes")")"
+        else
+            bad "$IMAGE_FILE has $(numfmt --to=iec "$holes") of holes: sudo fallocate -l $(stat -c %s "$IMAGE_FILE") $IMAGE_FILE (section 1, Disk)"
+        fi
     fi
     return "$FAILED"
 }
