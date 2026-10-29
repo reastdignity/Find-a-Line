@@ -207,3 +207,16 @@
 @media (prefers-reduced-motion: reduce) {
   .ui *, .ui *::before, .ui *::after { transition: none !important; animation-duration: 0s !important; animation-iteration-count: 1 !important; }
 }
+
+/* The Leaflet controls of the prototypes' maps, in both themes (the layers icon is a dark picture) */
+.ui .leaflet-bar a { background: var(--surface); color: var(--ink); border-color: var(--line); }
+.ui .leaflet-bar a:hover, .ui .leaflet-bar a:focus { background: var(--surface-2); }
+.ui .leaflet-bar a.leaflet-disabled { background: var(--surface); color: var(--muted); opacity: .6; }
+.ui .leaflet-bar, .ui .leaflet-control-layers { border-color: var(--line); box-shadow: var(--shadow); }
+.ui .leaflet-control-layers { background: var(--surface); color: var(--ink); }
+@media (prefers-color-scheme: dark) { .ui:not([data-theme="light"]) .leaflet-control-layers-toggle { filter: invert(.9); } }
+.ui[data-theme="dark"] .leaflet-control-layers-toggle { filter: invert(.9); }
+.ui .leaflet-control-scale-line { background: color-mix(in srgb, var(--surface) 80%, transparent); color: var(--ink); border-color: var(--ink-2); }
+.ui .leaflet-control-attribution { background: color-mix(in srgb, var(--surface) 80%, transparent); color: var(--ink-2); }
+.ui .leaflet-control-attribution a { color: var(--accent); }
+.ui .leaflet-tooltip { background: var(--surface); color: var(--ink); border-color: var(--line); }

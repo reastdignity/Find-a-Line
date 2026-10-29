@@ -49,7 +49,7 @@ export function SearchB({place, schema, initial, jobs, usage, runs, wide, onShow
     <p class="u-small">The place stays on the map. You can follow this search in My searches too.</p>
     <Button kind="primary" large full icon="plus" class="b-new" onClick={again}>New search</Button>
   </div>;
-  return <Sheet label={started ? "Your search" : "New search"} desktop="float" initial="half" peek={150}>
+  return <Sheet label={started ? "Your search" : "New search"} desktop="float" initial="half" peek={150} top={64}>
     {following || <SearchPanel place={place} schema={schema} onStarted={() => {}} search={search} variant="b"
                                usage={usage.usage} phone={!wide} />}
   </Sheet>;

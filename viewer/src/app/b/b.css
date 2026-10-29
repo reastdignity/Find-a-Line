@@ -13,16 +13,6 @@
 .ui.b-app .b-layer .u-side { z-index: 1; }
 .ui.b-app .b-panel-title { margin: 0; }
 
-/* The Leaflet controls in both themes */
-.ui.b-app .leaflet-bar a { background: var(--surface); color: var(--ink); border-color: var(--line); }
-.ui.b-app .leaflet-bar a:hover { background: var(--surface-2); }
-.ui.b-app .leaflet-bar, .ui.b-app .leaflet-control-layers { border-color: var(--line); box-shadow: var(--shadow); }
-.ui.b-app .leaflet-control-layers { background: var(--surface); color: var(--ink); }
-.ui.b-app .leaflet-control-layers-toggle { filter: none; }
-.ui.b-app .leaflet-control-scale-line { background: color-mix(in srgb, var(--surface) 80%, transparent); color: var(--ink); border-color: var(--ink-2); }
-.ui.b-app .leaflet-control-attribution { background: color-mix(in srgb, var(--surface) 80%, transparent); color: var(--ink-2); }
-.ui.b-app .leaflet-control-attribution a { color: var(--accent); }
-.ui.b-app .leaflet-tooltip { background: var(--surface); color: var(--ink); border-color: var(--line); }
 /* Results: the controls under the actions, left of the panel */
 .ui.b-app.b-in-run:not(.b-phone) .leaflet-top.leaflet-right { right: 396px; top: 52px; }
 .ui.b-app.b-phone .leaflet-top { top: 60px; }

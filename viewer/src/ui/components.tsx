@@ -239,23 +239,24 @@ export function BottomNav<T extends string>({items, value, onChange}:
 export type Snap = "peek" | "half" | "full";
 const SNAPS: Snap[] = ["peek", "half", "full"];
 
-/** The height of a snap state in a container of `height` pixels. */
-function snapHeight(snap: Snap, height: number, peek: number): number {
+/** The height of a snap state in a container of `height` pixels (`top`: kept free above it at full). */
+function snapHeight(snap: Snap, height: number, peek: number, top: number): number {
   if (snap === "peek") return Math.min(peek, height);
   if (snap === "half") return Math.max(Math.min(peek, height), Math.round(height * 0.5));
-  return Math.max(0, height - 16);
+  return Math.max(Math.min(peek, height), height - top);
 }
 
 /** A bottom sheet on phones: peek, half or full height, dragged by its handle (pointer events, so
  *  touch too), or moved one state with a click or the arrow keys. Wider screens (`DESKTOP`) get
  *  `desktop`: a panel at the left or right side (full height), floating (its content's height), docked
  *  (in the page's flow, e.g. a flex column) or the sheet as on phones. Its position is absolute in
- *  the nearest positioned ancestor (the map's container). `snap`/`onSnap` control it, or it keeps
- *  its own state from `initial`. */
-export function Sheet({label, header, children, snap, onSnap, initial = "half", peek = 120,
+ *  the nearest positioned ancestor (the map's container), whose height the states divide; at full it
+ *  leaves `top` pixels above it (a top bar). `snap`/`onSnap` control it, or it keeps its own state
+ *  from `initial`. */
+export function Sheet({label, header, children, snap, onSnap, initial = "half", peek = 120, top = 16,
                        desktop = "left"}:
                       {label: string; header?: ComponentChildren; children?: ComponentChildren; snap?: Snap;
-                       onSnap?: (snap: Snap) => void; initial?: Snap; peek?: number;
+                       onSnap?: (snap: Snap) => void; initial?: Snap; peek?: number; top?: number;
                        desktop?: "left" | "right" | "float" | "docked" | "sheet"}) {
   const wide = useMedia(DESKTOP);
   const [own, setOwn] = useState<Snap>(initial);
@@ -267,7 +268,8 @@ export function Sheet({label, header, children, snap, onSnap, initial = "half", 
   const [box, setBox] = useState(0);  // the container's height
 
   useEffect(() => {
-    const parent = ref.current?.parentElement;
+    // The positioned ancestor, not the parent: that may have no box (display: contents)
+    const parent = (ref.current?.offsetParent ?? ref.current?.parentElement) as HTMLElement | null | undefined;
     if (!parent) return;
     const measure = () => setBox(parent.clientHeight);
     measure();
@@ -285,7 +287,7 @@ export function Sheet({label, header, children, snap, onSnap, initial = "half", 
     </section>;
   }
 
-  const height = dragHeight ?? snapHeight(current, box, peek);
+  const height = dragHeight ?? snapHeight(current, box, peek, top);
   const step = (by: number) => set(SNAPS[Math.max(0, Math.min(2, SNAPS.indexOf(current) + by))]);
   const down = (e: PointerEvent) => {
     (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
@@ -293,7 +295,7 @@ export function Sheet({label, header, children, snap, onSnap, initial = "half", 
   };
   const move = (e: PointerEvent) => {
     if (!drag) return;
-    const next = Math.max(Math.min(peek, box) * 0.5, Math.min(box, drag.from + drag.start - e.clientY));
+    const next = Math.max(Math.min(peek, box) * 0.5, Math.min(box - top, drag.from + drag.start - e.clientY));
     setDrag({...drag, height: next});
     setDragHeight(next);
   };
@@ -307,7 +309,7 @@ export function Sheet({label, header, children, snap, onSnap, initial = "half", 
     const target = drag.height + (drag.height - drag.from) * 0.3;
     let best: Snap = current, distance = Infinity;
     for (const s of SNAPS) {
-      const d = Math.abs(snapHeight(s, box, peek) - target);
+      const d = Math.abs(snapHeight(s, box, peek, top) - target);
       if (d < distance) { best = s; distance = d; }
     }
     set(best);

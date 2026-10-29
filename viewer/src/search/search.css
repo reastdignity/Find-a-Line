@@ -100,10 +100,6 @@
 .ui.s-kit .s-job-head b { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .ui.s-kit .s-job-error { color: var(--bad); font-size: 12.5px; }
 .ui.s-kit .s-sheet-jobs { display: flex; flex-direction: column; gap: 10px; margin-top: 18px; }
-.ui.s-kit .leaflet-bar a { background: var(--surface); color: var(--ink); border-color: var(--line); }
-.ui.s-kit .leaflet-bar a:hover { background: var(--surface-2); }
-.ui.s-kit .leaflet-bar, .ui.s-kit .leaflet-control-layers { border-color: var(--line); box-shadow: var(--shadow); }
-.ui.s-kit .leaflet-control-layers-expanded { background: var(--surface); color: var(--ink); }
 @media (max-width: 1199px) and (min-width: 768px) {
   .ui.s-kit:not(.s-cols) .s-kit-toggle { left: auto; right: 344px; transform: none; }
 }

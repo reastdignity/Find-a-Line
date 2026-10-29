@@ -157,7 +157,7 @@ export function AppB() {
   const menuButton = <IconButton icon="menu" label="Menu" round on={menu} class="b-menu-button"
                                  onClick={() => setMenu(!menu)} />;
   const panel = (title: string, body: ComponentChildren, cls = "") =>
-    <Sheet label={title} desktop="float" initial="half" peek={150}
+    <Sheet label={title} desktop="float" initial="half" peek={150} top={64}
            header={<h2 class={`u-h b-panel-title ${cls}`}>{title}</h2>}>{body}</Sheet>;
 
   return <Screen theme={theme} class={`u-app-b b-app b-in-${section}${wide ? "" : " b-phone"}`}>

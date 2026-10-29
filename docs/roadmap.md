@@ -177,11 +177,11 @@ Users found the app hard to navigate.
     - the orthophoto in B's results;
     - a place-name search box;
     - the old Admin/OSM panels in the new look.
-  - Small fixes noticed (2026-10-29), not done yet:
-    - C/D mini maps (`app/c/Thumb.tsx`): today the frame is filled with as many OpenTopoMap tiles as it needs. The user wants **one tile per mini map**: the largest zoom at which the whole shape lies in one tile, the frame a crop of that tile (fewer requests to OpenTopoMap).
-    - Phones (B and D): selecting a row leaves the sheet nearly full height, its top under the top bar.
-    - Dark theme: the map's zoom buttons stay light in D (its map styles come from `c.css`).
-    - The B/C shell tests failed once in about 15 runs (2026-10-29); the error text was not kept, and 12 runs since passed.
+  - Small fixes noticed (2026-10-29):
+    - Done: on phones (B, C, D) a selected row leaves the sheet at half the map, and at full it stays below the top bar (`Sheet` measured its parent, which in the result is `display: contents`, so it had no height and grew with its content; it measures its positioned ancestor now, `top` keeps room for the bar).
+    - Done: the map's controls in the dark theme, one set of rules in `ui/ui.css` for every prototype instead of copies per shell (D had none; Leaflet's light grey of focused and disabled buttons and the white layers box are covered).
+    - Done: the B/C shell tests' rare failure was a canvas redraw after leaving a result ("clearRect of undefined": Leaflet binds the redraw when it asks for the frame); `ResultMap`'s renderers skip a redraw without a canvas.
+    - Dropped (the user, 2026-10-29): one OpenTopoMap tile per mini map.
     - The tile usage policies of OpenTopoMap (and OSM) for the mini maps on the public site (see "To check").
   - Running the prototypes from the worktree with the usual data: `uv run findaline.py web --data-dir <main checkout>` (without it the worktree's own empty data folder is used).
 

@@ -149,7 +149,7 @@ function Result({map, data, line, nav, wide, back, hashOf, linkOf, runs, onRun, 
       <div class="b-top b-top-run">{menu}{pill}{actions?.(true)}
         <RunActions model={model} view={view} onMeasured={measuredNow} compact show={["measure", "share", "download"]} />
       </div>
-      <Sheet label="Results" desktop="sheet" snap={snap} onSnap={setSnap} peek={132}
+      <Sheet label="Results" desktop="sheet" snap={snap} onSnap={setSnap} peek={132} top={64}
              header={model.selected ? <LineDetails model={model} part="head" onStep={reveal} />
                : <ResultSummary model={model} legend={false} />}>
         {model.selected && <LineDetails model={model} part="body" onZoom={zoom} linkOf={link} />}

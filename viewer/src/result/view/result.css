@@ -179,10 +179,6 @@
 .ui.r-kit .r-pill a { text-decoration: none; font-size: 22px; color: var(--ink-2); }
 .ui.r-kit .r-pill-name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .ui.r-kit .leaflet-top.leaflet-left { top: 56px; }
-.ui.r-kit .leaflet-bar a { background: var(--surface); color: var(--ink); border-color: var(--line); }
-.ui.r-kit .leaflet-bar a:hover { background: var(--surface-2); }
-.ui.r-kit .leaflet-bar, .ui.r-kit .leaflet-control-layers { border-color: var(--line); box-shadow: var(--shadow); }
-.ui.r-kit .leaflet-control-layers-expanded { background: var(--surface); color: var(--ink); }
 .ui.r-kit .r-panel { position: absolute; top: 12px; right: 12px; bottom: 12px; width: 384px; z-index: 1001; display: flex; flex-direction: column;
   overflow: hidden; }
 .ui.r-kit .r-panel-head { padding: 14px 16px 12px; display: flex; flex-direction: column; gap: 10px; border-bottom: 1px solid var(--line);

@@ -58,7 +58,20 @@ run({
                        actions: $$(".b-run-actions .r-actions button").map((b) => b.getAttribute("aria-label") || b.textContent.trim()),
                        name: text(".b-pill-name"), sort: text(".r-col.r-on")};
       result.sorted = model().rows.slice(0, 5).every((r, k, all) => k === 0 || all[k - 1].line.clr >= r.line.clr);
-      next();
+      // The map's controls follow the theme: in the dark one the zoom buttons are the panel's colour, also
+      // focused (after a click) and disabled (at the last zoom), where Leaflet's own are light grey
+      const root = $(".ui"), map = window.FINDALINE_MAP, colour = (q) => getComputedStyle($(q)).backgroundColor;
+      root.dataset.theme = "dark";
+      map.setZoom(map.getMaxZoom(), {animate: false});
+      $(".leaflet-control-zoom-out").focus();
+      later(() => {
+        result.dark = {panel: colour(".b-results"), zoom: colour(".leaflet-control-zoom-in"), layers: colour(".leaflet-control-layers"),
+                       disabled: $(".leaflet-control-zoom-in").classList.contains("leaflet-disabled"),
+                       focused: colour(".leaflet-control-zoom-out")};
+        delete root.dataset.theme;
+        $(".leaflet-control-zoom-out").blur();
+        next();
+      });
     });
   },
   select(next) {
@@ -128,7 +141,7 @@ def test_shell_d_desktop(data, tmp_path):
     """C's home with the runs as cards and its account menu (Old interface, Try B, Try C); New search returns home
     with the new card, which runs and turns done; its card opens B's result on a full-screen map: the panel on
     the right, the profile docked at the bottom left of it, "‹ Home", Edit & run again and the run's actions,
-    sorted by clearance; a row selects its line (details under the row, the profile in the dock, the hash),
+    sorted by clearance, the map's controls dark in the dark theme (focused and disabled too); a row selects its line (details under the row, the profile in the dock, the hash),
     ‹ › and a filter chip; Copy link gives D's address; Home returns; Back and Forward; the copied link opens
     the line; no CSP violations."""
     page = stub_page(data, "dtest", DESKTOP_SCRIPT % {"big": BIG, "small": SMALL})
@@ -144,6 +157,9 @@ def test_shell_d_desktop(data, tmp_path):
     assert layout["home"] and layout["edit"] and {"Compare", "Download"} <= set(layout["actions"])
     assert any(a.startswith("Measure") for a in layout["actions"]), r
     assert layout["sort"].startswith("Clear.") and r["sorted"], r
+    dark = r["dark"]
+    assert dark["disabled"] and dark["zoom"] == dark["layers"] == dark["panel"] != "rgb(255, 255, 255)", r
+    assert dark["focused"] not in (dark["panel"], "rgb(244, 244, 244)"), r
     assert r["selected"][0].startswith("Spot 1 of ") and r["selected"][1].startswith("Profile"), r
     assert r["selected"][2] and r["selected"][3], r
     assert r["stepped"][0].startswith("Spot 2 of ") and r["stepped"][1] == 1 and r["stepped"][2], r
@@ -170,16 +186,24 @@ run({
       result.sheet = {sheet: !!$(".d-layer .u-sheet"), panel: !!$(".b-results"), nav: !!$(".u-bnav"), top: !!$(".b-top-run .b-pill"),
                       peek: text(".u-sheet-head"), overflow: overflow()};
       $$(".u-sheet .r-rows > .r-spot > .r-row")[0].click();
-      wait(() => $(".u-sheet-head .r-eyebrow"), () => {
-        result.peek = text(".u-sheet-head .r-eyebrow");
-        button("Next spot").click();
-        later(() => {
-          result.stepped = text(".u-sheet-head .r-eyebrow");
-          result.after = overflow();
-          button("Home").click();
-          wait(() => location.hash === "#home" && $(".u-bnav"), () => { result.home2 = location.hash; next(); });
-        });
-      });
+      wait(() => $(".u-sheet-head .r-eyebrow"), () => { result.peek = text(".u-sheet-head .r-eyebrow"); next(); });
+    });
+  },
+  heights(next) {
+    // From the sheet's style (headless Edge does not run the transition): half the map, full under the top bar
+    const sheet = () => ({snap: $(".u-sheet").className, height: parseFloat($(".u-sheet").style.height), inner: innerHeight,
+                          bar: $(".b-top").getBoundingClientRect().bottom});
+    result.half = sheet();
+    $(".u-sheet-handle").click();
+    later(() => { result.full = sheet(); $(".u-sheet-handle").click(); later(next); });
+  },
+  step(next) {
+    button("Next spot").click();
+    later(() => {
+      result.stepped = text(".u-sheet-head .r-eyebrow");
+      result.after = overflow();
+      button("Home").click();
+      wait(() => location.hash === "#home" && $(".u-bnav"), () => { result.home2 = location.hash; next(); });
     });
   },
 });
@@ -189,8 +213,8 @@ run({
 @pytest.mark.skipif(not os.path.exists(EDGE), reason="needs Microsoft Edge")
 def test_shell_d_phone(data, tmp_path):
     """Below 768 px: C's home with the bottom navigation; the result is B's sheet over the map ("Spot k of N" with
-    ‹ ›, no panel, no bottom navigation) under a top bar whose Home returns; nothing wider than the window; no
-    CSP violations."""
+    ‹ ›, no panel, no bottom navigation) under a top bar whose Home returns; a selected line leaves the sheet at
+    half the map, and at full it stays below the top bar; nothing wider than the window; no CSP violations."""
     page = stub_page(data, "dphone", PHONE_SCRIPT % {"small": SMALL})
     with _server(data) as port:
         r = _edge(port, page + "?ui=d", tmp_path / "edge-phone", size="500,900")
@@ -199,6 +223,9 @@ def test_shell_d_phone(data, tmp_path):
     sheet = r["sheet"]
     assert sheet["sheet"] and not sheet["panel"] and not sheet["nav"] and sheet["top"] and not sheet["overflow"], r
     assert r["peek"].startswith("Spot 1 of ") and r["stepped"].startswith("Spot 2 of ") and not r["after"], r
+    half, full = r["half"], r["full"]
+    assert "u-half" in half["snap"] and half["height"] <= half["inner"] / 2 + 1, r  # a selected line keeps it half
+    assert "u-full" in full["snap"] and full["inner"] - full["height"] >= full["bar"], r
     assert r["home2"] == "#home", r
     assert r["csp"] == []
 

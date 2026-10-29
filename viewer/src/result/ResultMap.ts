@@ -21,12 +21,23 @@ export interface ResultMapOptions {
 
 const DIM = 0.25;  // opacity of the lines not selected while one is
 
+/** A canvas renderer whose redraw does nothing once its canvas is gone: Leaflet binds the redraw when it
+ *  asks for the frame, so a frame asked for before the map or the renderer was removed may still run
+ *  (headless Edge: "clearRect of undefined" after leaving a result). */
+const SafeCanvas = (L.Canvas as any).extend({
+  _redraw(this: any) {
+    if (this._ctx) return (L.Canvas.prototype as any)._redraw.call(this);
+    this._redrawRequest = null;
+    this._redrawBounds = null;
+  },
+}) as new (options: L.RendererOptions & {tolerance?: number}) => L.Canvas;
+
 export class ResultMap {
   private readonly map: L.Map;
   private readonly model: ResultModel;
   private readonly options: ResultMapOptions;
-  private readonly renderer = L.canvas({padding: 0.5});
-  private readonly variantRenderer = L.canvas({padding: 0.5, tolerance: 5});  // thin lines that can still be clicked
+  private readonly renderer = new SafeCanvas({padding: 0.5});
+  private readonly variantRenderer = new SafeCanvas({padding: 0.5, tolerance: 5});  // thin lines that can still be clicked
   private readonly area: L.GeoJSON;
   private readonly otherAreas = L.layerGroup();
   private readonly linesLayer = L.layerGroup();
@@ -63,9 +74,6 @@ export class ResultMap {
     this.hoverAt(null);
     this.layers.forEach((layer) => this.map.removeLayer(layer));
     [this.renderer, this.variantRenderer].forEach((r) => { if (this.map.hasLayer(r)) this.map.removeLayer(r); });
-    // Removing the lines asks their canvas for a redraw, which a browser may still run after the canvas is gone
-    // (headless Edge: "clearRect of undefined"); the renderers are this map's own, so they draw nothing more
-    [this.renderer, this.variantRenderer].forEach((r) => { (r as any)._redraw = () => {}; });
     this.map.off("click", this.onMapClick);
     document.removeEventListener("keydown", this.onKey);
   }

@@ -147,9 +147,6 @@
   display: flex; flex-direction: column; gap: 12px; }
 .ui .c-col-details .r-dock { padding: 10px 0 0; border-top: 1px solid var(--line); box-shadow: none; max-height: none; overflow: visible; }
 .ui .c-pick { display: flex; align-items: center; gap: 8px; margin: 0; color: var(--muted); }
-.ui.c-app .leaflet-bar a { background: var(--surface); color: var(--ink); border-color: var(--line); }
-.ui.c-app .leaflet-bar, .ui.c-app .leaflet-control-layers { border-color: var(--line); box-shadow: var(--shadow); }
-.ui.c-app .leaflet-control-layers-expanded { background: var(--surface); color: var(--ink); }
 @media (max-width: 1100px) {
   .ui .c-col-list { width: 300px; }
   .ui .c-col-details { width: 320px; }

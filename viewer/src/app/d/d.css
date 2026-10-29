@@ -8,8 +8,3 @@
 /* The map's controls under the run's actions, left of the panel; on phones under the top bar */
 .ui .d-result.d-wide .leaflet-top.leaflet-right { right: 396px; top: 52px; }
 .ui .d-result.d-phone .leaflet-top { top: 60px; }
-.ui .d-result .leaflet-control-scale-line { background: color-mix(in srgb, var(--surface) 80%, transparent); color: var(--ink);
-  border-color: var(--ink-2); }
-.ui .d-result .leaflet-control-attribution { background: color-mix(in srgb, var(--surface) 80%, transparent); color: var(--ink-2); }
-.ui .d-result .leaflet-control-attribution a { color: var(--accent); }
-.ui .d-result .leaflet-tooltip { background: var(--surface); color: var(--ink); border-color: var(--line); }

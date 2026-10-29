@@ -166,7 +166,7 @@ function Phone({model, data, line, editJob}: ViewProps) {
       </div>
       <RunActions model={model} view={view} onMeasured={measuredNow} compact />
     </div>
-    <Sheet label="Results" desktop="sheet" snap={snap} onSnap={setSnap} peek={132}
+    <Sheet label="Results" desktop="sheet" snap={snap} onSnap={setSnap} peek={132} top={64}
            header={model.selected ? <LineDetails model={model} part="head" onStep={reveal} />
              : <ResultSummary model={model} legend={false} />}>
       {model.selected && <LineDetails model={model} part="body" onZoom={zoom} />}
