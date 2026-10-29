@@ -522,13 +522,17 @@ settings() {
     ask_provider google Google
     if [ -z "$(env_get "$env" FINDALINE_ADMINS)" ] && [ -t 0 ]; then
         local login id
-        read -r -p "   GitHub login of the administrator (empty: none yet; Google: section 8): " login
+        read -r -p "   GitHub login or numeric id of the administrator (empty: none yet; Google: section 8): " login
         if [ -n "$login" ]; then
             [[ $login =~ ^[A-Za-z0-9-]+$ ]] || die "not a GitHub login: $login"
-            id=$(curl -fsS --max-time 20 "https://api.github.com/users/$login" \
-                | python3 -c 'import json, sys; print(json.load(sys.stdin)["id"])') \
+            # A number is an id (/user/<id>), anything else a login (/users/<login>)
+            local url="https://api.github.com/users/$login"
+            [[ $login =~ ^[0-9]+$ ]] && url="https://api.github.com/user/$login"
+            id=$(curl -fsS --max-time 20 "$url" \
+                | python3 -c 'import json, sys; u = json.load(sys.stdin); print(u["id"], u["login"])') \
                 || die "no GitHub user $login"
-            env_set "$env" FINDALINE_ADMINS "github:$id"
+            note "GitHub user ${id#* } (id ${id%% *})"
+            env_set "$env" FINDALINE_ADMINS "github:${id%% *}"
         fi
     fi
     # Each secret readable by the containers' user only (secrets/README.md)
