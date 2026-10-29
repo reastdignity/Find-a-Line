@@ -188,6 +188,12 @@ export class ResultMap {
     return this.map.getBounds().intersects(L.latLngBounds([line.lat1, line.lon1], [line.lat2, line.lon2]));
   }
 
+  /** Call `listener` after every move or zoom of the map (moveend); returns the function that stops it. */
+  onMove(listener: () => void): () => void {
+    this.map.on("moveend", listener);
+    return () => { this.map.off("moveend", listener); };
+  }
+
   // --- measuring ---
 
   get isMeasuring(): boolean {

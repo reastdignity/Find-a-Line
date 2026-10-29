@@ -306,7 +306,7 @@ EDGE = r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe"
 def test_result_map_in_edge(tmp_path, clip_data):
     """result/ResultMap and loadRun in headless Edge, on a test page of a run served by the app (its CSP):
     the run loaded as a script, lines drawn, a selection with its variants, a click on a variant shows it,
-    measuring (two clicks, Esc cancels), and destroy() leaves the map without a layer of it."""
+    measuring (two clicks, Esc cancels), onMove, and destroy() leaves the map without a layer of it."""
     import re
     import test_web  # the app on a real server, its CSP stubs
     text, data = clip_data
@@ -330,6 +330,6 @@ def test_result_map_in_edge(tmp_path, clip_data):
     assert out["load"] == {"failed": True, "lines": len(data["lines"]), "cleared": True, "cached": True}
     assert out["drawn"] > 0 and out["selectedLayers"] > out["drawn"]
     assert out["clicked"] == ["variant"] and out["variantShown"] is True
-    assert out["measured"] is True and out["escaped"] is True
+    assert out["measured"] is True and out["escaped"] is True and out["moves"] == 1
     assert out["after"] == 0
     assert test_web._violations(dom) == []

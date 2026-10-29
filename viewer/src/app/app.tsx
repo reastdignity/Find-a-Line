@@ -20,6 +20,7 @@ import { SearchForm } from "./SearchForm";
 import { AppB } from "./b/AppB";
 import { AppC } from "./c/AppC";
 import { Gallery } from "../ui/Gallery";
+import { KitResult } from "../result/view/KitResult";
 import { chooseUi, uiHref } from "../ui/choice";
 
 L.Icon.Default.mergeOptions({iconRetinaUrl, iconUrl, shadowUrl});
@@ -173,6 +174,6 @@ function apply(jobs: JobView[], event: JobEvent): JobView[] {
   });
 }
 
-const SHELLS = {old: App, b: AppB, c: AppC, kit: Gallery};
+const SHELLS = {old: App, b: AppB, c: AppC, kit: Gallery, "kit-result": KitResult};
 const Shell = SHELLS[chooseUi()];
 render(<Shell />, document.getElementById("app")!);

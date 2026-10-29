@@ -62,7 +62,10 @@ export function ProfilePanel(props: ProfileProps) {
     const measure = () => setWidth(chartRef.current?.clientWidth || 800);
     measure();
     window.addEventListener("resize", measure);
-    return () => window.removeEventListener("resize", measure);
+    // A panel of the app can change its width without the window (a sheet, a column)
+    const observer = typeof ResizeObserver === "function" && chartRef.current ? new ResizeObserver(measure) : null;
+    if (observer) observer.observe(chartRef.current!);
+    return () => { window.removeEventListener("resize", measure); observer?.disconnect(); };
   }, []);
   useEffect(() => setHover(null), [l]);
 
@@ -221,6 +224,15 @@ export function ProfilePanel(props: ProfileProps) {
     props.onHover([l.lat1 + (l.lat2 - l.lat1) * t, l.lon1 + (l.lon2 - l.lon1) * t]);
   };
   const onLeave = () => { setHover(null); props.onHover(null); };
+  // Touch and pens: a tap reads a point, a drag along the chart moves it; the readout stays after lifting
+  // (the mouse has its own events above, which leave clears)
+  const onPointer = (e: PointerEvent) => {
+    if (e.pointerType === "mouse") return;
+    if (e.type === "pointerdown") {
+      try { (e.currentTarget as Element).setPointerCapture(e.pointerId); } catch { /* not an active pointer */ }
+    }
+    onMove(e);
+  };
 
   const setRig = (key: keyof Rigging, input: HTMLInputElement) => {
     const v = parseFloat(input.value);
@@ -310,7 +322,7 @@ export function ProfilePanel(props: ProfileProps) {
         {hover !== null && <line class="fal-cursor" x1={X(hover)} x2={X(hover)} y1={M.t} y2={HEIGHT - M.b}
                                  stroke="#333" stroke-dasharray="2 2" />}
         <rect class="fal-hover" x={M.l} y={M.t} width={pw} height={ph} fill="transparent"
-              onMouseMove={onMove} onMouseLeave={onLeave} />
+              onMouseMove={onMove} onMouseLeave={onLeave} onPointerDown={onPointer} onPointerMove={onPointer} />
       </svg>
     </div>
     <div class="fal-profile-readout">{readout}</div>

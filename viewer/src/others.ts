@@ -16,13 +16,14 @@ export function colorOf(id: string): string {
   return PALETTE[Math.abs(hash) % PALETTE.length];
 }
 
-/** Load ../<id>/lines.js (a script: pages opened from disk cannot fetch JSON). */
-export function loadLines(id: string): Promise<RunLines> {
+/** Load ../<id>/lines.js (a script: pages opened from disk cannot fetch JSON); `base`: the folder of the
+ * runs relative to the page (the app's pages: "/runs/"). */
+export function loadLines(id: string, base = "../"): Promise<RunLines> {
   const loaded = window.FINDALINE_LINES?.[id];
   if (loaded) return Promise.resolve(loaded);
   return new Promise((resolve, reject) => {
     const script = document.createElement("script");
-    script.src = "../" + encodeURIComponent(id) + "/lines.js";
+    script.src = base + encodeURIComponent(id) + "/lines.js";
     script.onload = () => {
       const lines = window.FINDALINE_LINES?.[id];
       if (lines) resolve(lines); else reject(new Error("no lines in " + script.src));

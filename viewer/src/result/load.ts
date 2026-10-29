@@ -2,7 +2,7 @@
 // (script-src 'self') allows and web.RunFiles serves only to who may open the run. The lines of
 // other runs still come from their lines.js (others.loadLines).
 
-import type { RunData } from "../types";
+import type { RunData, RunInfo } from "../types";
 
 const loaded = new Map<string, Promise<RunData>>();
 
@@ -35,4 +35,21 @@ export function loadRun(id: string, base = "/runs/"): Promise<RunData> {
 /** Forget a loaded run (e.g. after it was deleted). */
 export function forgetRun(id: string) {
   loaded.delete(id);
+}
+
+let runList: Promise<RunInfo[]> | null = null;
+
+/** The runs the user may open as the maps list them (`/runs/runs.js`: window.FINDALINE_RUNS, with their
+ * boxes for "other runs nearby"), loaded once; empty when it cannot be loaded. Its FINDALINE_APP (the
+ * public site's flags) is set as for a map. */
+export function loadRunList(src = "/runs/runs.js"): Promise<RunInfo[]> {
+  if (runList) return runList;
+  runList = new Promise<RunInfo[]>((resolve) => {
+    const script = document.createElement("script");
+    script.src = src;
+    script.onload = () => { script.remove(); resolve(window.FINDALINE_RUNS || []); };
+    script.onerror = () => { script.remove(); runList = null; resolve([]); };
+    document.head.appendChild(script);
+  });
+  return runList;
 }

@@ -767,12 +767,14 @@ def test_event_stream(tmp_path, monkeypatch):
             assert any(line.startswith(":") for line in lines), lines  # the keep-alive
 
 
-def _edge_page(tmp_path, page: str, start_scheduler: bool = False) -> str:
-    """The DOM of a page of the app (a path on a real server over tmp_path) after headless Edge ran its scripts."""
+def _edge_page(tmp_path, page: str, start_scheduler: bool = False, size: str = "", profile: str = "edge") -> str:
+    """The DOM of a page of the app (a path on a real server over tmp_path) after headless Edge ran its scripts
+    (`size`: the window's "width,height"; Edge's headless window is at least about 500 px wide)."""
     import subprocess
     with _server(tmp_path, start_scheduler) as port:
         return subprocess.run(
-            [EDGE, "--headless", "--disable-gpu", f"--user-data-dir={tmp_path / 'edge'}", "--no-first-run",
+            [EDGE, "--headless", "--disable-gpu", f"--user-data-dir={tmp_path / profile}", "--no-first-run",
+             *([f"--window-size={size}"] if size else []),
              "--virtual-time-budget=60000", "--dump-dom", f"http://127.0.0.1:{port}/{page}"],
             capture_output=True, text=True, encoding="utf-8", timeout=180).stdout
 
@@ -1496,3 +1498,224 @@ def test_interface_switch(tmp_path):
     assert "u-app-c" in shown("?ui=c")["found"]
     assert shown("?ui=c")["kept"] == "c"  # every server has its own port: the next page would not see it
     assert "fa-tabs" in shown("?ui=old")["found"]
+
+
+# The results UI's demo page (?ui=kit-result&run=<id>): before the app, the clipboard records what it gets
+RESULTS_STUBS = APP_STUBS + """
+window.COPIED = [];
+Object.defineProperty(navigator, "clipboard", {value: {writeText: (text) => { COPIED.push(text); return Promise.resolve(); }}});
+"""
+
+RESULTS_SCRIPT = """
+(function () {
+  const out = document.createElement("pre");
+  out.id = "result";
+  const result = {};
+  const done = () => { out.textContent = JSON.stringify(result); document.body.appendChild(out); };
+  const $ = (s) => document.querySelector(s), $$ = (s) => [...document.querySelectorAll(s)];
+  const text = (s) => ($(s) || {}).textContent || "";
+  const button = (label) => $$("button").find((b) => b.textContent.trim() === label || b.getAttribute("aria-label") === label);
+  const rows = () => $$(".r-rows > .r-spot > .r-row");
+  const later = (then, ms = 300) => setTimeout(then, ms);
+  const run = new URLSearchParams(location.search).get("run");
+  const saved = () => fetch("/api/runs/" + encodeURIComponent(run) + "/favourites").then((r) => r.json());
+  const until = (count, then, tries = 30) => saved().then((body) => body.lines.length === count || !tries
+    ? then(body) : later(() => until(count, then, tries - 1)));
+  let step = "";
+  const wait = (ok, then, tries = 150) => ok() ? then() : tries ? setTimeout(() => wait(ok, then, tries - 1), 200)
+                                                    : (result.timeout = step + ": " + text(".r-tip") + " | "
+                                                       + text(".r-dock .fal-profile-title"), done());
+  const steps = {
+    loaded(next) { wait(() => rows().length && window.FINDALINE_RESULT, () => {
+      const model = window.FINDALINE_RESULT.model;
+      result.wide = innerWidth >= 768 && !!$(".r-panel") && !$(".u-sheet");
+      result.summary = text(".r-summary-count");
+      result.spots = model.shown.spots;
+      result.rows = rows().length;
+      result.more = !!$(".r-showmore");
+      result.legend = $$(".r-legend span").map((s) => s.textContent);
+      next();
+    }); },
+    select(next) {
+      rows()[0].click();
+      wait(() => $(".r-details .r-dtitle") && $(".r-dock .fal-profile-title"), () => {
+        const model = window.FINDALINE_RESULT.model, l = model.selected.line;
+        result.title = text(".r-details .r-dtitle");
+        result.expected = l.len.toFixed(0) + " m · " + l.clr.toFixed(1) + " m clear";
+        result.eyebrow = text(".r-details .r-eyebrow");
+        result.profile = text(".r-dock .fal-profile-title");
+        result.selectedRow = rows()[0].getAttribute("aria-selected");
+        next();
+      });
+    },
+    touch(next) {
+      const rect = $(".r-dock .fal-hover"), box = rect.getBoundingClientRect();
+      rect.dispatchEvent(new PointerEvent("pointerdown", {bubbles: true, pointerType: "touch", pointerId: 7,
+        clientX: box.left + box.width / 2, clientY: box.top + box.height / 2}));
+      later(() => { result.readout = text(".r-dock .fal-profile-readout"); next(); });
+    },
+    step(next) {
+      button("Next spot").click();
+      later(() => {
+        result.stepped = text(".r-details .r-eyebrow");
+        result.position = window.FINDALINE_RESULT.model.position;
+        next();
+      });
+    },
+    keyboard(next) {
+      rows()[3].dispatchEvent(new KeyboardEvent("keydown", {key: "Enter", bubbles: true}));
+      later(() => { result.keyboard = window.FINDALINE_RESULT.model.position; next(); });
+    },
+    filter(next) {
+      const model = window.FINDALINE_RESULT.model, before = model.shown.spots;
+      button("Clearance").click();
+      wait(() => $(".r-editor input[type=number]"), () => {
+        const input = $(".r-editor input[type=number]");
+        input.value = "1";
+        input.dispatchEvent(new Event("change", {bubbles: true}));
+        later(() => {
+          result.filtered = [before, model.shown.spots, text(".r-summary-count"),
+                             $$(".u-chip.u-on").map((c) => c.textContent.trim())];
+          button("Remove the clearance filter").click();
+          later(() => { result.cleared = model.shown.spots; next(); });
+        });
+      });
+    },
+    favourite(next) {
+      const model = window.FINDALINE_RESULT.model;
+      if (!model.selected) rows()[0].click();  // the filter may have hidden the selected line
+      result.favouritesOn = model.favouritesOn;
+      $(".r-details .r-fav").click();
+      until(1, (body) => {
+        result.favourites = body.lines.length;
+        result.favLine = body.lines[0] === model.lineLink(model.selected.line);
+        result.stars = $$(".r-star.r-on").length;
+        result.favButton = text(".r-details .r-fav");
+        $(".r-details .r-fav").click();
+        until(0, (after) => { result.unmarked = after.lines.length; next(); });
+      });
+    },
+    copy(next) {
+      const model = window.FINDALINE_RESULT.model;
+      $(".r-details .r-copy").click();
+      later(() => {
+        result.copied = COPIED[0] || "";
+        result.coords = model.lineLink(model.selected.line);
+        result.copyButton = text(".r-details .r-copy");
+        next();
+      });
+    },
+    downloads(next) {
+      button("Download").click();
+      later(() => {
+        const links = $$(".r-downloads a").map((a) => a.getAttribute("href"));
+        Promise.all(links.map((href) => fetch(href).then((r) => r.status))).then((statuses) => {
+          result.downloads = links.map((href, k) => href + " " + statuses[k]);
+          next();
+        });
+      });
+    },
+    linked(next) {
+      const model = window.FINDALINE_RESULT.model, target = model.rows[5].group.members.slice(-1)[0];
+      location.hash = "#line=" + encodeURIComponent(model.lineLink(target));
+      later(() => { result.linked = !!model.selected && model.selected.line === target; next(); }, 500);
+    },
+    measure(next) {
+      const map = window.FINDALINE_MAP, l = window.FINDALINE_RESULT.model.lines[0];
+      button("Measure").click();
+      map.fire("click", {latlng: {lat: l.lat1, lng: l.lon1}});
+      map.fire("click", {latlng: {lat: l.lat2, lng: l.lon2}});
+      wait(() => text(".r-dock .fal-profile-title").startsWith("Measured"), () => {
+        result.measured = text(".r-dock .fal-profile-title");
+        result.expectedLength = l.len.toFixed(0);
+        next();
+      });
+    },
+  };
+  const names = Object.keys(steps);
+  const go = (k) => { if (k >= names.length) return done(); step = names[k]; steps[step](() => go(k + 1)); };
+  go(0);
+})();
+"""
+
+PHONE_SCRIPT = """
+(function () {
+  const out = document.createElement("pre");
+  out.id = "result";
+  const wait = (ok, then, tries = 150) => ok() ? then() : tries ? setTimeout(() => wait(ok, then, tries - 1), 200) : then();
+  wait(() => document.querySelector(".r-details .r-dtitle"), () => {
+    out.textContent = JSON.stringify({width: innerWidth, sheet: !!document.querySelector(".u-sheet"),
+      panel: !!document.querySelector(".r-panel"),
+      head: (document.querySelector(".u-sheet-head .r-eyebrow") || {}).textContent || "",
+      profile: !!document.querySelector(".u-sheet .r-dock .fal-profile-title"),
+      wider: document.documentElement.scrollWidth > innerWidth});
+    document.body.appendChild(out);
+  });
+})();
+"""
+
+
+@pytest.mark.skipif(not os.path.exists(EDGE), reason="needs Microsoft Edge")
+def test_results_ui(tmp_path, monkeypatch):
+    """The results UI of the new interfaces (result/view) on its demo page, ?ui=kit-result&run=<id>: the summary
+    and the list, a row selects its line (details, profile; a touch on the profile reads a point), the next
+    spot, Enter on a row, a filter chip changes the counts and is removed, a favourite kept by the server,
+    the copied link holds the line, the downloads answer, #line= opens a line, measuring shows its profile;
+    below 768 px a sheet instead of the panel; no CSP violations."""
+    import html
+    import re
+    import urllib.parse
+    run_id = _clip_run(tmp_path, monkeypatch)
+    folder = tmp_path / "runs" / "kittest"
+    folder.mkdir(parents=True)
+    (folder / "stubs.js").write_text(RESULTS_STUBS, encoding="utf-8")
+    app = web.create_app(str(tmp_path), token=TOKEN, start_scheduler=False)
+    with TestClient(app, base_url=LOCAL) as client:
+        page = client.get("/").text
+
+    def page_with(script: str, name: str):
+        (folder / f"{name}.js").write_text(script, encoding="utf-8")
+        (folder / f"{name}.html").write_text(page.replace(
+            '<script src="/app/app.js"></script>',
+            f'<script src="stubs.js"></script><script src="/app/app.js"></script><script src="{name}.js"></script>'),
+            encoding="utf-8")
+
+    def result_of(dom):
+        found = re.search(r'<pre id="result">(.*?)</pre>', dom, re.S)
+        assert found, dom[-3000:]
+        return json.loads(html.unescape(found.group(1)))
+
+    query = "?ui=kit-result&run=" + urllib.parse.quote(run_id)
+    page_with(RESULTS_SCRIPT, "desk")
+    dom = _edge_page(tmp_path, f"runs/kittest/desk.html{query}", start_scheduler=True, size="1280,800")
+    r = result_of(dom)
+    assert "timeout" not in r, json.dumps(r)
+    assert r["wide"] and r["rows"] == min(100, r["spots"]) and r["more"] == (r["spots"] > 100), r
+    assert r["summary"].startswith(f"{r['spots']} spots"), r
+    assert r["legend"][0] == "Clear", r
+    assert r["title"] == r["expected"] and r["eyebrow"].startswith(f"Spot 1 of {r['spots']}"), r
+    assert r["profile"].startswith("Profile: ") and r["selectedRow"] == "true", r
+    assert " m from A1" in r["readout"], r
+    assert r["stepped"].startswith(f"Spot 2 of {r['spots']}") and r["position"] == 1 and r["keyboard"] == 3, r
+    before, after, summary, chips = r["filtered"]
+    assert after < before and summary.startswith(f"{after} spots") and "Clearance ≥ 1.0 m" in chips, r
+    assert r["cleared"] == before, r
+    assert r["favouritesOn"] and r["favourites"] == 1 and r["favLine"] and r["stars"] == 1, r
+    assert r["favButton"] == "Favourite" and r["unmarked"] == 0, r
+    assert r["copied"].endswith("&line=" + urllib.parse.quote(r["coords"], safe="")), r
+    assert r["copyButton"] == "Link copied", r
+    assert sorted(r["downloads"]) == sorted(f"/runs/{urllib.parse.quote(run_id)}/{f} 200"
+                                            for f in ("lines.csv", "lines.geojson")), r
+    assert r["linked"], r
+    assert r["measured"].startswith(f"Measured: {r['expectedLength']} m"), r
+    assert _violations(dom) == []
+
+    # A phone: Edge's headless window is at least about 500 px wide, below the 768 px of a desktop
+    page_with(PHONE_SCRIPT, "phone")
+    row = _lines_of(tmp_path, run_id)[0]
+    link = "#line=" + urllib.parse.quote(",".join(str(v) for v in row[:4]))
+    dom = _edge_page(tmp_path, f"runs/kittest/phone.html{query}{link}", size="500,900", profile="edge-phone")
+    r = result_of(dom)
+    assert r["width"] < 768 and r["sheet"] and not r["panel"], r
+    assert r["head"].startswith("Spot ") and r["profile"] and not r["wider"], r
+    assert _violations(dom) == []

@@ -71,6 +71,13 @@ const runId = decodeURIComponent(location.pathname.split("/")[2]);
     map.fire("click", {latlng: L.latLng(data.center[0] + 0.001, data.center[1]), containerPoint: L.point(0, 0)} as any);
     out.measured = measured !== null && !view.isMeasuring;
     view.startMeasure(() => {});
+    // onMove: called after a move, not after it is stopped
+    let moves = 0;
+    const stop = view.onMove(() => { moves++; });
+    map.panBy([10, 0], {animate: false});
+    stop();
+    map.panBy([-10, 0], {animate: false});
+    out.moves = moves;
     document.dispatchEvent(new KeyboardEvent("keydown", {key: "Escape"}));
     out.escaped = !view.isMeasuring;
     view.destroy();
