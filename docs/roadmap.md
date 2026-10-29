@@ -177,6 +177,13 @@ Users found the app hard to navigate.
     - the orthophoto in B's results;
     - a place-name search box;
     - the old Admin/OSM panels in the new look.
+  - Small fixes noticed (2026-10-29), not done yet:
+    - C/D mini maps (`app/c/Thumb.tsx`): today the frame is filled with as many OpenTopoMap tiles as it needs. The user wants **one tile per mini map**: the largest zoom at which the whole shape lies in one tile, the frame a crop of that tile (fewer requests to OpenTopoMap).
+    - Phones (B and D): selecting a row leaves the sheet nearly full height, its top under the top bar.
+    - Dark theme: the map's zoom buttons stay light in D (its map styles come from `c.css`).
+    - The B/C shell tests failed once in about 15 runs (2026-10-29); the error text was not kept, and 12 runs since passed.
+    - The tile usage policies of OpenTopoMap (and OSM) for the mini maps on the public site (see "To check").
+  - Running the prototypes from the worktree with the usual data: `uv run findaline.py web --data-dir <main checkout>` (without it the worktree's own empty data folder is used).
 
 ## New data sources
 Researched 2026-10-25 (how: docs/data-sources.md). Order: Slovakia (DSM needs a hosted copy, see below), then Switzerland (done first, 2026-10-26: it needed no hosting); Greece has no usable national source. The USA was researched on 2026-10-26 (below); nothing is planned for it yet.
