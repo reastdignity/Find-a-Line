@@ -56,12 +56,22 @@ def test_regions_at_a_point(tmp_path):
 
 
 def test_user_agent(monkeypatch):
-    """One User-Agent for every request; a public site adds its operator's contact."""
+    """One User-Agent for every request with the version of pyproject.toml: "self-hosted", or a public
+    site's address; the operator's contact when set."""
+    import tomllib
     import cache
+    with open(os.path.join(os.path.dirname(cache.__file__), "pyproject.toml"), "rb") as f:
+        version = tomllib.load(f)["project"]["version"]
+    assert cache.VERSION == version
     monkeypatch.delenv("FINDALINE_CONTACT", raising=False)
-    assert cache.http_headers() == {"User-Agent": "Find-a-Line/1.0 (highline finder)"}
+    monkeypatch.delenv("FINDALINE_PUBLIC_URL", raising=False)
+    assert cache.http_headers() == {"User-Agent": f"Find-a-Line/{version} (highline finder; self-hosted)"}
     monkeypatch.setenv("FINDALINE_CONTACT", " admin@example.org\r\n")
-    assert cache.http_headers() == {"User-Agent": "Find-a-Line/1.0 (highline finder; contact: admin@example.org)"}
+    assert cache.http_headers() == {"User-Agent": f"Find-a-Line/{version} (highline finder; self-hosted; "
+                                                  "contact: admin@example.org)"}
+    monkeypatch.setenv("FINDALINE_PUBLIC_URL", "https://findaline.example")
+    assert cache.http_headers() == {"User-Agent": f"Find-a-Line/{version} (highline finder; +https://findaline.example; "
+                                                  "contact: admin@example.org)"}
 
 
 def _old_nominatim_db(cache_dir: str, rows):

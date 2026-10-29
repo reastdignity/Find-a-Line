@@ -289,11 +289,11 @@ LABELS = {  # field -> (label, unit); every field the web may set has one (tests
 # topic -> (title, fields in the form's order); "where" is the place part of the form, not "More settings"
 TOPICS = {
     "where": ("Where", ["lat", "lon", "northing", "easting", "radius", "area", "buffer", "within", "name"]),
-    "lines": ("Lines", ["min_length", "max_length", "max_anchor_diff_m", "max_anchor_diff", "max_wall_angle"]),
-    "anchors": ("Anchors", ["slope_threshold", "min_prominence", "min_prominence_both", "prominence_span",
-                            "min_drop", "drop_radius"]),
     "height": ("Height above the terrain", ["nmpt", "high_above", "min_height", "min_mean_height",
                                             "min_high_share"]),
+    "anchors": ("Anchors", ["slope_threshold", "min_prominence", "min_prominence_both", "prominence_span",
+                            "min_drop", "drop_radius"]),
+    "lines": ("Lines", ["min_length", "max_length", "max_anchor_diff_m", "max_anchor_diff", "max_wall_angle"]),
     "data": ("Elevation data", ["source", "resolution", "water", "coastline", "shore_buffer", "fill_gaps",
                                 "update"]),
     "rigging": ("Clearance model", ["model", "pretension", "stretch", "webbing_weight", "athlete_mass",

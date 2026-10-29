@@ -41,11 +41,25 @@ import sqlite3
 import sys
 import tempfile
 import time
+import tomllib
 from datetime import datetime, timedelta, timezone
 from typing import Dict, Iterable, List, Optional
 
 LAYOUT = 1
-USER_AGENT = "Find-a-Line/1.0 (highline finder)"  # of every request (http_headers)
+
+
+def _version() -> str:
+    """The version of pyproject.toml (the scripts are not an installed package)."""
+    try:
+        with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pyproject.toml"), "rb") as f:
+            return str(tomllib.load(f)["project"]["version"])
+    except (OSError, KeyError, tomllib.TOMLDecodeError):
+        return "unknown"
+
+
+VERSION = _version()
+USER_AGENT = f"Find-a-Line/{VERSION} (highline finder"  # of every request, closed by http_headers
+
 # Days after which `update stale` checks data again
 TTL_DAYS = {
     "live": 730,         # tiles of services that serve the current state (IGN Spain, WMS orthophotos)
@@ -178,13 +192,17 @@ def _now() -> str:
 
 
 def http_headers() -> Dict[str, str]:
-    """Headers of every request to a data service: one User-Agent naming the app.
+    """Headers of every request to a data service: one User-Agent naming the app and who runs it.
 
-    With FINDALINE_CONTACT set (a public site) it carries the operator's contact too, as
-    the Nominatim and Overpass usage policies ask of an application with many users.
+    A public site (FINDALINE_PUBLIC_URL, set by `worker --public`) gives its address, anything
+    else says "self-hosted"; FINDALINE_CONTACT adds the operator's contact, as the Nominatim and
+    Overpass usage policies ask of an application with many users.
     """
-    contact = " ".join(os.environ.get("FINDALINE_CONTACT", "").split())  # no line breaks in a header
-    return {"User-Agent": f"{USER_AGENT[:-1]}; contact: {contact})" if contact else USER_AGENT}
+    def one_line(name: str) -> str:  # no line breaks in a header
+        return " ".join(os.environ.get(name, "").split())
+    site, contact = one_line("FINDALINE_PUBLIC_URL"), one_line("FINDALINE_CONTACT")
+    agent = f"{USER_AGENT}; {'+' + site if site else 'self-hosted'}"
+    return {"User-Agent": f"{agent}; contact: {contact})" if contact else agent + ")"}
 
 
 def clean_url(url: Optional[str]) -> Optional[str]:

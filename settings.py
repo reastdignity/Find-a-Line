@@ -37,7 +37,9 @@ PUBLIC = {
     "download_seconds": 3600, "compute_seconds": 7200, "osm_seconds": 7200, "quick_seconds": 120,
     "buffer_max": 500, "max_length_max": 2000, "prominence_span_max": 1000, "drop_radius_max": 1000,
     "slope_threshold_min": 30, "group_distance_min_res": 2, "ortho_detail_max": 50,
-    "not_allowed": ["ortho=always", "update", "coastline=world", "threads", "tile_size"],
+    # the downloads are the site's to decide: the data source, water and gaps, the orthophoto, the cache
+    "not_allowed": ["update", "threads", "tile_size", "source", "water", "shore_buffer", "fill_gaps", "coastline",
+                    "ortho", "ortho_detail"],
     "radius_max": 3500, "resolution_max": 30,
     "region_km2_max": 2500, "area_km2_max": 50, "bbox_km_max": 75, "grid_mpx_max": 36, "tiles_max": 300, "anchors_max": 3_000_000,
     "lines_max": 3_000_000, "download_mb_max": 3000, "ortho_minutes": 10,
@@ -215,7 +217,8 @@ class PublicSettings(BaseSettings):
     """The settings of the public site; `--public` refuses to start without them."""
     model_config = SettingsConfigDict(env_prefix="FINDALINE_", extra="ignore")
 
-    public_url: str = Field(description="address of the site, https://... (http:// only on localhost, for tests)")
+    public_url: str = Field(description="address of the site, https://... (http:// only on localhost, for tests); "
+                                        "also sent in the User-Agent of the worker's requests")
     trusted_proxy: str = Field(description="address of the reverse proxy (nginx) whose X-Forwarded-* headers "
                                            "are trusted: IP addresses or networks, comma-separated")
     contact: str = Field(description="e-mail or URL of the operator, sent in the User-Agent of the requests to "

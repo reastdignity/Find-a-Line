@@ -117,7 +117,7 @@ timer, SSH, the free disk).
   needed).
 - A domain whose DNS you manage (section 3).
 - An e-mail address or URL where the operators of Nominatim, Overpass and the data services can
-  reach you (`FINDALINE_CONTACT`, sent in the User-Agent).
+  reach you (`FINDALINE_CONTACT`, sent in the User-Agent together with the site's address).
 - The checkout: `sudo git clone https://github.com/<you>/Find-a-Line.git /srv/find-a-line`
   (or your own remote), owned by your user: `sudo chown -R $USER: /srv/find-a-line`.
 

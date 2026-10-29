@@ -217,7 +217,7 @@ function MoreSettings({s, first}: {s: SearchState; first?: ComponentChildren}) {
   const changed = fields.filter((f) => f.name in s.values).length;
   return <div class="s-more">
     <button type="button" class="s-more-head" aria-expanded={open} onClick={() => setOpen(!open)}>
-      <Icon name="filter" /><span class="u-grow">More settings · anchors, height, data, rigging model, output</span>
+      <Icon name="filter" /><span class="u-grow">More settings · height, anchors, data, rigging model, output</span>
       {changed > 0 && <span class="u-badge">{changed} changed</span>}
       <span class="u-badge u-n">{fields.length}</span><Icon name={open ? "down" : "next"} />
     </button>

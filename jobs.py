@@ -1187,9 +1187,11 @@ def main(argv: List[str]) -> int:
                              "(FINDALINE_PUBLIC_URL, FINDALINE_TRUSTED_PROXY, FINDALINE_CONTACT)")
     args = parser.parse_args(argv)
     if args.public:
-        # FINDALINE_CONTACT goes into the User-Agent of the worker's requests (cache.py reads the
-        # environment, which the worker's processes inherit; a Docker secret is put there too)
-        os.environ["FINDALINE_CONTACT"] = PublicSettings.load().contact
+        # The site's address and FINDALINE_CONTACT go into the User-Agent of the worker's requests
+        # (cache.http_headers reads the environment, which the worker's processes inherit; a
+        # Docker secret is put there too)
+        public = PublicSettings.load()
+        os.environ["FINDALINE_PUBLIC_URL"], os.environ["FINDALINE_CONTACT"] = public.public_url, public.contact
     data = cache.data_dir(args.data_dir)
     cache.check_layout(os.path.join(data, "cache"))
     if args.public:

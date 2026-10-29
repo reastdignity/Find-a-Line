@@ -935,11 +935,20 @@ def test_tiers_and_quotas(tmp_path, settings, account_settings, providers, monke
     a, unlimited, admin = people["a"], people["unlimited"], people["admin"]
     jobs = app.state.jobs
 
+    def fields_of(client):
+        return {f["name"]: f for f in client.get("/api/schema").json()["fields"]}
+
     def sources(client):
-        fields = {f["name"]: f for f in client.get("/api/schema").json()["fields"]}
-        return "threads" in fields, {"nasadem", "malta2012"} & set(fields["source"]["choices"])
+        fields = fields_of(client)
+        return "threads" in fields, {"nasadem", "malta2012"} & set(fields.get("source", {}).get("choices", []))
     assert sources(a) == (False, set()) and sources(unlimited) == (True, set())
     assert sources(admin) == (True, {"nasadem", "malta2012"})
+    # The downloads are the site's: a user's form has none of their fields, and a request with one is refused
+    downloads = {"update", "source", "water", "shore_buffer", "fill_gaps", "coastline", "ortho", "ortho_detail"}
+    assert not downloads & set(fields_of(a)) and downloads <= set(fields_of(unlimited)), fields_of(a).keys()
+    for name, value in {"source": "geoportal", "water": "off", "ortho": "never", "fill_gaps": "off"}.items():
+        refused = people["b"].post("/api/jobs", json={"params": {**point, name: value}})  # not a's rate
+        assert refused.status_code == 400 and "not allowed on this site" in refused.text, (name, refused.text)
     assert a.post("/api/jobs", json={"params": {**point, "threads": 2}}).status_code == 400
     assert a.post("/api/jobs", json={"params": {**point, "max_length": 5000}}).status_code == 400
     assert unlimited.post("/api/jobs", json={"params": {**point, "source": "nasadem"}}).status_code == 400
@@ -1945,9 +1954,14 @@ def test_request_limits(monkeypatch, tmp_path):
         with pytest.raises(ValueError):
             web.check_request({"params": params}, limits)
         web.check_request({"params": params}, None)  # no limits
-    for params in ({**point, "max_length": 2000, "slope_threshold": 30, "ortho": "never"},
+    for params in ({**point, "max_length": 2000, "slope_threshold": 30},
                    {**point, "resolution": 5, "group_distance": 10}, {**point, "max_length": "1500"}):
         web.check_request({"params": params}, limits)
+    # The download fields are not allowed at all; a site that allows them again still has their bounds
+    reopened = limits.model_copy(update={"not_allowed": []})
+    with pytest.raises(ValueError, match="ortho_detail: at most 50"):
+        web.check_request({"params": {**point, "ortho_detail": 51}}, reopened)
+    web.check_request({"params": {**point, "ortho_detail": 50, "ortho": "always", "source": "geoportal"}}, reopened)
     with pytest.raises(ValueError) as error:
         web.check_request({"params": {**point, "max_length": 2500, "prominence_span": 1500}}, limits)
     assert "max_length: at most 2000" in str(error.value) and "prominence_span: at most 1000" in str(error.value)
@@ -1956,8 +1970,8 @@ def test_request_limits(monkeypatch, tmp_path):
     assert "threads: not allowed" in str(error.value) and "update: not allowed" in str(error.value)
 
     fields = {f["name"]: f for f in web.schema(limits)}
-    assert not {"threads", "tile_size", "update"} & set(fields)
-    assert "always" not in fields["ortho"]["choices"] and "world" not in fields["coastline"]["choices"]
+    assert not {"threads", "tile_size", "update", "source", "water", "shore_buffer", "fill_gaps", "coastline",
+                "ortho", "ortho_detail"} & set(fields)
     assert (fields["max_length"]["max"], fields["slope_threshold"]["min"], fields["group_distance"]["min"]) == (2000, 30, 2)
     assert "at most 2000" in fields["max_length"]["help"]
     local = {f["name"]: f for f in web.schema()}
@@ -2132,10 +2146,13 @@ def test_bounding_box_limits_before_requests(tmp_path, monkeypatch, settings, ac
     assert (limits.radius_max, limits.resolution_max, limits.bbox_km_max) == (3500, 30, 75)
     far = {"params": {"resolution": 30, "source": "geoportal"}, "geometry": FAR_APART}
     huge = {"params": HUGE_CIRCLE, "geometry": None}
+
+    def without_source(request):  # the web refuses the field itself (not_allowed); here the bounds are checked
+        return {**request, "params": {k: v for k, v in request["params"].items() if k != "source"}}
     with pytest.raises(ValueError) as error:
-        web.check_request(huge, limits)
+        web.check_request(without_source(huge), limits)
     assert "radius: at most 3500" in str(error.value) and "resolution: at most 30" in str(error.value)
-    web.check_request(far, limits)  # its values pass: its box is the plan's to refuse
+    web.check_request(without_source(far), limits)  # its values pass: its box is the plan's to refuse
     paths = search.Paths(str(tmp_path), str(tmp_path / "work"))
     for request, text in ((huge, "radius: at most 3500"), (far, "bounding box"),
                           ({"params": {**HUGE_CIRCLE, "radius": 3500, "resolution": 30}}, None)):
@@ -2162,7 +2179,7 @@ def test_bounding_box_limits_before_requests(tmp_path, monkeypatch, settings, ac
     app = _public_app(tmp_path, settings, account_settings, providers)
     a = _clients(app, tmp_path, account_settings, ("a",))["a"]
     for path in ("/api/jobs", "/api/estimate"):
-        answer = a.post(path, json=huge)
+        answer = a.post(path, json=without_source(huge))
         assert answer.status_code == 400 and "radius: at most 3500" in answer.text
     fields = {f["name"]: f for f in a.get("/api/schema").json()["fields"]}
     assert fields["radius"]["max"] == 3500 and fields["resolution"]["max"] == 30

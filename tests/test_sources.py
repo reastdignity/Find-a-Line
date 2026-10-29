@@ -333,6 +333,7 @@ def test_stac_tiles(tmp_path, monkeypatch):
 def test_orthophoto_of_tiles_only(monkeypatch):
     """A service without a WMS (SWISSIMAGE): its own tiles, enlarged above its last zoom; the
     requests carry the common User-Agent (cache.http_headers)."""
+    import cache
     import orthophoto
     from PIL import Image
     service = src.OrthoService("Fake", None, "", "fake/ortho/live", "test",
@@ -352,7 +353,7 @@ def test_orthophoto_of_tiles_only(monkeypatch):
     orthophoto.tile_content(service, 20, 10, 11)
     orthophoto.tile_content(service, 21, 21, 22)
     assert asked == ["https://base/20/10/11.jpg", "https://base/20/10/11.jpg"]
-    assert sent == [{"User-Agent": "Find-a-Line/1.0 (highline finder; contact: admin@example.org)"}] * 2
+    assert sent == [cache.http_headers()] * 2 and "contact: admin@example.org" in sent[0]["User-Agent"]
 
 
 def _image(fmt, color, covered):
