@@ -25,6 +25,8 @@
 #   --my-ip ADDRESS  your own fixed address: SSH only from it, never banned by fail2ban
 #   --data-root DIR  Docker's data root on a mounted volume of its own (section 1, Disk; only
 #                    before the site's volumes exist)
+#   --disk-image SIZE  without a block volume: a file of SIZE (e.g. 200G) on the system disk with
+#                    a file system of its own, mounted at --data-root (default /srv/docker)
 #   --skip-ci        update without checking the CI
 #   --yes            answer yes to the questions (SSH without a recent key login, --my-ip not
 #                    seen among the current logins, a CI that has not passed)
@@ -37,6 +39,8 @@ EMAIL=
 CONTACT=
 MY_IP=
 DATA_ROOT=
+DISK_IMAGE=
+IMAGE_FILE=/srv/findaline-docker.img
 SKIP_CI=0
 YES=0
 PULLED=0
@@ -189,10 +193,59 @@ with open(path, "w") as f:
     f.write("\n")
 PY
         systemctl restart docker
-        note "Docker's data root: $(docker info --format '{{.DockerRootDir}}')"
+        root=$(docker info --format '{{.DockerRootDir}}')
+        note "Docker's data root: $root"
     elif [ "$(df --output=target "$root" | tail -n 1)" = / ]; then
-        warn "Docker's data root $root is on the system disk (section 1, Disk: --data-root)"
+        warn "Docker's data root $root is on the system disk (section 1, Disk: --data-root or --disk-image)"
     fi
+    # A data root on a file system of its own: Docker starts only once it is mounted (with
+    # `nofail` the boot goes on without it, and Docker would start on an empty folder)
+    if mountpoint -q "$root"; then
+        CHANGED=0
+        put /etc/systemd/system/docker.service.d/findaline-data-root.conf 644 <<EOF
+[Unit]
+RequiresMountsFor=$root
+EOF
+        if [ "$CHANGED" = 1 ]; then systemctl daemon-reload; fi
+    fi
+}
+
+# Without a block volume: a file of $DISK_IMAGE on the system disk with an ext4 of its own,
+# mounted at $DATA_ROOT (section 1, Disk). The file is allocated whole (fallocate, not a sparse
+# file), so the searches can fill it but never the system disk.
+disk_image() {
+    step "Disk image (section 1, Disk)"
+    if awk -v dir="$DATA_ROOT" '$1 !~ /^#/ && $2 == dir { found = 1 } END { exit !found }' /etc/fstab; then
+        mountpoint -q "$DATA_ROOT" || mount "$DATA_ROOT"
+        note "$DATA_ROOT: $(df -h --output=size "$DATA_ROOT" | tail -n 1 | tr -d ' ') (in /etc/fstab already)"
+        return 0
+    fi
+    mountpoint -q "$DATA_ROOT" && die "$DATA_ROOT is mounted already, not from /etc/fstab"
+    [ -d "$DATA_ROOT" ] && [ -n "$(ls -A "$DATA_ROOT")" ] && die "$DATA_ROOT is not empty"
+    local bytes free
+    bytes=$(numfmt --from=iec "$DISK_IMAGE") || die "--disk-image: a size such as 200G"
+    if [ -e "$IMAGE_FILE" ]; then
+        # Left by a setup that stopped: used only if it holds a file system already
+        [ "$(blkid -o value -s TYPE "$IMAGE_FILE" || true)" = ext4 ] \
+            || die "$IMAGE_FILE exists without a file system: remove it by hand"
+    else
+        mkdir -p "$(dirname "$IMAGE_FILE")"
+        free=$(df -B1 --output=avail "$(dirname "$IMAGE_FILE")" | tail -n 1 | tr -dc 0-9)
+        # At least 10 GB stay for the system: updates, logs, Docker's images go to the image
+        [ $((free - bytes)) -ge $((10 * 1024 ** 3)) ] \
+            || die "--disk-image $DISK_IMAGE leaves less than 10 GB of $(numfmt --to=iec "$free") free"
+        fallocate -l "$bytes" "$IMAGE_FILE"
+        chmod 600 "$IMAGE_FILE"
+        # nodiscard: mkfs would punch holes in the file, making it sparse again
+        mkfs.ext4 -q -E nodiscard -L findaline-docker "$IMAGE_FILE"
+        note "made $IMAGE_FILE ($DISK_IMAGE, ext4)"
+    fi
+    mkdir -p "$DATA_ROOT"
+    # X-fstrim.notrim: Ubuntu's weekly fstrim.timer would punch the freed blocks out of the file
+    printf '%s %s ext4 loop,nofail,X-fstrim.notrim 0 0\n' "$IMAGE_FILE" "$DATA_ROOT" >> /etc/fstab
+    systemctl daemon-reload
+    mount "$DATA_ROOT"
+    note "$DATA_ROOT mounted from $IMAGE_FILE (added to /etc/fstab)"
 }
 
 # --- Section 2 ---------------------------------------------------------------------------------
@@ -631,6 +684,14 @@ except OSError as e:
     local free
     free=$(df -BG --output=avail "$(docker info --format '{{.DockerRootDir}}')" | tail -n 1 | tr -dc 0-9)
     [ "$free" -ge 20 ] && ok "$free GB free for Docker" || bad "$free GB free for Docker: the site accepts no searches below 20"
+    if [ -f "$IMAGE_FILE" ]; then
+        # Holes in the disk image (a trim, a copy) give its space back to the system disk, which
+        # a full one would then need for writes into the image
+        local size blocks unit
+        read -r size blocks unit < <(stat -c '%s %b %B' "$IMAGE_FILE")
+        [ $((blocks * unit)) -ge "$size" ] && ok "$IMAGE_FILE allocated whole" \
+            || bad "$IMAGE_FILE has holes: sudo fallocate -l $size $IMAGE_FILE (section 1, Disk)"
+    fi
     return "$FAILED"
 }
 
@@ -715,6 +776,7 @@ update() {
 setup() {
     check_system
     install_packages
+    [ -n "$DISK_IMAGE" ] && disk_image
     install_docker
     ssh_key_only
     firewall
@@ -759,6 +821,7 @@ main() {
             --contact) CONTACT=${2:?--contact needs a value}; shift ;;
             --my-ip) MY_IP=${2:?--my-ip needs an address}; shift ;;
             --data-root) DATA_ROOT=${2:?--data-root needs a folder}; shift ;;
+            --disk-image) DISK_IMAGE=${2:?--disk-image needs a size}; shift ;;
             --skip-ci) SKIP_CI=1 ;;
             --yes) YES=1 ;;
             --pulled) PULLED=1 ;;
@@ -766,6 +829,10 @@ main() {
         esac
         shift
     done
+    if [ -n "$DISK_IMAGE" ]; then
+        DATA_ROOT=${DATA_ROOT:-/srv/docker}
+        [[ $DATA_ROOT == /?* ]] || die "--data-root: an absolute path"
+    fi
     if [ -n "$MY_IP" ]; then
         [[ $MY_IP =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]] || die "--my-ip: an IPv4 address"
     fi

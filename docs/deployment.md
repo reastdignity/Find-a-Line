@@ -25,7 +25,7 @@ What the site needs from the outside, and what stays closed:
 
 **The script.** `deploy/vps.sh` runs the commands of these sections on the server; the sections
 say what each step does and why, and remain the way to do it by hand. Left to you: the server
-and a block volume for Docker (section 1), the DNS record (3), the sign-in apps at GitHub and
+and, if the provider has them, a block volume for Docker (section 1), the DNS record (3), the sign-in apps at GitHub and
 Google (7), the restic repository (11) and the checks that need a browser or another network
 (12). After cloning the checkout (section 1):
 
@@ -53,6 +53,9 @@ reboot). Options:
   (`/etc/fail2ban/jail.d/00-ignore.local`); leave it out without a fixed address;
 - `--data-root /srv/docker`, Docker's data on a volume of its own (section 1, *Disk*; only
   before the site's volumes exist);
+- `--disk-image 200G`, without a block volume: a file of that size on the system disk with a file
+  system of its own, mounted at `--data-root` (default `/srv/docker`) and made Docker's data root
+  (section 1, *Disk*; only before the site's volumes exist);
 - `--yes`, yes to its questions.
 
 Later: `sudo deploy/vps.sh update` (section 13) and `sudo deploy/vps.sh check` (sections 2 and
@@ -77,13 +80,37 @@ timer, SSH, the free disk).
   searches below 20 GB free (`FINDALINE_LIMIT_FREE_DISK_GB_MIN`), but the cache has no automatic
   eviction yet (planned: docs/roadmap.md), and a search or download already running may still
   fill the disk. On the system disk a full disk takes the system down with it (logs, nginx,
-  Docker itself). Give the site a filesystem of its own: a block volume of the provider (it can
-  usually grow later), formatted and mounted (e.g. at `/srv/docker`, in `/etc/fstab` with
-  `nofail`) and made Docker's data root (`"data-root": "/srv/docker"` in
-  `/etc/docker/daemon.json`, then `sudo systemctl restart docker`) before the first
-  `docker compose up`. Watch it: `df -h /srv/docker` (or `/var/lib/docker`) and the free disk in
-  the *Admin* tab. To free space by hand, delete old folders under the volume's `cache/` while no
-  search runs (they are downloaded again when needed).
+  Docker itself). Give the site a filesystem of its own before the first `docker compose up`,
+  mounted (e.g. at `/srv/docker`) and made Docker's data root (`"data-root": "/srv/docker"` in
+  `/etc/docker/daemon.json`, then `sudo systemctl restart docker`):
+  - a block volume of the provider (it can usually grow later), formatted and mounted in
+    `/etc/fstab` with `nofail` (`--data-root /srv/docker` of the script);
+  - without one, a disk image: a file on the system disk with an ext4 of its own
+    (`--disk-image 200G` of the script). The searches can fill the image, never the rest of the
+    disk; leave the system at least 10 GB beside it. By hand:
+    ```sh
+    sudo fallocate -l 200G /srv/findaline-docker.img   # allocated whole, not a sparse file
+    sudo chmod 600 /srv/findaline-docker.img
+    sudo mkfs.ext4 -E nodiscard -L findaline-docker /srv/findaline-docker.img
+    sudo mkdir -p /srv/docker
+    echo '/srv/findaline-docker.img /srv/docker ext4 loop,nofail,X-fstrim.notrim 0 0' | sudo tee -a /etc/fstab
+    sudo systemctl daemon-reload && sudo mount /srv/docker
+    ```
+    The image must stay allocated whole: a hole gives its space back to the system disk, and once
+    that is full, writes into the image fail. `mkfs` would punch holes without `nodiscard`, and
+    Ubuntu's weekly `fstrim.timer` without `X-fstrim.notrim`; never run `fstrim` on it by hand
+    (`deploy/vps.sh check` finds holes; `sudo fallocate -l 200G /srv/findaline-docker.img` fills
+    them again). To grow it later, online: `sudo fallocate -l 300G /srv/findaline-docker.img`,
+    then with `D=$(findmnt -no SOURCE /srv/docker)`: `sudo losetup -c $D && sudo resize2fs $D`.
+
+  With `nofail` the server boots without the file system, so Docker must wait for it, or it would
+  start on the empty folder below it with no volumes:
+  `/etc/systemd/system/docker.service.d/findaline-data-root.conf` with `[Unit]` and
+  `RequiresMountsFor=/srv/docker`, then `sudo systemctl daemon-reload` (the script writes it
+  whenever Docker's data root is a mount point). Watch the disk: `df -h /srv/docker` (or
+  `/var/lib/docker`) and the free disk in the *Admin* tab. To free space by hand, delete old
+  folders under the volume's `cache/` while no search runs (they are downloaded again when
+  needed).
 - A domain whose DNS you manage (section 3).
 - An e-mail address or URL where the operators of Nominatim, Overpass and the data services can
   reach you (`FINDALINE_CONTACT`, sent in the User-Agent).
