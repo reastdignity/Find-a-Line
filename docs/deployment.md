@@ -1,226 +1,67 @@
-# Deployment on a home server
+# Deployment on a VPS
 
 How to run the public site of Find-a-Line (`findaline.py web --public` and `worker --public`, in
-Docker) on a home Linux server that already runs [SWAG](https://github.com/linuxserver/docker-swag)
-(nginx, Certbot, fail2ban) as the reverse proxy of other services, with ports 80 and 443 of the
-router forwarded to it. Follow the sections in order; every command is meant to be copied.
+Docker) on a virtual server with Ubuntu 26.04 LTS that runs nothing else on the web: nginx from
+Ubuntu's packages on the host is the reverse proxy (with certbot for the certificate and fail2ban),
+and the two services of compose.yaml run behind it. Follow the sections in order; every command is
+meant to be copied.
 
 Throughout, replace:
-- `findaline.example.org` with the address of the site (the subdomain `findaline` of your domain);
+- `findaline.example.org` with the address of the site (set `SITE=` once in the shell where it is
+  used: section 4);
 - `/srv/find-a-line` with the folder of the checkout;
-- `/srv/swag` with the folder of SWAG's `/config` (the volume or bind mount of your SWAG
-  container), and `swag` with the name of its container;
-- `192.168.1.0/24` with your LAN, `192.168.1.1` with the router.
+- `203.0.113.7` with a fixed address of your own (your home or office), where it is optional.
 
 What the site needs from the outside, and what stays closed:
 
 | From | To | What |
 | --- | --- | --- |
-| the internet | SWAG (80, 443) | the site; SWAG sends it to `web` in the network `findaline-proxy` |
+| the internet | nginx on the host (80, 443) | the site; nginx sends it to `web` on `127.0.0.1:8765` |
+| the internet | the host (22) | SSH, with a key only |
 | `web` | the internet (HTTPS) | sign-in: GitHub's and Google's token endpoints, Google's OpenID metadata and keys |
 | `worker` | the internet (HTTP/HTTPS) | the data services, Nominatim, Overpass, OpenStreetMap extracts |
-| `web`, `worker` | the LAN, the host, other containers | nothing: the firewall rules below |
-| `worker` | `web`, SWAG | nothing: they share no network (they talk through the data volume) |
+| `web`, `worker` | the host, private addresses (the provider's private network, its metadata service), other containers | nothing: the firewall rules of section 2 |
+| `worker` | `web` | nothing: they share no network (they talk through the data volume) |
 
 ## 1. Prerequisites
-- A Linux server (Debian 13 or Ubuntu 24.04 are assumed below) with Docker Engine and the Compose
-  plugin from Docker's repository (`docker compose version`), git, `sqlite3`, `restic`, `ufw`:
-  `sudo apt install git sqlite3 restic ufw`.
-- **cgroup v2** (the default of both systems): `stat -fc %T /sys/fs/cgroup` must say
-  `cgroup2fs`, and `docker info` `Cgroup Version: 2`. The worker reads its container's memory
-  and CPU limits from cgroup v2 to size the searches; under cgroup v1 it cannot, and warns at
-  start (`docker compose logs worker`): a search could then plan for the whole machine and be
-  killed at the memory limit.
+- A VPS with Ubuntu 26.04 LTS and a public IPv4 address, with Docker Engine and the Compose plugin
+  from Docker's repository (docs.docker.com/engine/install/ubuntu; `docker compose version`), at
+  least Docker Engine 28 (`docker version`): since 28.0 Docker drops packets that other machines
+  route to the ports a container publishes on `127.0.0.1` (on a VPS, those of other customers in
+  the provider's network could otherwise reach the web service past nginx). Also git, `sqlite3`,
+  `restic`: `sudo apt install git sqlite3 restic`.
+- **cgroup v2** (the default of Ubuntu): `stat -fc %T /sys/fs/cgroup` must say `cgroup2fs`, and
+  `docker info` `Cgroup Version: 2`. The worker reads its container's memory and CPU limits from
+  cgroup v2 to size the searches; under cgroup v1 it cannot, and warns at start (`docker compose
+  logs worker`): a search could then plan for the whole machine and be killed at the memory limit.
 - Cores and memory for the searches: the worker takes `WORKER_CPUS` cores (all but one) and
-  `WORKER_MEMORY` (8 GB by default), the web service 1 core and 1 GB.
+  `WORKER_MEMORY` (8 GB by default), the web service 1 core and 1 GB; nginx needs little.
 - **Disk.** The data volume holds the cache of elevation data, orthophotos and OpenStreetMap
   extracts and the saved runs; it grows with every new area searched. The site accepts no new
   searches below 20 GB free (`FINDALINE_LIMIT_FREE_DISK_GB_MIN`), but the cache has no automatic
   eviction yet (planned: docs/roadmap.md), and a search or download already running may still
-  fill the disk. If the volumes share a filesystem with the system and your other services, a
-  full disk takes them all down (logs, databases, Docker itself). Give the site a filesystem of
-  its own: Docker's data root (`"data-root": "/srv/docker"` in `/etc/docker/daemon.json`, on a
-  partition or logical volume of its own, set before the first `docker compose up`), or at
-  least the volume `findaline_data` (a dedicated filesystem such as an LVM volume or a separate
-  disk mounted at its folder, or a quota: an XFS project quota, a ZFS or btrfs dataset with a
-  quota). Watch it: `df -h /var/lib/docker` (or your data root) and the free disk in the
-  *Admin* tab. To free space by hand, delete old folders under the volume's `cache/` while no
+  fill the disk. On the system disk a full disk takes the system down with it (logs, nginx,
+  Docker itself). Give the site a filesystem of its own: a block volume of the provider (it can
+  usually grow later), formatted and mounted (e.g. at `/srv/docker`, in `/etc/fstab` with
+  `nofail`) and made Docker's data root (`"data-root": "/srv/docker"` in
+  `/etc/docker/daemon.json`, then `sudo systemctl restart docker`) before the first
+  `docker compose up`. Watch it: `df -h /srv/docker` (or `/var/lib/docker`) and the free disk in
+  the *Admin* tab. To free space by hand, delete old folders under the volume's `cache/` while no
   search runs (they are downloaded again when needed).
-- SWAG running, with a domain pointing at your public address (a DNS record you manage, or a
-  dynamic DNS name) and ports 80 and 443 of the router forwarded to it.
+- A domain whose DNS you manage (section 3).
 - An e-mail address or URL where the operators of Nominatim, Overpass and the data services can
   reach you (`FINDALINE_CONTACT`, sent in the User-Agent).
 - The checkout: `sudo git clone https://github.com/<you>/Find-a-Line.git /srv/find-a-line`
   (or your own remote), owned by your user: `sudo chown -R $USER: /srv/find-a-line`.
 
-## 2. DNS and the certificate
-SWAG's certificate must cover `findaline.example.org`. Either:
-- **a subdomain**: add it to `SUBDOMAINS` of SWAG's container (e.g. `SUBDOMAINS=www,findaline`
-  with `URL=example.org`), create a DNS record for `findaline` (an A record to your public IPv4
-  address, or a CNAME to your main name if that has no AAAA record; see *IPv6* below) and
-  recreate SWAG (`docker compose up -d swag` in its
-  folder); SWAG requests the new certificate at start (`docker logs swag` shows it);
-- **or a wildcard certificate**: `SUBDOMAINS=wildcard`, `VALIDATION=dns` with your DNS provider's
-  plugin (`DNSPLUGIN=` and its credentials in `/srv/swag/dns-conf/<provider>.ini`); then only the
-  DNS record for `findaline` (or a wildcard record) is needed.
+## 2. SSH and the firewall
+A VPS is on the internet from its first minute: do this first.
 
-**IPv6: no AAAA record for `findaline` at first.** SWAG's own network is usually IPv4 only.
-A visitor connecting over IPv6 then reaches it through Docker's userland proxy (`docker-proxy`),
-which opens a new IPv4 connection from the bridge's gateway: nginx sees every IPv6 visitor as
-that one private address (e.g. `172.18.0.1`). They would all share one bucket of the
-per-address limits (one visitor's burst refuses everyone), and fail2ban would never ban them
-(SWAG's `ignoreip` skips private addresses). So publish only an A record for this name. A CNAME
-to a name that has an AAAA record brings the AAAA along: use an A record then (with a wildcard
-record, add an explicit A record for `findaline`, which takes precedence). Check:
-`dig +short AAAA findaline.example.org` prints nothing. Section 12 checks that the log shows the
-visitors' real addresses. To serve IPv6 later, see *IPv6 later* in section 5.
-
-If your DNS provider proxies traffic (Cloudflare's orange cloud), turn the proxy off for this name:
-otherwise every request reaches SWAG from the provider's addresses, and the per-address limits
-and fail2ban would hit everyone at once.
-
-## 3. The network between SWAG and the site
-SWAG reaches the web service through a network of their own, `findaline-proxy`. It is internal
-(no traffic leaves it), has a fixed subnet, and its bridge has a fixed name for the firewall.
-SWAG gets the fixed address `172.30.0.2`; the containers get theirs from `172.30.0.128/25`, so
-none of them can take it first. Create it once:
-
-```sh
-docker network create --internal --subnet 172.30.0.0/24 --ip-range 172.30.0.128/25 \
-  --opt com.docker.network.bridge.name=br-fal-proxy findaline-proxy
-```
-
-If the subnet is taken (`Pool overlaps with other one on this address space`), pick another
-private /24 that `docker network inspect $(docker network ls -q) | grep Subnet` does not list,
-and use it everywhere below (SWAG's address, `FINDALINE_TRUSTED_PROXY`).
-
-Join SWAG to it. In SWAG's `compose.yaml` (keep its existing networks; a service without a
-`networks:` key is on `default`):
-
-```yaml
-services:
-  swag:
-    # ... as before ...
-    networks:
-      default:
-      findaline-proxy:
-        ipv4_address: 172.30.0.2
-
-networks:
-  findaline-proxy:
-    external: true
-```
-
-then `docker compose up -d swag` in SWAG's folder. (A SWAG started with `docker run`:
-`docker network connect --ip 172.30.0.2 findaline-proxy swag`; it stays connected across
-restarts, but not when the container is created again.) Check:
-`docker inspect swag --format '{{json .NetworkSettings.Networks}}'` lists `findaline-proxy` with
-`"IPAddress":"172.30.0.2"`.
-
-## 4. SWAG configuration
-The files are in `deploy/swag/` of the checkout.
-
-1. The http-context part (rate limit zones, the masked log format):
-   ```sh
-   sudo cp /srv/find-a-line/deploy/swag/00-findaline-http.conf /srv/swag/nginx/site-confs/
-   ```
-   SWAG's `nginx.conf` includes `site-confs/*.conf` inside its `http` block in alphabetical
-   order, and `default.conf` there includes the proxy confs; the file must keep its `00-` prefix
-   so it comes first (otherwise `nginx -t` says `unknown log format "findaline"`).
-2. The site:
-   ```sh
-   sudo cp /srv/find-a-line/deploy/swag/findaline.subdomain.conf /srv/swag/nginx/proxy-confs/
-   ```
-   It answers `server_name findaline.*`; with another subdomain change that line. It proxies to
-   `findaline-web:8765` (the web service's alias in `findaline-proxy`) through SWAG's
-   `resolver.conf` (Docker's DNS, `127.0.0.11`), so SWAG starts even while the site is down.
-   What it sets: `client_max_body_size 2m`; 10 s instead of nginx's 60 s for a slow client's
-   request headers and body (below); 400 for any request with an `Upgrade` header (the app has
-   no WebSockets; SWAG's `proxy.conf` would pass the header on, and the app would log a warning
-   for each); per client address 20 requests/s with a burst of 200
-   (a map view loads dozens of orthophoto tiles at once) and 40 connections, 10 requests/minute
-   with a burst of 10 for `/login/` and `/auth/` (beyond them: 429); `/api/events` (the live
-   event stream) without buffering and with a read timeout of an hour; gzip for scripts, JSON,
-   CSS and CSV (a run's `data.js` shrinks about 4.7 times); HSTS; its own access log,
-   `/config/log/nginx/findaline.access.log`, where the token of a share link and the query of a
-   sign-in callback are replaced (`/s/<token>/map.html`, `/auth/github?<query>`), also in the
-   Referer. SWAG's logrotate rotates both logs weekly and keeps 14.
-
-   **What the logs of this site contain**:
-   - `findaline.access.log`, one line per request: the client's address, the time, the request
-     line with the token of a share link replaced by `<token>` and the query of `/auth/...`
-     replaced by `<query>` (other queries stay: the app's own carry no secrets), the status, the
-     size, the Referer masked the same way and the User-Agent. No cookies, no other headers.
-   - `findaline.error.log`, level `error` and above (not nginx's default `warn`): failures of the
-     upstream (the web service down, refusing, timing out, an invalid answer), with the
-     client's address, the request line and the Referer **unmasked**. Requests under `/s/` (share
-     links), `/login/` and `/auth/` (sign-in), and `/cache/` (orthophoto tiles: a shared map asks
-     for them with its own address, token included, as the Referer) log only `crit`, which a
-     proxied request never reaches, so their addresses never appear there. A request of another
-     path made from a shared map's page would show the token in the Referer; the viewer makes
-     none, but a browser may ask for `/favicon.ico` with it. Warnings (an answer buffered to a
-     temporary file) and the refusals of the limits (`info`) are not logged.
-   - SWAG's own `error.log` gets what nginx logs before a request is matched to this site
-     (TLS handshakes, malformed requests), as for any of your sites.
-
-   **Slow clients.** The 10 s timeouts of this server block were measured with SWAG's nginx 1.30
-   (TLS, SNI): they apply over HTTP/2 to the headers and the body of a request (10 s instead of
-   60 s), and over HTTP/1.1 to the body. The headers of an HTTP/1.1 request, though, are read
-   under the timeout of the default server of port 443 (nginx chooses this site only once it
-   has read them): 60 s, whatever this file says. Hundreds of connections that send their
-   headers slowly are held that long (the per-address `limit_conn` counts a connection only
-   once its headers are read). If you want 10 s there too, it is a setting for all your sites:
-   add `client_header_timeout 10s;` to the `http` block of `/srv/swag/nginx/nginx.conf` (or to
-   the `server_name _` block of `site-confs/default.conf`), then `nginx -t` and restart SWAG.
-   It is optional; this repository does not change SWAG's shared files.
-3. **Security headers.** The app sends its own (Content-Security-Policy, X-Frame-Options,
-   Referrer-Policy, X-Content-Type-Options, Permissions-Policy, Cross-Origin-Opener-Policy and
-   -Resource-Policy). SWAG's `ssl.conf` (shared by all your sites) may add headers too: the
-   current sample sends `Strict-Transport-Security` (HSTS), older copies have it commented out,
-   and it lists optional ones, commented out (CSP, X-Frame-Options, Referrer-Policy...). nginx
-   passes `add_header` of the server level (where `ssl.conf` is included) to a location only if
-   the location has none of its own; every location of `findaline.subdomain.conf` adds HSTS
-   itself, so nothing of `ssl.conf` reaches this site, and no header is ever sent twice, whatever
-   you enable there for your other services. HSTS for this site therefore needs no change of
-   `ssl.conf`. Do not add headers to the `server` block of `findaline.subdomain.conf` (they would
-   not apply); add them to each location.
-4. fail2ban: the filter and the jail.
-   ```sh
-   sudo cp /srv/find-a-line/deploy/swag/fail2ban/findaline.conf /srv/swag/fail2ban/filter.d/
-   cat /srv/find-a-line/deploy/swag/fail2ban/jail.findaline.local | sudo tee -a /srv/swag/fail2ban/jail.local
-   ```
-   The jail `findaline` reads the site's own log and bans an address with more than 100
-   refusals (401 sign-in required, 403 forbidden, 429 too many requests) in 10 minutes for an
-   hour, at SWAG's firewall (SWAG's iptables, all ports). That is far above normal use: an
-   expired session or an account waiting for approval gives a few 401/403 per page load, the
-   app's own limits a few 429 a minute. SWAG's `[DEFAULT]` `ignoreip` skips private addresses,
-   so nobody on the LAN is banned. SWAG's own jails (`nginx-unauthorized` bans after 5 401s)
-   read `access.log`, which this site does not write to.
-5. Check and restart:
-   ```sh
-   docker exec swag nginx -t
-   docker restart swag
-   docker exec swag fail2ban-client status findaline
-   ```
-   (`nginx -t` must say `syntax is ok` and `test is successful`; the restart also copies the
-   fail2ban files into place.) Until the site runs (section 9), SWAG answers 502 for it.
-
-## 5. Firewall
-Docker publishes ports through its own iptables rules, past `ufw`: SWAG's 80 and 443 are open
-whatever `ufw` says, and `ufw` rules do not apply to traffic forwarded to and from containers.
-Hence two parts: `ufw` for the host itself, and rules in Docker's `DOCKER-USER` chain (which
-Docker runs before its own for forwarded traffic and never changes) for the containers.
-
-**The host** (incoming traffic denied by default; SSH only from the LAN and only with a key):
-
-```sh
-sudo ufw default deny incoming
-sudo ufw default allow outgoing
-sudo ufw allow from 192.168.1.0/24 to any port 22 proto tcp
-```
-
-Check that you can log in with your key (`ssh -o PasswordAuthentication=no <server>` from
-another terminal), then turn passwords off:
+**SSH with a key only.** Log in as a user with `sudo` and your public key in
+`~/.ssh/authorized_keys` (the provider's image often starts with `root` and your key: create the
+user with `sudo adduser <name>`, `sudo usermod -aG sudo <name>`, copy the key to it). Check that
+you can log in with your key (`ssh -o PasswordAuthentication=no <name>@<server>` from another
+terminal), then turn passwords and root's login off:
 
 ```sh
 printf 'PasswordAuthentication no\nKbdInteractiveAuthentication no\nPermitRootLogin no\n' \
@@ -230,19 +71,40 @@ sudo sshd -t && sudo systemctl reload ssh
 
 and, keeping the current session open, log in again from another terminal before going on.
 
-**The containers** may reach the internet only. The containers of Find-a-Line sit on the
-bridges `br-fal-proxy`, `br-fal-web` and `br-fal-worker` (named in compose.yaml and in the
-command of section 3). Two sets of rules:
+**The host** (incoming traffic denied by default; SSH, HTTP and HTTPS open):
+
+```sh
+sudo ufw default deny incoming
+sudo ufw default allow outgoing
+sudo ufw allow OpenSSH
+sudo ufw allow 80/tcp
+sudo ufw allow 443/tcp
+```
+
+With a fixed address of your own, open SSH to it only: `sudo ufw allow from 203.0.113.7 to any
+port 22 proto tcp` instead of `allow OpenSSH` (keep the provider's web console at hand in case
+that address changes). fail2ban's `sshd` jail (section 5) bans addresses that keep failing to log
+in. If the provider has a firewall of its own in front of the server, allow 22, 80 and 443
+there too (and nothing else): a second layer that does not depend on the host.
+
+nginx runs on the host, so `ufw` applies to its ports as to any other service. Docker publishes
+the web service on `127.0.0.1:8765` only (compose.yaml), which nothing outside the host can reach
+(Docker 28+, section 1); `ufw` does not see Docker's own rules, which is why the containers have
+the rules below.
+
+**The containers** may reach the internet only. They sit on the bridges `br-fal-web` and
+`br-fal-worker` (named in compose.yaml). Two sets of rules:
 - forwarded traffic (`DOCKER-USER`): nothing from these bridges to 10.0.0.0/8, 172.16.0.0/12
-  (other Docker networks; their own bridge stays allowed), 192.168.0.0/16, 169.254.0.0/16 (link
-  local, cloud metadata) and 100.64.0.0/10 (carrier-grade NAT, Tailscale); other containers,
-  SWAG included, are not affected (SWAG may keep proxying to services on the LAN);
-- traffic from these bridges to the host itself (`INPUT`, `ufw`): nothing. A `ufw deny in on
-  br-fal-...` rule alone is not enough: the stock `/etc/ufw/before.rules` accepts ICMP echo, the
-  DHCP client, mDNS and SSDP (UPnP) before any user rule, so a container could still reach the
-  host's `avahi-daemon` or `minissdpd`. The rule of `deploy/firewall/ufw-before.rules` drops
-  everything from the bridges to the host ahead of those accepts (only replies to connections
-  the host opened pass); it goes into `before.rules`, which `ufw` loads at every start.
+  (other Docker networks; their own bridge stays allowed), 192.168.0.0/16 (the provider's private
+  networks are usually in these three), 169.254.0.0/16 (link local: the provider's metadata
+  service at 169.254.169.254, which may hand out the server's own credentials or startup data) and
+  100.64.0.0/10 (carrier-grade NAT, Tailscale);
+- traffic from these bridges to the host itself (`INPUT`, `ufw`): nothing, its public address
+  included (SSH, nginx). A `ufw deny in on br-fal-...` rule alone is not enough: the stock
+  `/etc/ufw/before.rules` accepts ICMP echo, the DHCP client, mDNS and SSDP (UPnP) before any user
+  rule. The rule of `deploy/firewall/ufw-before.rules` drops everything from the bridges to the host
+  ahead of those accepts (only replies to connections the host opened pass: nginx's connections to
+  the web service); it goes into `before.rules`, which `ufw` loads at every start.
 
 ```sh
 sudo cp /etc/ufw/after.rules /etc/ufw/after.rules.bak
@@ -250,7 +112,6 @@ sudo cp /etc/ufw/before.rules /etc/ufw/before.rules.bak
 cat /srv/find-a-line/deploy/firewall/ufw-after.rules | sudo tee -a /etc/ufw/after.rules
 sudo sed -i '/^# ok icmp codes for INPUT/e cat /srv/find-a-line/deploy/firewall/ufw-before.rules' /etc/ufw/before.rules
 sudo grep -n -B3 -A1 'br-fal' /etc/ufw/before.rules
-sudo ufw insert 1 deny in on br-fal-proxy
 sudo ufw insert 1 deny in on br-fal-web
 sudo ufw insert 1 deny in on br-fal-worker
 sudo ufw enable        # answer y: the SSH rule above keeps your session
@@ -265,45 +126,35 @@ sudo ufw status numbered
 `-A ufw-before-input -m conntrack --ctstate INVALID -j DROP`); `iptables -S ufw-before-input`
 lists `-A ufw-before-input -i br-fal-+ -j DROP` before the first `-p icmp` rule.
 
-`iptables -S DOCKER-USER` must list the rules of `ufw-after.rules`. If it listed rules of your
-own before (`sudo iptables -S DOCKER-USER` before the `tee`), add them to the block in
-`/etc/ufw/after.rules`: the block empties the chain on every reload. The rules persist: `ufw`
-loads them at boot, before Docker starts, and Docker leaves `DOCKER-USER` alone. They need
-Docker's default iptables firewall (not the experimental nftables one, `docker info | grep -i
-firewall`).
+`iptables -S DOCKER-USER` must list the rules of `ufw-after.rules` (if Docker is not installed yet,
+the chain appears once it is, and `ufw reload` fills it). The block empties the chain on every
+reload; rules of your own in it go into the block. The rules persist: `ufw` loads them at boot,
+before Docker starts, and Docker leaves `DOCKER-USER` alone. They need Docker's default iptables
+firewall (not the experimental nftables one, `docker info | grep -i firewall`).
 
 **DNS.** Docker's embedded DNS server (127.0.0.11 in every container) forwards names it does not
 know to the host's resolvers, and it sends those queries from the container's own network, so
-they pass the rules above (only when the host's resolver is on its loopback, `127.0.0.1` of
-dnsmasq or Pi-hole, does Docker send them from the host; with systemd-resolved's `127.0.0.53` it
-uses the servers behind it). A host whose resolver is the router would leave the containers
-without DNS. compose.yaml therefore gives both services public resolvers (`dns:` 9.9.9.9 and
-1.1.1.1, `CONTAINER_DNS_1`/`_2` in `.env` to change them). To use the router anyway, set
-`CONTAINER_DNS_1=192.168.1.1` and uncomment the two port-53 lines in `/etc/ufw/after.rules`
-(with the router's address), then `sudo ufw reload`.
+they pass the rules above (with systemd-resolved's `127.0.0.53`, Ubuntu's default, it uses the
+servers behind it: often the provider's, on a private or link-local address that the rules
+block). compose.yaml therefore gives both services public resolvers (`dns:` 9.9.9.9 and 1.1.1.1,
+`CONTAINER_DNS_1`/`_2` in `.env` to change them). To use the provider's resolver anyway, set
+`CONTAINER_DNS_1` to its address and uncomment the two port-53 lines in `/etc/ufw/after.rules`
+(with that address), then `sudo ufw reload`.
 
-**IPv6.** The networks of compose.yaml and `findaline-proxy` have no IPv6 (`enable_ipv6: false`,
-no `--ipv6`), so the containers have no IPv6 address and no IPv6 route. If you ever enable it,
-add the same block for IPv6 to `/etc/ufw/after6.rules` (`fc00::/7`, `fe80::/10` instead of the
-IPv4 ranges).
-
-**IPv6 later** (an option, not needed to start). To publish an AAAA record for the site, SWAG
-must see the IPv6 visitors' own addresses (section 2): give SWAG's network IPv6
-(`enable_ipv6: true` and an IPv6 subnet in SWAG's compose file, with Docker's `ip6tables`,
-the default of current Docker Engine), so Docker forwards IPv6 to SWAG itself instead of
-through `docker-proxy`, and check with section 12 that IPv6 visitors appear with their own
-addresses. One visitor usually holds a whole /64, so the limit zones should then count per /64
-rather than per address (a `map` of `$binary_remote_addr` in `00-findaline-http.conf`), and the
-firewall rules above need their IPv6 counterparts. This is planned (docs/roadmap.md), not part
-of the files here.
+**IPv6.** The networks of compose.yaml have no IPv6 (`enable_ipv6: false`), so the containers have
+no IPv6 address and no IPv6 route. If you ever enable it, add the same block for IPv6 to
+`/etc/ufw/after6.rules` (`fc00::/7`, `fe80::/10` instead of the IPv4 ranges). The host's own IPv6
+is covered by `ufw` as above (it applies the same rules to IPv6 by default).
 
 **Test from inside the containers** (after section 9, while the site runs):
 
 ```sh
 cd /srv/find-a-line
-for service in web worker; do docker compose exec $service python -c "
-import socket, urllib.request
-for host, port in [('192.168.1.1', 80), ('192.168.1.1', 53), ('172.17.0.1', 22), ('169.254.169.254', 80)]:
+PUBLIC=$(curl -4s https://ifconfig.me)   # the server's public address
+for service in web worker; do docker compose exec -e PUBLIC=$PUBLIC $service python -c "
+import os, socket, urllib.request
+for host, port in [(os.environ['PUBLIC'], 22), (os.environ['PUBLIC'], 443), ('172.30.0.1', 8765), ('172.17.0.1', 22),
+                   ('169.254.169.254', 80), ('10.0.0.1', 80), ('192.168.0.1', 80)]:
     try:
         socket.create_connection((host, port), 3); print(host, port, 'REACHABLE: check the rules')
     except OSError as e:
@@ -312,25 +163,142 @@ print('internet:', urllib.request.urlopen('https://nominatim.openstreetmap.org/s
 "; done
 ```
 
-Add the server's own LAN address with port 22 to the list. Every LAN address must say
-`blocked` (a timeout), the internet `200`. Also: `docker compose exec worker python -c "import
-socket; socket.create_connection(('findaline-web', 8765), 3)"` must fail (`gaierror`: the worker
-does not even see the name).
+Add the addresses of the provider's private network, if the server has one (`ip -4 addr`). Every
+address must say `blocked` with `TimeoutError` (a `ConnectionRefusedError` means the packet reached
+a host that answered), the internet `200`. Also: `docker compose exec worker python -c "import
+socket; socket.create_connection(('web', 8765), 3)"` must fail (`gaierror`: the worker does not
+even see the name).
 
-**A separate VLAN.** If the router supports VLANs, put the server in its own (a DMZ) with
-router rules: DMZ to LAN denied, LAN to DMZ only SSH and what you need. Then not only the
-containers but the whole server is kept from the LAN.
+**IPv6 for the site later** (an option, not needed to start). The site starts with an A record
+only (section 3). nginx on the host sees IPv6 visitors with their own addresses, but one visitor
+usually holds a whole /64: before an AAAA record is published, the limit zones should count per
+/64 rather than per address (a `map` of the address in `findaline-http.conf`), and fail2ban
+should ban the /64. This is planned (docs/roadmap.md), not part of the files here.
+
+## 3. DNS
+Create an A record for `findaline.example.org` with the server's public IPv4 address, and **no
+AAAA record** (section 2, *IPv6 for the site later*). A CNAME to a name that has an AAAA record
+brings the AAAA along: use an A record then. Check: `dig +short A findaline.example.org` prints the
+server's address and `dig +short AAAA findaline.example.org` nothing.
+
+If your DNS provider proxies traffic (Cloudflare's orange cloud), turn the proxy off for this name:
+otherwise every request reaches nginx from the provider's addresses, the per-address limits and
+fail2ban would hit everyone at once, and the provider would buffer the event stream.
+
+## 4. nginx and the certificate
+The files are in `deploy/nginx/` of the checkout:
+- `findaline-http.conf` → `/etc/nginx/conf.d/`: the upstream (`127.0.0.1:8765`), the rate limit
+  zones, the masked log format, the timeouts for slow clients. Ubuntu's `nginx.conf` includes
+  `conf.d/*.conf` inside its `http` block before `sites-enabled/*`;
+- `findaline-tls.conf` → `/etc/nginx/snippets/`: the TLS settings (Mozilla's "intermediate":
+  TLS 1.2 and 1.3);
+- `findaline-acme.conf` → `/etc/nginx/sites-available/findaline-acme`: port 80, certbot's
+  challenges and a redirect to https; works before the certificate exists;
+- `findaline.conf` → `/etc/nginx/sites-available/findaline`: the site on port 443, enabled once
+  the certificate exists.
+
+The two site files name `findaline.example.org`; `sed` puts your name in while copying.
+
+```sh
+sudo apt install nginx certbot
+SITE=findaline.example.org
+cd /srv/find-a-line
+sudo cp deploy/nginx/findaline-http.conf /etc/nginx/conf.d/
+sudo cp deploy/nginx/findaline-tls.conf /etc/nginx/snippets/
+sed "s/findaline\.example\.org/$SITE/g" deploy/nginx/findaline-acme.conf | sudo tee /etc/nginx/sites-available/findaline-acme >/dev/null
+sed "s/findaline\.example\.org/$SITE/g" deploy/nginx/findaline.conf | sudo tee /etc/nginx/sites-available/findaline >/dev/null
+sudo rm -f /etc/nginx/sites-enabled/default
+sudo ln -s /etc/nginx/sites-available/findaline-acme /etc/nginx/sites-enabled/
+sudo mkdir -p /var/www/letsencrypt
+sudo nginx -t && sudo systemctl reload nginx
+```
+
+`nginx -t` must say `syntax is ok` and `test is successful`. Then the certificate from Let's
+Encrypt (your e-mail for expiry notices), the site, and a test of the renewal:
+
+```sh
+sudo certbot certonly --webroot -w /var/www/letsencrypt -d $SITE -m you@example.org --agree-tos \
+  --no-eff-email --deploy-hook 'systemctl reload nginx'
+sudo ln -s /etc/nginx/sites-available/findaline /etc/nginx/sites-enabled/
+sudo nginx -t && sudo systemctl reload nginx
+sudo certbot renew --dry-run
+systemctl list-timers certbot.timer
+```
+
+certbot keeps the settings (webroot, the deploy hook) in `/etc/letsencrypt/renewal/`, and its
+timer renews the certificate when it nears its end, then reloads nginx. Until the site runs
+(section 9), nginx answers 502 for it.
+
+What the configuration sets: `client_max_body_size 2m`; 10 s instead of nginx's 60 s for a slow
+client's request headers and body (in the `http` block, so for every server: the headers of an
+HTTP/1.1 request are read before nginx knows which site they are for); 400 for any request with an
+`Upgrade` header (the app has no WebSockets); per client address 20 requests/s with a burst of 200
+(a map view loads dozens of orthophoto tiles at once) and 40 connections, 10 requests/minute with a
+burst of 10 for `/login/` and `/auth/` (beyond them: 429); `/api/events` (the live event stream)
+without buffering and with a read timeout of an hour, other requests 620 s (an estimate may wait
+for the worker's quick lane); gzip for scripts, JSON, CSS and CSV (a run's `data.js` shrinks about
+4.7 times); HTTP/2; HSTS; no nginx version in the `Server` header. A request for another name (or
+for the bare address of the server) gets no answer: port 80 closes the connection, port 443
+refuses the TLS handshake, so scanners of the address never see the site's certificate.
+
+**Security headers.** The app sends its own (Content-Security-Policy, X-Frame-Options,
+Referrer-Policy, X-Content-Type-Options, Permissions-Policy, Cross-Origin-Opener-Policy and
+-Resource-Policy); nginx adds `Strict-Transport-Security` at the server level of
+`findaline.conf`. nginx passes `add_header` of the server level to a location only if the location
+has none of its own: a header added to one location must be added to the others there too, and
+HSTS repeated in it.
+
+**What the logs of this site contain** (`/var/log/nginx/`, readable by root and the group `adm`;
+Ubuntu's logrotate rotates them daily and keeps 14, compressed):
+- `findaline.access.log`, one line per request: the client's address, the time, the request line
+  with the token of a share link replaced by `<token>` and the query of `/auth/...` replaced by
+  `<query>` (other queries stay: the app's own carry no secrets), the status, the size, the
+  Referer masked the same way and the User-Agent. No cookies, no other headers. The requests of
+  port 80 (redirects) are logged the same way.
+- `findaline.error.log`, level `error` and above (not nginx's default `warn`): failures of the
+  upstream (the web service down, refusing, timing out, an invalid answer), with the client's
+  address, the request line and the Referer **unmasked**. Requests under `/s/` (share links),
+  `/login/` and `/auth/` (sign-in), and `/cache/` (orthophoto tiles: a shared map asks for them with
+  its own address, token included, as the Referer) log only `crit`, which a proxied request never
+  reaches, so their addresses never appear there. A request of another path made from a shared
+  map's page would show the token in the Referer; the viewer makes none, but a browser may ask for
+  `/favicon.ico` with it. Warnings (an answer buffered to a temporary file) and the refusals of the
+  limits (`info`) are not logged.
+- `access.log` gets the requests for other names (masked the same way), `error.log` what nginx
+  logs before a request is matched to a site (TLS handshakes, malformed requests).
+
+## 5. fail2ban
+```sh
+sudo apt install fail2ban
+sudo cp /srv/find-a-line/deploy/fail2ban/findaline.conf /etc/fail2ban/filter.d/
+sudo cp /srv/find-a-line/deploy/fail2ban/findaline.local /etc/fail2ban/jail.d/
+sudo systemctl restart fail2ban
+sudo fail2ban-client status
+sudo fail2ban-client status findaline
+```
+
+The jail `findaline` reads the site's own log and bans an address with more than 100 refusals
+(401 sign-in required, 403 forbidden, 429 too many requests) in 10 minutes for an hour, on ports 80
+and 443 of the host (Ubuntu's ban action, nftables; SSH stays open to it). That is far above normal
+use: an expired session or an account waiting for approval gives a few 401/403 per page load, the
+app's own limits a few 429 a minute. Ubuntu's package also enables the jail `sshd` (failed SSH
+logins, read from the journal). Only the host itself is never banned: to keep your own fixed
+address out of both jails, uncomment `ignoreip` in `/etc/fail2ban/jail.d/findaline.local` (with
+your address) for the site, or set it under `[DEFAULT]` in a file of your own,
+`/etc/fail2ban/jail.d/00-ignore.local`, for all jails, then `sudo systemctl restart fail2ban`.
 
 ## 6. Automatic security updates
 ```sh
 sudo apt install unattended-upgrades
 sudo dpkg-reconfigure -plow unattended-upgrades
 ```
-(answer *Yes*). The security updates of the system then install daily. Docker's own packages
-come from Docker's repository; to include them, add `"origin=Docker";` to
-`Unattended-Upgrade::Origins-Pattern` in `/etc/apt/apt.conf.d/50unattended-upgrades` (an
-upgrade restarts the daemon, and the containers restart with it). The image of Find-a-Line is
-updated by section 13, SWAG's by pulling its image.
+(answer *Yes*). The security updates of the system, nginx, certbot and fail2ban included, then
+install daily. Docker's own packages come from Docker's repository; to include them, add
+`"origin=Docker";` to `Unattended-Upgrade::Origins-Pattern` in
+`/etc/apt/apt.conf.d/50unattended-upgrades` (an upgrade restarts the daemon, and the containers
+restart with it). Some updates (the kernel) need a reboot: `cat /var/run/reboot-required` says so,
+or set `Unattended-Upgrade::Automatic-Reboot "true";` there (with `-Time "04:00"`). The image of
+Find-a-Line is updated by section 13.
 
 ## 7. Sign-in: GitHub and Google
 The site keeps no passwords: visitors sign in with GitHub or Google (one of them is enough).
@@ -370,8 +338,9 @@ python3 -c "import secrets; print(secrets.token_urlsafe(48))" > secrets/findalin
 ```
 
 - `findaline.env` (both services): `FINDALINE_PUBLIC_URL=https://findaline.example.org`,
-  `FINDALINE_TRUSTED_PROXY=172.30.0.2` (SWAG's address of section 3: only its
-  `X-Forwarded-For` is believed), `FINDALINE_CONTACT`, `FINDALINE_GITHUB_CLIENT_ID` and/or
+  `FINDALINE_TRUSTED_PROXY=172.30.0.1` (as in the example: the gateway of the network `web` of
+  compose.yaml, the address nginx's connections arrive from; only its `X-Forwarded-For` is
+  believed), `FINDALINE_CONTACT`, `FINDALINE_GITHUB_CLIENT_ID` and/or
   `FINDALINE_GOOGLE_CLIENT_ID`, `FINDALINE_ADMINS` (below), `FINDALINE_SIGNUP` (`approval` by
   default: new accounts wait for an administrator), the limits (README, *Limits of the web app*).
   The public site has time limits by default: an hour for a search's download, two hours for
@@ -384,7 +353,9 @@ python3 -c "import secrets; print(secrets.token_urlsafe(48))" > secrets/findalin
   (`..._DOWNLOAD_MB_DAY_MAX=10000`) and the request rates (`..._JOB_RATE=10/minute;60/hour`);
   README's table lists all of them.
 - `.env` (compose itself): `WORKER_CPUS` (the number of cores minus one; `nproc` tells them),
-  `WORKER_MEMORY`, `FINDALINE_MIRROR_DIR` (section 10), `CONTAINER_DNS_1`/`_2` (section 5).
+  `WORKER_MEMORY`, `FINDALINE_MIRROR_DIR` (section 10), `CONTAINER_DNS_1`/`_2` (section 2),
+  `WEB_PORT` (the host's port of the web service, 8765; the upstream in `findaline-http.conf`
+  names it too).
 - `secrets/` (secrets/README.md): the client secrets into their files (`nano
   secrets/findaline_github_client_secret`, the value alone), the file of a provider you do
   not use left empty, `opentopography_api_key` with an OpenTopography key for `--source
@@ -413,6 +384,7 @@ Then add `google:<subject>` to `FINDALINE_ADMINS`, `docker compose up -d` (the w
 created again with the new settings) and sign in again: administrators are approved at sign-in.
 The first administrator also owns the runs from before the public mode.
 
+
 ## 9. Start
 ```sh
 cd /srv/find-a-line
@@ -423,9 +395,10 @@ docker compose logs --tail 20
 ```
 
 `web` must become `healthy` within a minute, the worker says `Find-a-Line worker ... is running
-on /data`. Open `https://findaline.example.org/`: the sign-in page. Sign in as the
-administrator: the *Admin* tab shows the worker, the free disk and the queue; in it, *OSM*
-downloads the OpenStreetMap extracts the site needs (Poland, Malta, Spain, Switzerland,
+on /data`. From the host, `curl -s -o /dev/null -w '%{http_code}\n' -H "Host: $SITE"
+http://127.0.0.1:8765/` says `200`. Open `https://findaline.example.org/`: the sign-in page. Sign
+in as the administrator: the *Admin* tab shows the worker, the free disk and the queue; in it,
+*OSM* downloads the OpenStreetMap extracts the site needs (Poland, Malta, Spain, Switzerland,
 Slovakia), so the coast and cliffs come without Overpass.
 
 The containers' logs are rotated by Docker (10 MB, 5 files each: compose.yaml, `logging`).
@@ -457,7 +430,7 @@ its map page loads as a script. A compromised worker can therefore change what t
 shows or does in the visitor's browser (its own origin, with the page's Content-Security-Policy),
 and change or delete the runs, the cache and the queue. The viewer itself (its scripts and
 styles) comes from the image, not from the volume. Keeping the worker from being compromised
-(the image's updates, section 13) and its network isolation (section 5) are the defence here.
+(the image's updates, section 13) and its network isolation (section 2) are the defence here.
 
 The Slovak tiles (`tools/sk_tiles.py`) are not downloaded by the site: copy the local mirror
 (the folder above `slovakia/`) to the server, e.g. `/srv/findaline-mirror`, make it readable
@@ -477,7 +450,7 @@ in `.env` and `docker compose up -d`. The worker sees it read-only at `/mirror`;
    `0710 root`), and SQLite run as root could leave `-wal`/`-shm` files in the volumes that the
    site can no longer open;
 2. backs up these copies and `runs/` (read by root from the data volume's folder) with
-   [restic](https://restic.net/) (encrypted, deduplicated) to a repository outside the house,
+   [restic](https://restic.net/) (encrypted, deduplicated) to a repository outside the VPS,
    then forgets old snapshots (7 daily, 5 weekly, 12 monthly) and checks the repository.
 
 Any failure (a copy that fails its check, restic) ends the script with an error before the next
@@ -486,7 +459,10 @@ step, and the systemd unit below reports it.
 The cache is not backed up (it is downloaded again), nor the Slovak mirror.
 
 **The repository** (one of restic's backends: an SFTP server, S3-compatible storage such as
-Backblaze B2, a rest-server at a friend's...). Settings in `/etc/findaline-backup.env`:
+Backblaze B2, a rest-server at home...), at another provider than the VPS: a backup must survive
+the loss of the server and of its provider's account. Snapshots of the whole server by the
+provider are a useful addition (a quick way back after a failed upgrade), not a replacement: they
+are not consistent copies of the databases and live with the same provider. Settings in `/etc/findaline-backup.env`:
 
 ```sh
 sudo install -m 600 /dev/null /etc/findaline-backup.env
@@ -596,57 +572,57 @@ docker compose up -d
 Remove the old `-wal`/`-shm` files before copying a database in: SQLite would apply them to the
 restored file.
 
+
 ## 12. Checks after start-up
-From a computer outside the LAN (a phone's hotspot) where it says so: SWAG ignores the LAN for
-bans.
+From a computer outside the server, on a network whose address is not in `ignoreip` where it says
+so (section 5).
 
 1. **Headers**, once each, with HSTS:
    ```sh
    curl -sS -o /dev/null -D - https://findaline.example.org/
    ```
-   One each of `content-security-policy`, `x-frame-options: DENY`, `referrer-policy`,
-   `x-content-type-options`, `permissions-policy`, `cross-origin-opener-policy`,
-   `cross-origin-resource-policy`, `Strict-Transport-Security: max-age=63072000`. (Use GET as
-   above: the app answers `HEAD /` with 405.) Then `https://securityheaders.com` and SSL Labs.
+   `HTTP/2 200`, one each of `content-security-policy`, `x-frame-options: DENY`,
+   `referrer-policy`, `x-content-type-options`, `permissions-policy`, `cross-origin-opener-policy`,
+   `cross-origin-resource-policy`, `strict-transport-security: max-age=63072000`, and `server: nginx`
+   without a version. (Use GET as above: the app answers `HEAD /` with 405.) Then
+   `https://securityheaders.com` and SSL Labs (grade A expected).
 2. **gzip**:
    ```sh
    curl -sS -o /dev/null -D - -H 'Accept-Encoding: gzip' https://findaline.example.org/app/app.js | grep -i content-encoding
    ```
-   says `Content-Encoding: gzip`.
+   says `content-encoding: gzip`.
 3. **The masked log**: open a share link (*Runs*, *share link*), then
-   `docker exec swag tail -n 5 /config/log/nginx/findaline.access.log` shows
-   `GET /s/<token>/map.html`, never the token.
+   `sudo tail -n 5 /var/log/nginx/findaline.access.log` shows `GET /s/<token>/map.html`, never the
+   token.
 4. **The event stream arrives live**: start a search and watch its progress move in *Queue*
    without reloading; or copy the value of the cookie `__Host-findaline` from the browser's
    developer tools and
    `curl -sN -H 'Cookie: __Host-findaline=<value>' https://findaline.example.org/api/events`
    prints `: ping` every 15 seconds.
-5. **Rate limits and the jail** (outside the LAN):
+5. **Rate limits and the jail** (from an address not in `ignoreip`):
    ```sh
    seq 400 | xargs -P 16 -I{} curl -s -o /dev/null -w '%{http_code}\n' https://findaline.example.org/api/schema | sort | uniq -c
    ```
-   about 200 answers `401`, the rest `429`; `docker exec swag fail2ban-client status findaline`
-   then lists the address as banned, and the site no longer answers it for an hour. Unban:
-   `docker exec swag fail2ban-client set findaline unbanip <address>`.
+   about 200 answers `401`, the rest `429`; `sudo fail2ban-client status findaline` then lists the
+   address as banned, and the site no longer answers it for an hour (SSH still does). Unban:
+   `sudo fail2ban-client set findaline unbanip <address>`.
 6. **Memory**: start a search as large as the limits allow (an area of 50 km² at 1 m) and watch
    `docker stats findaline-worker-1`; afterwards
    `docker inspect -f '{{.State.OOMKilled}}' findaline-worker-1` says `false` and the search
    finished (the search sizes its tiles from the container's memory limit).
 7. **Sign-in** with the real GitHub app (and Google): the account of an administrator lands in
    the app, another one on *waiting for approval*; approve it in *Admin*.
-8. **The firewall test** of section 5, and a **restore test** of section 11.
-9. **The visitors' real addresses** (outside the LAN): open the site from a phone on mobile
-   data (IPv4; and over IPv6 too if you published an AAAA record), look up the phone's public
-   address (a "what is my IP" page), then
-   `docker exec swag tail -n 5 /config/log/nginx/findaline.access.log`: the lines must start
-   with that public address, never with a private one (`172.x`, `10.x`, `192.168.x`: Docker's
-   proxy or a NAT in between, which would put every visitor in one limit bucket and out of
-   fail2ban's reach; section 2, *IPv6*).
+8. **The firewall test** of section 2, and a **restore test** of section 11.
+9. **The visitors' real addresses**: open the site from a phone on mobile data, look up the
+   phone's public address (a "what is my IP" page), then
+   `sudo tail -n 5 /var/log/nginx/findaline.access.log`: the lines start with that address. The app
+   sees the same address only if it trusts nginx: `FINDALINE_TRUSTED_PROXY` must be the gateway of
+   the network `web` (section 14, *Everyone shares one rate limit*).
 
 ## 13. Updates
 1. Check the CI first: the commit you are about to deploy must have passed GitHub Actions (tests
-   on Linux and Windows, the audits and the Docker job), on the repository's *Actions* page or
-   `gh run list --limit 5`.
+   on Linux and Windows, the audits and the Docker job, which also runs nginx and fail2ban with
+   these files), on the repository's *Actions* page or `gh run list --limit 5`.
 2. Then:
    ```sh
    cd /srv/find-a-line
@@ -659,25 +635,34 @@ bans.
    ```
    A search running at that moment is stopped by the restart of the worker and marked
    interrupted (a large area resumes when it is run again).
-3. Read the commit messages for changes to `deploy/` (copy the SWAG files again, `nginx -t`,
-   `docker restart swag`), to `findaline.env.example` and `.env.example` (new settings) and for
-   migrations of stored data (they run automatically at start; each commit says so).
+3. Read the commit messages for changes to `deploy/` (copy the nginx files again with the commands
+   of section 4 from `SITE=` on, without the certificate, then `sudo nginx -t && sudo systemctl
+   reload nginx`; the fail2ban files of section 5 and `sudo systemctl restart fail2ban`; the
+   firewall files of section 2: restore the `.bak` copies and add the block and the rule again),
+   to `findaline.env.example` and `.env.example` (new settings) and for migrations of stored data
+   (they run automatically at start; each commit says so).
 
 ## 14. Troubleshooting
-- **502 Bad Gateway**: the web service is not running or SWAG does not find it.
-  `docker compose ps` (healthy?), `docker exec swag getent hosts findaline-web` (must give an
-  address in 172.30.0.128/25), `cat /srv/swag/nginx/resolver.conf` (must name `127.0.0.11`).
+- **502 Bad Gateway**: the web service is not running or does not answer on `127.0.0.1:8765`.
+  `docker compose ps` (healthy?), `curl -s -o /dev/null -w '%{http_code}\n' -H "Host: $SITE"
+  http://127.0.0.1:8765/` on the host (must say 200), `sudo tail /var/log/nginx/findaline.error.log`.
+  With `WEB_PORT` in `.env`, the upstream of `findaline-http.conf` must name the same port.
 - **400 Bad Request ("Invalid host header")**: the address in the browser is not the host of
   `FINDALINE_PUBLIC_URL`.
-- **`nginx -t`: `unknown log format "findaline"`**: `00-findaline-http.conf` is missing from
-  `site-confs/` or renamed so it sorts after `default.conf`. **`duplicate ...`**: a directive of
-  `proxy.conf` repeated in the server block of the site.
-- **SWAG does not start after joining the network: `Address already in use`**: a container took
-  172.30.0.2 (the network was created without `--ip-range`). `docker compose down`, remove and
-  create the network again (section 3), start SWAG first.
+- **`nginx -t`: `unknown log format "findaline"`** or **`no "ssl_certificate" is defined`**:
+  `conf.d/findaline-http.conf` is missing, or the site of port 443 was enabled before the
+  certificate existed (`sudo certbot certificates`). **`"..." directive is duplicate`**: a
+  directive that Ubuntu's `nginx.conf` sets in its `http` block (`server_tokens`, `ssl_protocols`,
+  `gzip`) was added to `conf.d/`; set it per server.
+- **certbot fails** (`Timeout during connect`, `unauthorized`): the A record does not point at the
+  server yet (`dig +short A $SITE`), port 80 is closed (`ufw`, the provider's firewall), or
+  `findaline-acme` is not enabled (`curl http://$SITE/.well-known/acme-challenge/x` must say 404
+  from nginx, not time out).
 - **Everyone shares one rate limit, or sign-in refuses with "too many sign-in attempts"**: the
-  app does not believe SWAG's `X-Forwarded-For`: `FINDALINE_TRUSTED_PROXY` must be SWAG's
-  address in `findaline-proxy` (`docker inspect swag`), then `docker compose up -d`.
+  app does not believe nginx's `X-Forwarded-For`. `FINDALINE_TRUSTED_PROXY` must be the gateway of
+  the network `web`: `docker network inspect findaline_web --format '{{(index .IPAM.Config 0).Gateway}}'`
+  says `172.30.0.1` (a network created by an older compose.yaml keeps its old subnet: `docker
+  compose down` and `up -d` create it again), then `docker compose up -d`.
 - **Sign-in fails with `redirect_uri_mismatch` / "The redirect_uri is not associated with this
   application"**: the callback in the provider's settings differs from
   `https://findaline.example.org/auth/<provider>` (scheme, host, no trailing slash).
@@ -686,13 +671,14 @@ bans.
   (section 8).
 - **The page says the worker is not running**: `docker compose logs worker`.
 - **Progress appears only after reloading the page**: something buffers `/api/events`: another
-  proxy in front of SWAG (Cloudflare), or a changed location in the SWAG conf.
-- **Searches fail with DNS or connection errors**: the firewall (section 5): DNS to the router
-  while `CONTAINER_DNS_1` is the router, or a public resolver blocked by your network. `docker
-  compose exec worker python -c "import socket; print(socket.gethostbyname('nominatim.openstreetmap.org'))"`.
+  proxy in front of nginx (Cloudflare), or a changed location in `findaline.conf`.
+- **Searches fail with DNS or connection errors**: the firewall (section 2): DNS to the provider's
+  resolver while `CONTAINER_DNS_1` is that resolver, or a public resolver blocked by the provider.
+  `docker compose exec worker python -c "import socket; print(socket.gethostbyname('nominatim.openstreetmap.org'))"`.
 - **A search ends as killed, `OOMKilled` true**: raise `WORKER_MEMORY` in `.env` (and
   `docker compose up -d`), or lower the limits of searches.
-- **You banned yourself**: `docker exec swag fail2ban-client set findaline unbanip <address>`.
+- **You banned yourself**: over SSH, `sudo fail2ban-client set findaline unbanip <address>`; then
+  `ignoreip` (section 5).
 - **`no Docker volume findaline_...` in the backup**: the volumes are named after the folder of
   compose.yaml's project (`name: findaline`); `docker volume ls` lists them, and
   `FINDALINE_DATA_VOLUME`/`FINDALINE_ACCOUNTS_VOLUME` in `/etc/findaline-backup.env` name others.

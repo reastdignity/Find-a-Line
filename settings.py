@@ -216,7 +216,7 @@ class PublicSettings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="FINDALINE_", extra="ignore")
 
     public_url: str = Field(description="address of the site, https://... (http:// only on localhost, for tests)")
-    trusted_proxy: str = Field(description="address of the reverse proxy (SWAG) whose X-Forwarded-* headers "
+    trusted_proxy: str = Field(description="address of the reverse proxy (nginx) whose X-Forwarded-* headers "
                                            "are trusted: IP addresses or networks, comma-separated")
     contact: str = Field(description="e-mail or URL of the operator, sent in the User-Agent of the requests to "
                                      "Nominatim, Overpass and the data services")

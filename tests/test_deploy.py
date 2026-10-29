@@ -1,20 +1,20 @@
-"""The deployment files: what each service of compose.yaml may write, and the files behind SWAG
-(deploy/swag): the fail2ban filter and the masking of the access log, with Python's re
-(fail2ban's own engine; nginx's PCRE patterns differ only in the spelling of named groups).
-nginx itself is checked by hand (docs/deployment.md, `nginx -t`)."""
+"""The deployment files: what each service of compose.yaml may write and publish, and the files of
+the host (deploy/nginx, deploy/fail2ban): the fail2ban filter and the masking of the access log,
+with Python's re (fail2ban's own engine; nginx's PCRE patterns differ only in the spelling of named
+groups). nginx itself runs in tests/nginx_check.sh (CI, the docker job)."""
 
 import configparser
 import os
 import re
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-SWAG = os.path.join(ROOT, "deploy", "swag")
+DEPLOY = os.path.join(ROOT, "deploy")
 HOST = r"(?P<host>[0-9A-Fa-f:.]+|[\w\-.^_]*\w)"  # what fail2ban puts for <HOST> (simplified)
 
 
 def _filter():
     parser = configparser.ConfigParser(interpolation=None)
-    parser.read(os.path.join(SWAG, "fail2ban", "findaline.conf"), encoding="utf-8")
+    parser.read(os.path.join(DEPLOY, "fail2ban", "findaline.conf"), encoding="utf-8")
     return [re.compile(line.strip().replace("<HOST>", HOST))
             for line in parser["Definition"]["failregex"].splitlines() if line.strip()]
 
@@ -48,8 +48,8 @@ def test_fail2ban_filter():
 
 
 def _maps():
-    """The map blocks of the http snippet: {variable: [(regex, value)]}, PCRE groups as Python's."""
-    with open(os.path.join(SWAG, "00-findaline-http.conf"), encoding="utf-8") as f:
+    """The map blocks of the http part: {variable: [(regex, value)]}, PCRE groups as Python's."""
+    with open(os.path.join(DEPLOY, "nginx", "findaline-http.conf"), encoding="utf-8") as f:
         text = f.read()
     maps = {}
     for source, target, body in re.findall(r"map \$(\w+) \$(\w+) \{(.*?)\n\}", text, re.S):
@@ -92,7 +92,7 @@ def test_access_log_masking():
 def _services():
     """The services of compose.yaml (its own layout, without a YAML library): {name: {"volumes":
     [(source, target, options)], "environment": {name: value}, key: value}}; a tmpfs mount is
-    ("tmpfs", target, "")."""
+    ("tmpfs", target, ""); an inline list (`ports: [...]`) stays the text of the list."""
     with open(os.path.join(ROOT, "compose.yaml"), encoding="utf-8") as f:
         lines = [line.split(" #")[0].rstrip() for line in f.read().splitlines()]
     services, current, section = {}, None, None
@@ -100,7 +100,7 @@ def _services():
         if line and not line.startswith(" "):
             break  # the next top-level key
         if re.fullmatch(r"  [\w-]+:", line):
-            current = services[line.strip()[:-1]] = {"volumes": [], "environment": {}}
+            current = services[line.strip()[:-1]] = {"volumes": [], "environment": {}, "ports": "[]"}
         elif current is None or not line.strip() or line.strip().startswith("#"):
             continue
         elif match := re.fullmatch(r"    ([\w-]+):(?: (.*))?", line):
@@ -136,3 +136,18 @@ def test_compose_volumes():
         for name in ("HOME", "NUMBA_CACHE_DIR", "MPLCONFIGDIR"):
             assert service["environment"][name].startswith("/tmp/"), name
         assert service["memswap_limit"] == service["mem_limit"]
+
+
+def test_compose_ports():
+    """Only the web service publishes a port, on the host's loopback (nginx on the host proxies to
+    it, deploy/nginx/findaline-http.conf); its network has the fixed gateway that
+    findaline.env.example trusts as the proxy."""
+    services = _services()
+    assert services["web"]["ports"] == '["127.0.0.1:${WEB_PORT:-8765}:8765"]'
+    assert services["worker"]["ports"] == "[]"
+    with open(os.path.join(ROOT, "compose.yaml"), encoding="utf-8") as f:
+        assert "gateway: 172.30.0.1" in f.read()
+    with open(os.path.join(ROOT, "findaline.env.example"), encoding="utf-8") as f:
+        assert "FINDALINE_TRUSTED_PROXY=172.30.0.1\n" in f.read()
+    with open(os.path.join(DEPLOY, "nginx", "findaline-http.conf"), encoding="utf-8") as f:
+        assert "server 127.0.0.1:8765;" in f.read()
