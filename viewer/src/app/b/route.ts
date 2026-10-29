@@ -19,6 +19,14 @@ export function parseRoute(hash: string): Route {
   return {section: section ?? "search"};
 }
 
+/** The route itself, or the search for a section this user has not (Admin: administrators of the
+ *  public site; OSM: the local app). */
+export function allowedRoute(route: Route, user: {local?: boolean; admin?: boolean}): Route {
+  if (route.section === "admin" && (user.local || !user.admin)) return {section: "search"};
+  if (route.section === "osm" && !user.local) return {section: "search"};
+  return route;
+}
+
 /** The hash of a route. */
 export function routeHash(route: Route): string {
   if (route.section !== "run") return "#" + route.section;

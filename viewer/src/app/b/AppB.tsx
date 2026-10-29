@@ -21,7 +21,7 @@ import { forgetRun } from "../../result/load";
 import { FavouritesB } from "./FavouritesB";
 import { useJobAreas } from "./jobAreas";
 import { ResultsB } from "./ResultsB";
-import { parseRoute, routeHash, type Route, type Section } from "./route";
+import { allowedRoute, parseRoute, routeHash, type Route, type Section } from "./route";
 import { SearchB } from "./SearchB";
 import { runCounts, Searches } from "./Searches";
 import "./b.css";
@@ -61,7 +61,7 @@ export function AppB() {
   const [place, setPlace] = useState<PlaceMap | null>(null);
   const [schema, setSchema] = useState<Schema | null>(null);
   const [error, setError] = useState("");
-  const [route, setRoute] = useState<Route>(() => parseRoute(location.hash));
+  const [route, setRoute] = useState<Route>(() => allowedRoute(parseRoute(location.hash), user));
   const [nav, setNav] = useState(0);              // navigations seen (a new one re-opens the route's line)
   const back = useRef<Section>("searches");       // where a result's "back" leads without history
   const moved = useRef(false);                    // navigated inside the app: "back" is history.back()
@@ -89,7 +89,7 @@ export function AppB() {
     observer.observe(mapRef.current!);
     const changed = () => {
       moved.current = true;
-      setRoute(parseRoute(location.hash));
+      setRoute(allowedRoute(parseRoute(location.hash), user));
       setNav((n) => n + 1);
       setMenu(false);
     };
@@ -157,7 +157,7 @@ export function AppB() {
   const menuButton = <IconButton icon="menu" label="Menu" round on={menu} class="b-menu-button"
                                  onClick={() => setMenu(!menu)} />;
   const panel = (title: string, body: ComponentChildren, cls = "") =>
-    <Sheet label={title} desktop="left" initial="half" peek={150}
+    <Sheet label={title} desktop="float" initial="half" peek={150}
            header={<h2 class={`u-h b-panel-title ${cls}`}>{title}</h2>}>{body}</Sheet>;
 
   return <Screen theme={theme} class={`u-app-b b-app b-in-${section}${wide ? "" : " b-phone"}`}>
