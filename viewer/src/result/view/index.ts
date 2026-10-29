@@ -6,4 +6,4 @@ export { FilterBar, MoreFilters, type FilterBarProps, type MoreFiltersProps } fr
 export { LinesTable, type LinesTableProps } from "./LinesTable";
 export { LineDetails, LinkField, appLink, lineFacts, type LineDetailsProps } from "./LineDetails";
 export { ProfileDock, type ProfileDockProps } from "./ProfileDock";
-export { RunActions, type RunActionsProps } from "./RunActions";
+export { RunActions, ShareRun, type RunActionsProps, type ShareRunProps } from "./RunActions";

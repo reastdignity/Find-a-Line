@@ -61,7 +61,7 @@ export function ProfileDock({model, view, line, measured, onCloseMeasured, onClo
   return <section class={cx("r-dock", rigging && "r-rigging", cls)} aria-label="Profile">
     <div class="r-dock-bar">
       <b>{measured ? "Measured profile" : `Profile · ${num(shown.len)} m`}</b>
-      <span class="u-small r-hint">{touch ? "tap and drag along the chart" : "move the mouse along the chart"}</span>
+      <span class="u-small r-hint">{touch ? "tap or drag along the chart" : "move the mouse along the chart"}</span>
       <span class="u-grow" />
       {ready && <button type="button" class={cx("u-chip", rigging && "u-on")} aria-pressed={rigging}
                         onClick={() => setRigging(!rigging)}>Rigging and layers<Icon name="down" /></button>}

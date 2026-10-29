@@ -89,6 +89,15 @@ export function savedList(): ListState {
   }
 }
 
+/** Has the user chosen how to sort the list (any map or the app kept a choice in this browser)? */
+export function hasSavedList(): boolean {
+  try {
+    return localStorage.getItem(STORAGE_KEY) !== null;
+  } catch {
+    return false;
+  }
+}
+
 export function saveList(s: ListState) {
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(s));

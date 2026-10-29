@@ -114,20 +114,40 @@ const num0 = (v: number) => v.toFixed(0);
 
 /** Share (the public site, the owner's runs): a link that opens the run's map for anyone who has it. */
 function Share({model, compact}: RunActionsProps) {
+  return <ShareRun runId={model.runId} compact={compact} />;
+}
+
+export interface ShareRunProps {
+  runId: string;
+  /** The run as /api/runs lists it, when the caller has it (else it is asked for). */
+  run?: RunListed | null;
+  /** Buttons with icons only. */
+  compact?: boolean;
+  /** Which side the popover opens to (default right). */
+  align?: "left" | "right";
+  /** The run was shared or its sharing stopped. */
+  onChange?(shared: boolean): void;
+}
+
+/** Share of one run without its result (e.g. a card of a list of runs): nothing unless the run is the
+ *  user's own on the public site. */
+export function ShareRun({runId, run: given, compact, align = "right", onChange}: ShareRunProps) {
   const [run, setRun] = useState<RunListed | null>(null);
   const [url, setUrl] = useState("");
   const [error, setError] = useState("");
   useEffect(() => {
     if (user.local) return;
-    api.runs().then((r) => setRun(r.public ? r.runs.find((x) => x.id === model.runId && x.own && x.has_map) || null
+    if (given !== undefined) { setRun(given && given.own && given.has_map ? given : null); return; }
+    api.runs().then((r) => setRun(r.public ? r.runs.find((x) => x.id === runId && x.own && x.has_map) || null
       : null), () => {});
-  }, [model.runId]);
-  if (!run) return null;
-  const share = () => api.share(run.id).then((r) => { setUrl(r.url); setError(""); setRun({...run, shared: true}); },
+  }, [runId, given]);
+  if (!run || user.local) return null;
+  const changed = (shared: boolean) => { setRun({...run, shared}); onChange?.(shared); };
+  const share = () => api.share(run.id).then((r) => { setUrl(r.url); setError(""); changed(true); },
                                              (e) => setError(e.message));
-  const stop = () => api.unshare(run.id).then(() => { setUrl(""); setError(""); setRun({...run, shared: false}); },
+  const stop = () => api.unshare(run.id).then(() => { setUrl(""); setError(""); changed(false); },
                                               (e) => setError(e.message));
-  return <Popover label="Share" align="right"
+  return <Popover label="Share" align={align}
                   button={(open, toggle) => compact ? <IconButton icon="share" label="Share" on={open} onClick={toggle} />
                     : <Button icon="share" aria-expanded={open} onClick={toggle}>Share</Button>}>
     <div class="r-share">

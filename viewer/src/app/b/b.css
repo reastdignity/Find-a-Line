@@ -1,0 +1,145 @@
+/* Prototype B (app/b): the rail, the stage (the map and the panels floating over it), the cards of
+   My searches, the favourites, the results' pill, panel and dock, the phone's top bar and menu.
+   Everything under the root .ui.b-app; classes b-*. */
+
+.ui.b-app { background: var(--bg); color: var(--ink); }
+.ui.b-app .b-mark { padding: 2px 0 10px; color: var(--ink); }
+.ui.b-app .b-stage { flex: 1; min-width: 0; position: relative; overflow: hidden; }
+.ui.b-app .b-map { position: absolute; inset: 0; background: var(--map-bg); }
+/* A layer over the map: only its panels take the pointer */
+.ui.b-app .b-layer { position: absolute; inset: 0; z-index: 1001; pointer-events: none; }
+.ui.b-app .b-layer[hidden] { display: none; }
+.ui.b-app .b-layer > *, .ui.b-app .b-layer .u-side, .ui.b-app .b-layer .u-sheet { pointer-events: auto; }
+.ui.b-app .b-layer .u-side { z-index: 1; }
+.ui.b-app .b-panel-title { margin: 0; }
+
+/* The Leaflet controls in both themes */
+.ui.b-app .leaflet-bar a { background: var(--surface); color: var(--ink); border-color: var(--line); }
+.ui.b-app .leaflet-bar a:hover { background: var(--surface-2); }
+.ui.b-app .leaflet-bar, .ui.b-app .leaflet-control-layers { border-color: var(--line); box-shadow: var(--shadow); }
+.ui.b-app .leaflet-control-layers { background: var(--surface); color: var(--ink); }
+.ui.b-app .leaflet-control-layers-toggle { filter: none; }
+.ui.b-app .leaflet-control-scale-line { background: color-mix(in srgb, var(--surface) 80%, transparent); color: var(--ink); border-color: var(--ink-2); }
+.ui.b-app .leaflet-control-attribution { background: color-mix(in srgb, var(--surface) 80%, transparent); color: var(--ink-2); }
+.ui.b-app .leaflet-control-attribution a { color: var(--accent); }
+.ui.b-app .leaflet-tooltip { background: var(--surface); color: var(--ink); border-color: var(--line); }
+/* Results: the controls under the actions, left of the panel */
+.ui.b-app.b-in-run:not(.b-phone) .leaflet-top.leaflet-right { right: 396px; top: 52px; }
+.ui.b-app.b-phone .leaflet-top { top: 60px; }
+
+/* Errors and the toast */
+.ui.b-app .b-error { position: absolute; top: 12px; left: 50%; transform: translateX(-50%); z-index: 1003; margin: 0; padding: 8px 12px;
+  border-radius: 10px; background: var(--bad-soft); color: var(--bad); box-shadow: var(--shadow); max-width: calc(100% - 24px); }
+.ui.b-app .b-toast { position: absolute; left: 50%; bottom: 24px; transform: translateX(-50%); z-index: 1003; width: max-content;
+  max-width: calc(100% - 24px); }
+.ui.b-app .b-toast .u-toast-text { display: flex; align-items: center; gap: 8px; }
+.ui.b-app.b-in-run:not(.b-phone) .b-toast { left: calc((100% - 396px) / 2); bottom: auto; top: 64px; }
+.ui.b-app.b-phone .b-toast { top: 64px; bottom: auto; }
+
+/* The account panel (rail) and the phone's menu */
+.ui.b-app .b-pop { position: absolute; z-index: 1004; left: 12px; bottom: 12px; width: min(300px, calc(100% - 24px)); padding: 14px;
+  display: flex; flex-direction: column; gap: 12px; max-height: calc(100% - 24px); overflow-y: auto; }
+.ui.b-app.b-phone .b-pop { top: 62px; bottom: auto; }
+.ui.b-app .b-menu { display: flex; flex-direction: column; gap: 2px; padding-bottom: 10px; border-bottom: 1px solid var(--line); }
+.ui.b-app .b-menu button { display: flex; align-items: center; gap: 10px; min-height: 44px; padding: 0 10px; border: 0; border-radius: 10px;
+  background: none; color: var(--ink); font: 500 15px var(--font); text-align: left; cursor: pointer; }
+.ui.b-app .b-menu button.u-on { background: var(--accent-soft); color: var(--accent); }
+.ui.b-app .b-menu .u-badge { margin-left: auto; }
+.ui.b-app .b-account { display: flex; flex-direction: column; gap: 10px; }
+.ui.b-app .b-account-user { display: flex; align-items: center; gap: 8px; }
+.ui.b-app .b-account-links { display: flex; flex-direction: column; gap: 6px; font-size: 13.5px; }
+.ui.b-app .b-account-links a { color: var(--accent); }
+.ui.b-app .b-signout { align-self: flex-start; }
+.ui.b-app .b-account-button { margin-top: 4px; }
+
+/* The phone's top bar */
+.ui.b-app .b-top { position: absolute; top: 10px; left: 12px; right: 12px; z-index: 1002; display: flex; align-items: center; gap: 8px;
+  pointer-events: none; min-width: 0; }
+.ui.b-app .b-top > * { pointer-events: auto; }
+.ui.b-app .b-menu-button { width: 44px; height: 44px; border-radius: 50%; background: var(--surface); box-shadow: var(--shadow); flex: none; }
+.ui.b-app .b-top-title { display: inline-flex; align-items: center; gap: 8px; min-height: 44px; padding: 0 14px 0 10px; border-radius: 999px;
+  background: var(--surface); box-shadow: var(--shadow); font-weight: 600; min-width: 0; white-space: nowrap; }
+.ui.b-app .b-top-title svg { width: 28px; height: 18px; }
+.ui.b-app .b-top-jobs { display: inline-flex; align-items: center; gap: 6px; min-height: 36px; margin-left: auto; padding: 0 12px;
+  border: 0; border-radius: 999px; background: var(--surface); color: var(--ink-2); box-shadow: var(--shadow); font: 500 13px var(--font); cursor: pointer; }
+.ui.b-app .b-top-run .b-pill { flex: 1; min-width: 0; max-width: none; }
+.ui.b-app .b-top-run .r-actions { flex-wrap: nowrap; flex: none; }
+.ui.b-app .b-top-run .r-actions .u-ib { background: var(--surface); box-shadow: var(--shadow); border-radius: 50%; }
+
+/* Cards of My searches (and the search being followed) */
+.ui.b-app .b-searches, .ui.b-app .b-following { display: flex; flex-direction: column; gap: 10px; }
+.ui.b-app .b-card { display: flex; flex-direction: column; gap: 8px; padding: 12px 14px; border: 1px solid var(--line); border-radius: 12px;
+  background: var(--surface); min-width: 0; }
+.ui.b-app .b-card.b-running { border-color: color-mix(in srgb, var(--accent) 45%, var(--line)); }
+.ui.b-app .b-card-head { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.ui.b-app .b-card-title { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ui.b-app .b-counts { color: var(--ink-2); }
+.ui.b-app .b-desc { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ui.b-app .b-card-error { margin: 0; color: var(--bad); font-size: 13px; overflow-wrap: anywhere; }
+.ui.b-app .b-card-acts { display: flex; flex-wrap: wrap; gap: 6px; }
+.ui.b-app .b-card-acts:empty { display: none; }
+.ui.b-app .b-card-acts .u-btn { min-height: 32px; padding: 0 11px; font-size: 13px; }
+.ui.b-app .b-confirm { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 8px 10px; border-radius: 10px;
+  background: var(--bad-soft); color: var(--bad); font-size: 13px; }
+.ui.b-app .b-no-worker { margin: 0; padding: 8px 10px; border-radius: 10px; background: var(--bad-soft); color: var(--bad); font-size: 13px; }
+.ui.b-app .b-steps { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 5px; font-size: 13px; color: var(--muted); }
+.ui.b-app .b-step { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.ui.b-app .b-step-n { display: inline-flex; align-items: center; justify-content: center; width: 20px; height: 20px; flex: none; border-radius: 50%;
+  border: 1px solid var(--line); font: 600 11px var(--mono); }
+.ui.b-app .b-step-n .u-ic { width: 13px; height: 13px; }
+.ui.b-app .b-step.b-done { color: var(--ink-2); }
+.ui.b-app .b-step.b-done .b-step-n { background: var(--ok-soft); color: var(--ok); border-color: transparent; }
+.ui.b-app .b-step.b-now { color: var(--ink); font-weight: 500; }
+.ui.b-app .b-step.b-now .b-step-n { background: var(--accent); color: var(--on-accent); border-color: transparent; }
+@media (pointer: coarse) { .ui.b-app .b-card-acts .u-btn { min-height: 44px; } }
+
+/* Favourites */
+.ui.b-app .b-favs { display: flex; flex-direction: column; gap: 10px; }
+.ui.b-app .b-favs-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.ui.b-app .b-favs-tools .u-btn { min-height: 30px; padding: 0 10px; font-size: 13px; }
+.ui.b-app .b-fav-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.ui.b-app .b-fav { display: flex; align-items: center; gap: 4px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); }
+.ui.b-app .b-fav-open { flex: 1; min-width: 0; display: flex; flex-direction: column; align-items: flex-start; gap: 2px; padding: 8px 12px;
+  border: 0; background: none; color: var(--ink); text-align: left; cursor: pointer; border-radius: 12px; }
+.ui.b-app .b-fav-open:hover { background: var(--surface-2); }
+.ui.b-app .b-fav-nums { display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: 13px; color: var(--ink-2); font-variant-numeric: tabular-nums; }
+.ui.b-app .b-fav-nums b { color: var(--ink); font-size: 14px; }
+.ui.b-app .b-fav .u-ib { color: var(--fav); }
+.ui.b-app .b-empty .u-ic { width: 15px; height: 15px; vertical-align: -2px; }
+
+/* The old app's panels (Admin, OSM) inside B */
+.ui.b-app .b-legacy { font-size: 13.5px; }
+.ui.b-app .b-legacy .fa-run { border-bottom: 1px solid var(--line); padding: 6px 0; }
+.ui.b-app .b-legacy .fa-hint { color: var(--muted); }
+.ui.b-app .b-legacy .fa-error { color: var(--bad); }
+
+/* Results: the pill, the actions, the panel and the profile */
+.ui.b-app .b-top-left { position: absolute; top: 12px; left: 12px; z-index: 2; display: flex; gap: 8px; max-width: calc(100% - 820px);
+  min-width: 260px; }
+.ui.b-app .b-pill { display: flex; align-items: center; gap: 6px; min-height: 44px; padding: 0 8px 0 4px; border-radius: 999px;
+  background: var(--surface); box-shadow: var(--shadow); border: 1px solid var(--line); font-weight: 500; min-width: 0; max-width: 100%; }
+.ui.b-app .b-pill-name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; display: inline-flex; align-items: center; gap: 8px; }
+.ui.b-app .b-pill-date { white-space: nowrap; }
+.ui.b-app .b-pill .r-error { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; }
+.ui.b-app .b-switch { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
+.ui.b-app .b-switch button { width: 100%; display: flex; flex-direction: column; align-items: flex-start; gap: 1px; padding: 6px 8px; border: 0;
+  border-radius: 8px; background: none; color: var(--ink); text-align: left; cursor: pointer; }
+.ui.b-app .b-switch button:hover { background: var(--surface-2); }
+.ui.b-app .b-switch button.u-on { background: var(--accent-soft); }
+.ui.b-app .b-run-actions { position: absolute; top: 12px; right: 408px; z-index: 2; }
+.ui.b-app .b-results { position: absolute; top: 12px; right: 12px; bottom: 12px; width: 384px; z-index: 2; display: flex; flex-direction: column;
+  overflow: hidden; }
+.ui.b-app .b-results-head { padding: 14px 16px 12px; display: flex; flex-direction: column; gap: 10px; border-bottom: 1px solid var(--line);
+  max-height: 55%; overflow-y: auto; flex: none; }
+.ui.b-app .b-results-body { flex: 1; min-height: 0; overflow-y: auto; padding: 4px 8px 8px; }
+.ui.b-app .b-dock { position: absolute; left: 12px; right: 408px; bottom: 12px; z-index: 2; pointer-events: none; }
+.ui.b-app .b-dock > .r-dock { pointer-events: auto; border: 1px solid var(--line); border-radius: 14px; box-shadow: var(--shadow); max-height: 46vh; }
+.ui.b-app .u-sheet .u-sheet-body { display: flex; flex-direction: column; gap: 10px; }
+.ui.b-app .u-sheet .b-pill { flex: 1; }
+@media (max-width: 1100px) {
+  .ui.b-app .b-top-left { max-width: calc(100% - 420px); min-width: 0; top: 64px; }
+  .ui.b-app.b-in-run:not(.b-phone) .leaflet-top.leaflet-right { top: 52px; }
+}
+/* A sheet's sticky estimate covers the body's bottom padding too, so nothing peeks out under Find lines */
+.ui.b-app .u-sheet .u-sheet-body .s-estimate { bottom: calc(-16px - env(safe-area-inset-bottom, 0px));
+  padding-bottom: calc(16px + env(safe-area-inset-bottom, 0px)); }

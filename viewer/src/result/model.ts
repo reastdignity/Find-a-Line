@@ -9,7 +9,7 @@ import { dh, drop, lowerAnchor, NO_FILTERS, passes, prominence, range as valueRa
 import { groupLines, type Group } from "../grouping";
 import { loadFavourites, saveFavourite } from "../favourites";
 import { lineCoords, lineKey, runLineKey } from "../keys";
-import { saveList, savedList, sortKey, sortRows, type ListState, type Row } from "../list";
+import { hasSavedList, saveList, savedList, sortKey, sortRows, type ListState, type Row } from "../list";
 import { colorOf, inLocalPlane } from "../others";
 import type { FilterRanges, LinesState } from "../panels";
 import { toLine, type Line, type Profile, type RunData, type RunInfo, type RunLines } from "../types";
@@ -62,6 +62,9 @@ export interface ResultOptions {
   /** May the server compute profiles and measure (default: FINDALINE_APP.profiles, else from a server). */
   profiles?: boolean;
   api?: ResultApi;
+  /** The list's sorting while the user has kept no choice of their own (default: list.ts LIST_DEFAULTS);
+   *  not saved until the user changes the list. */
+  list?: Partial<ListState>;
 }
 
 const fromServer = () => typeof location !== "undefined" && location.protocol.startsWith("http");
@@ -136,7 +139,7 @@ export class ResultModel {
     this.canCompute = options.profiles ?? (app ? app.profiles : fromServer());
     this.state = {group: true, distance: data.distance, by: data.by, showClean: true, showOver: true};
     this.filters = savedFilters();
-    this.list = savedList();
+    this.list = options.list && !hasSavedList() ? {...savedList(), ...options.list} : savedList();
     this.compute();
     this.loadRunFavourites(this.runId);
   }
