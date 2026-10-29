@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
-# The nginx and fail2ban files of deploy/ on the packages of Ubuntu 26.04, installed as
-# docs/deployment.md (sections 4 and 5) installs them, in front of the running web service of
-# compose.yaml: nginx -t, then the answers through it (headers once each, HTTP/2, gzip, Upgrade
-# refused, http to https, unknown names refused, the masked log, the rate limits) and fail2ban's
-# filter on the log it wrote. A self-signed certificate stands in for certbot's. Run it in a fresh
+# The nginx and fail2ban files of deploy/ on the packages of Ubuntu 26.04, installed by the
+# functions of deploy/vps.sh that setup and update run (docs/deployment.md, sections 4 and 5), in
+# front of the running web service of compose.yaml: nginx -t, then the answers through it (headers
+# once each, HTTP/2, gzip, Upgrade refused, http to https, unknown names refused, the masked log,
+# the rate limits) and fail2ban's filter on the log it wrote; also the script's edits of ufw's
+# stock rules files (section 2). A self-signed certificate stands in for certbot's. Run it in a fresh
 # container on the network of the web service (CI: the docker job):
 #   docker run --rm --network findaline_web -v "$PWD:/src:ro" \
 #     ubuntu:26.04@sha256:<digest of .github/workflows/ci.yml> bash /src/tests/nginx_check.sh
@@ -19,30 +20,53 @@ fail() { echo "FAIL: $*" >&2; exit 1; }
 echo "== packages"
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
-apt-get install -y -qq --no-install-recommends nginx fail2ban curl openssl ca-certificates >/dev/null
+apt-get install -y -qq --no-install-recommends nginx fail2ban ufw curl openssl ca-certificates >/dev/null
 nginx -v
 
-echo "== install (docs/deployment.md, sections 4 and 5)"
-cp "$SRC/deploy/nginx/findaline-http.conf" /etc/nginx/conf.d/
-cp "$SRC/deploy/nginx/findaline-tls.conf" /etc/nginx/snippets/
-sed "s/findaline\.example\.org/$SITE/g" "$SRC/deploy/nginx/findaline-acme.conf" > /etc/nginx/sites-available/findaline-acme
-sed "s/findaline\.example\.org/$SITE/g" "$SRC/deploy/nginx/findaline.conf" > /etc/nginx/sites-available/findaline
-rm -f /etc/nginx/sites-enabled/default
-ln -s /etc/nginx/sites-available/findaline-acme /etc/nginx/sites-enabled/
+echo "== install (deploy/vps.sh: nginx_files, fail2ban_files)"
+REPO=$SRC
+# shellcheck source=SCRIPTDIR/../deploy/vps.sh
+. "$SRC/deploy/vps.sh"
+nginx_files  # before the certificate: port 80 only
+[ ! -e /etc/nginx/sites-enabled/findaline ] || fail "the site of port 443 enabled without a certificate"
+[ ! -e /etc/nginx/sites-enabled/default ] || fail "Ubuntu's default site still enabled"
 mkdir -p /var/www/letsencrypt/.well-known/acme-challenge
 echo probe > /var/www/letsencrypt/.well-known/acme-challenge/probe
 nginx -t
-ln -s /etc/nginx/sites-available/findaline /etc/nginx/sites-enabled/
-cp "$SRC/deploy/fail2ban/findaline.conf" /etc/fail2ban/filter.d/
-cp "$SRC/deploy/fail2ban/findaline.local" /etc/fail2ban/jail.d/
-# Only for this test: the upstream, and certbot's files
-sed -i "s/server 127\.0\.0\.1:8765;/server $UPSTREAM;/" /etc/nginx/conf.d/findaline-http.conf
+# certbot's files
 mkdir -p "/etc/letsencrypt/live/$SITE"
 openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes -days 1 -subj "/CN=$SITE" \
   -keyout "/etc/letsencrypt/live/$SITE/privkey.pem" -out "/etc/letsencrypt/live/$SITE/fullchain.pem" 2>/dev/null
+CHANGED=0; nginx_files
+{ [ "$CHANGED" = 1 ] && [ -L /etc/nginx/sites-enabled/findaline ]; } || fail "the site of port 443 not enabled with its certificate"
+CHANGED=0; nginx_files
+[ "$CHANGED" = 0 ] || fail "nginx_files changed something the second time"
+fail2ban_files
+# Only for this test: the upstream
+sed -i "s/server 127\.0\.0\.1:8765;/server $UPSTREAM;/" /etc/nginx/conf.d/findaline-http.conf
 nginx -t
 nginx
 fail2ban-client --test >/dev/null || fail "fail2ban's configuration"
+
+echo "== ufw's rules files (deploy/vps.sh: ufw_files)"
+cp /etc/ufw/before.rules /tmp/before.rules.stock
+cp /etc/ufw/after.rules /tmp/after.rules.stock
+CHANGED=0; ufw_files
+[ "$CHANGED" = 1 ] || fail "ufw_files changed nothing"
+CHANGED=0; ufw_files
+[ "$CHANGED" = 0 ] || fail "ufw_files changed something the second time"
+cmp -s /etc/ufw/before.rules.bak /tmp/before.rules.stock || fail "before.rules.bak is not the stock file"
+# Only lines added: the block of ufw-before.rules after the INVALID drop, before the ICMP accepts
+if diff /tmp/before.rules.stock /etc/ufw/before.rules | grep '^[<>-]' | grep -v '^>'; then
+  fail "before.rules lost lines"
+fi
+rule=$(grep -n -- '^-A ufw-before-input -i br-fal-+ -j DROP$' /etc/ufw/before.rules | cut -d: -f1)
+invalid=$(grep -n -- '^-A ufw-before-input -m conntrack --ctstate INVALID -j DROP$' /etc/ufw/before.rules | cut -d: -f1)
+icmp=$(grep -n '^# ok icmp codes for INPUT' /etc/ufw/before.rules | cut -d: -f1)
+{ [ -n "$rule" ] && [ "$invalid" -lt "$rule" ] && [ "$rule" -lt "$icmp" ]; } \
+  || fail "the rule's place in before.rules: $invalid < $rule < $icmp"
+cmp -s <(cat /tmp/after.rules.stock "$SRC/deploy/firewall/ufw-after.rules") /etc/ufw/after.rules \
+  || fail "after.rules is not the stock file and the block"
 
 C=(curl -sS -k --resolve "$SITE:443:127.0.0.1" --resolve "$SITE:80:127.0.0.1" --max-time 20)
 code() { "${C[@]}" -o /dev/null -w '%{http_code}' "$@"; }
