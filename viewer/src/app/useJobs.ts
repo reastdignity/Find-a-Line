@@ -5,6 +5,7 @@
 
 import { useCallback, useEffect, useState } from "preact/hooks";
 import { api, subscribe, type Job, type JobEvent } from "./api";
+import { beingSaved, FINISHED } from "./jobStatus";
 
 export interface Bar {
   bar: string;
@@ -28,7 +29,7 @@ export const STATUS: Record<Job["status"], string> = {
   queued: "waiting", downloading: "downloading data", ready: "data ready, waiting to compute",
   computing: "computing", done: "done", failed: "failed", cancelled: "cancelled"};
 
-export const FINISHED: Job["status"][] = ["done", "failed", "cancelled"];
+export { beingSaved, FINISHED };
 const LOG_KEEP = 500;  // messages kept per job
 
 const fresh = (job: Job): JobView => ({...job, bars: {}, log: [], step: ""});

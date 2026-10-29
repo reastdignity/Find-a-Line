@@ -112,6 +112,23 @@ console.log(JSON.stringify({csv: m.favouritesCsv(lines), geojson: JSON.parse(m.f
     assert found["data"]["hmean"] is None and found["data"]["len"] == 120.5  # back as the server keeps it
 
 
+def test_run_being_saved(tmp_path):
+    """The new shells hide a listed run that its unfinished job is still saving (run.json is written before
+    the map, and the job gets its run_id only when done): no map yet and made after the job was queued."""
+    found = run_ts(tmp_path, "app/jobStatus", """
+const job = (status, created, run_id = null) => ({status, created, run_id});
+const run = (has_map, created) => ({has_map, created});
+const running = [job("computing", "2026-10-29T07:50:00")];
+console.log(JSON.stringify([
+  m.beingSaved(run(false, "2026-10-29T07:58:00"), running),                     // being saved: hidden
+  m.beingSaved(run(true, "2026-10-29T07:58:00"), running),                      // its map is written
+  m.beingSaved(run(false, "2026-10-29T07:40:00"), running),                     // older than the job
+  m.beingSaved(run(false, "2026-10-29T07:58:00"), [job("done", "2026-10-29T07:50:00", "r")]),
+  m.beingSaved(run(false, "2026-10-29T07:58:00"), [job("failed", "2026-10-29T07:50:00")]),
+]));""")
+    assert found == [True, False, False, False, False]
+
+
 def test_bundle_is_built_from_sources(tmp_path):
     """viewer/dist is committed: rebuild it (cd viewer; npm run build) after changing viewer/src."""
     subprocess.run(["node", "build.mjs", "--out", str(tmp_path)], cwd=VIEWER, check=True)

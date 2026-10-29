@@ -6,7 +6,7 @@
 import type { ComponentChildren } from "preact";
 import { useState } from "preact/hooks";
 import { api, user, type RunListed, type Usage } from "../api";
-import { FINISHED, jobProgress, type JobsState, type JobView } from "../useJobs";
+import { beingSaved, FINISHED, jobProgress, type JobsState, type JobView } from "../useJobs";
 import { Button, Progress, StatusChip } from "../../ui/components";
 import { Icon } from "../../ui/icons";
 import { UsageMeters } from "../../search/SearchPanel";
@@ -127,7 +127,7 @@ export function Searches({jobs, runs, sharing, usage, onShow, onEdit, onDeleted}
     {active.map((j) => <JobCard key={j.id} job={j} onCancel={cancel} />)}
     {failed.map((j) => <JobCard key={j.id} job={j} onEdit={onEdit} />)}
     {runs === null ? <p class="u-small">Loading the saved runs…</p>
-      : runs.map((r) => <RunCard key={r.id} run={r} jobId={jobOf(r.id)} sharing={sharing && !user.local}
+      : runs.filter((r) => !beingSaved(r, jobs.jobs)).map((r) => <RunCard key={r.id} run={r} jobId={jobOf(r.id)} sharing={sharing && !user.local}
                                  onShow={onShow} onEdit={onEdit} onDeleted={onDeleted} />)}
     {runs !== null && !runs.length && !active.length && !failed.length &&
       <p class="u-small">No searches yet: start one in Search.</p>}

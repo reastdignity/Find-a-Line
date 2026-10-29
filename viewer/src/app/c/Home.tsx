@@ -9,7 +9,7 @@ import { LinkField, Popover } from "../../result/view";
 import { forgetRun } from "../../result/load";
 import { UsageMeters, type UsageState } from "../../search";
 import { api, type RunListed } from "../api";
-import { jobProgress, type JobsState, type JobView } from "../useJobs";
+import { beingSaved, jobProgress, type JobsState, type JobView } from "../useJobs";
 import { editHash, go, runHash } from "./route";
 import { Thumb, type ThumbSource } from "./Thumb";
 import { Trip } from "./Trip";
@@ -40,7 +40,9 @@ export function cardsOf(jobs: JobView[], runs: RunListed[], publicSite: boolean)
     if (run) used.add(run.id);
     return {key: "job:" + job.id, job, run, created: run?.created || job.created};
   });
-  for (const run of own) if (!used.has(run.id)) cards.push({key: "run:" + run.id, run, created: run.created});
+  for (const run of own) {
+    if (!used.has(run.id) && !beingSaved(run, jobs)) cards.push({key: "run:" + run.id, run, created: run.created});
+  }
   return cards.sort((a, b) => b.created.localeCompare(a.created));
 }
 
