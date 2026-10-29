@@ -70,7 +70,7 @@ export function LinesTable({model, view, details, onSelect, page = PAGE, follow 
   useEffect(() => {
     const row = listRef.current?.querySelector<HTMLElement>(".r-row.r-sel");
     if (row && follow) scrollToRow(row);
-  }, [selected?.line]);
+  }, [selected?.line, at < limit]);  // again when "show more" brings it in
 
   const key = sortKey(list.sort);
   const sortBy = (k: string) => {
