@@ -280,19 +280,25 @@ function start(data: RunData) {
   let filters: Filters = savedFilters(), largestGroup = 1;
   let all = lines;  // with the lines of the other runs shown
   const panel = control(map, "bottomleft", "fal-panel");
+  // The counts and ranges of the values go through every line: again only when the lines change
+  let values: {of: Line[]; nOver: number; ranges: ReturnType<typeof valueRanges>} | null = null;
+  const valueRanges = () => ({len: valueRange(all, (l) => l.len), clr: valueRange(all, (l) => l.clr),
+    clrN: valueRange(all, (l) => l.clrN), dh: valueRange(all, dh),
+    elev: valueRange(all, lowerAnchor), hmax: valueRange(all, (l) => l.hmax),
+    hmean: valueRange(all, (l) => l.hmean), highPct: valueRange(all, (l) => l.highPct),
+    highAbove: data.high_above, angle: valueRange(all, wallAngle),
+    prom: valueRange(all, (l) => finite(prominence(l, Math.max))),
+    drop: valueRange(all, (l) => finite(drop(l))),
+    water: all.some((l) => l.water > 0), filled: all.some((l) => l.filled > 0)});
+  const valuesOf = () => {
+    if (values?.of !== all) values = {of: all, nOver: all.filter((l) => l.over).length, ranges: valueRanges()};
+    return values;
+  };
   const drawPanel = () => panel(
     <LinesPanel state={state} maxDistance={Math.max(100, Math.round(3 * data.distance))}
-                nClean={all.filter((l) => !l.over).length} nOver={all.filter((l) => l.over).length}
+                nClean={all.length - valuesOf().nOver} nOver={valuesOf().nOver}
                 shown={shown} focused={focused !== null} filters={filters}
-                ranges={{len: valueRange(all, (l) => l.len), clr: valueRange(all, (l) => l.clr),
-                         clrN: valueRange(all, (l) => l.clrN), dh: valueRange(all, dh),
-                         elev: valueRange(all, lowerAnchor), hmax: valueRange(all, (l) => l.hmax),
-                         hmean: valueRange(all, (l) => l.hmean), highPct: valueRange(all, (l) => l.highPct),
-                         highAbove: data.high_above, angle: valueRange(all, wallAngle),
-                         prom: valueRange(all, (l) => finite(prominence(l, Math.max))),
-                         drop: valueRange(all, (l) => finite(drop(l))),
-                         group: largestGroup > 1 ? {min: 1, max: largestGroup} : null,
-                         water: all.some((l) => l.water > 0), filled: all.some((l) => l.filled > 0),
+                ranges={{...valuesOf().ranges, group: largestGroup > 1 ? {min: 1, max: largestGroup} : null,
                          favourites: favouritesOn}}
                 onChange={(next) => { state = next; drawLines(); }}
                 onFilters={(next) => { filters = next; saveFilters(filters); drawLines(); }}
@@ -304,8 +310,8 @@ function start(data: RunData) {
   // mapping.group_lines).
   const keyOf = (l: Line) => lineKey(l, data.run.id);
   const chosen = new Set<string>();
-  const shownOf = (g: Group<Line>) => g.members.find((m) => chosen.has(keyOf(m)))
-    || g.members.find((m) => favourites.has(keyOf(m))) || g.rep;
+  const shownOf = (g: Group<Line>) => chosen.size === 0 && favourites.size === 0 ? g.rep
+    : g.members.find((m) => chosen.has(keyOf(m))) || g.members.find((m) => favourites.has(keyOf(m))) || g.rep;
   const variantRenderer = L.canvas({padding: 0.5, tolerance: 5});  // thin lines that can still be clicked
 
   // The user's favourite lines (keyOf) of this run and of the other runs shown, kept by the server

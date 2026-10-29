@@ -120,19 +120,27 @@ export class ResultModel {
   /** The selected group and the line shown for it; null: none. */
   selected: {group: Group<Line>; line: Line} | null = null;
 
+  // Runs of hundreds of thousands of lines: what goes through every line (keys are strings built
+  // from the coordinates) is done only when it changes, and lines are known by the objects
   private readonly favourites = new Set<string>();  // keyOf
-  private readonly chosen = new Set<string>();      // keyOf: the line shown of a group, chosen by the user
+  private readonly favouriteSet = new Set<Line>();     // the lines of `favourites` among the runs shown
+  private readonly chosen = new Set<Line>();        // the line shown of a group, chosen by the user
   private readonly computed = new Map<string, Profile>();  // by lineCoords (this run's lines only)
   private readonly listeners = new Set<() => void>();
   private readonly api: ResultApi;
   private readonly wantFavourites: boolean;
   readonly canCompute: boolean;
-  private selectedKey: string | null = null;
+  private selectedLine: Line | null = null;
+  private allLines: Line[] = [];
+  private counts = {clean: 0, over: 0};
+  private grouped: Group<Line>[] = [];  // groupLines' groups, before the group size filter
+  private valueRanges: {of: Line[]; ranges: FilterRanges} | null = null;  // lineRanges of `all`
 
   constructor(data: RunData, options: ResultOptions = {}) {
     this.data = data;
     this.runId = data.run.id;
     this.lines = data.lines.map((row) => toLine(row));
+    this.gather();
     this.api = options.api || SERVER_API;
     const app = appFlags();
     this.wantFavourites = options.favourites ?? (app ? app.favourites === true : fromServer());
@@ -160,11 +168,18 @@ export class ResultModel {
 
   /** This run's lines and those of the other runs shown. */
   get all(): Line[] {
-    return this.lines.concat(...Array.from(this.others.values()).map((r) => r.lines));
+    return this.allLines;
   }
 
-  get nClean(): number { return this.all.filter((l) => !l.over).length; }
-  get nOver(): number { return this.all.filter((l) => l.over).length; }
+  get nClean(): number { return this.counts.clean; }
+  get nOver(): number { return this.counts.over; }
+
+  /** `all` and its counts again (the runs shown changed). */
+  private gather() {
+    this.allLines = this.lines.concat(...Array.from(this.others.values()).map((r) => r.lines));
+    const over = this.allLines.reduce((n, l) => n + +l.over, 0);
+    this.counts = {clean: this.allLines.length - over, over};
+  }
 
   /** The key of a line among the runs shown (keys.lineKey). */
   keyOf = (l: Line): string => lineKey(l, this.runId);
@@ -183,31 +198,49 @@ export class ResultModel {
 
   /** The line a group shows: the one chosen in it, else the user's favourite in it, else its representative. */
   shownOf(g: Group<Line>): Line {
-    return g.members.find((m) => this.chosen.has(this.keyOf(m)))
-      || g.members.find((m) => this.favourites.has(this.keyOf(m))) || g.rep;
+    if (this.chosen.size === 0 && this.favouriteSet.size === 0) return g.rep;
+    return g.members.find((m) => this.chosen.has(m)) || g.members.find((m) => this.favouriteSet.has(m)) || g.rep;
   }
 
   /** Is the line shown for its group the user's favourite rather than a choice. */
   shownAsFavourite(g: Group<Line>): boolean {
     const l = this.shownOf(g);
-    return this.favourites.has(this.keyOf(l)) && !this.chosen.has(this.keyOf(l));
+    return this.favouriteSet.has(l) && !this.chosen.has(l);
   }
 
-  /** The groups and rows again (drawLines in main.tsx). */
+  /** The groups and rows again (drawLines in main.tsx): after a change of the filters, of the grouping
+   *  or of the runs shown. */
   private compute() {
     const all = this.all, f = this.filters, s = this.state;
     // Runs in another coordinate system are grouped in a local plane around this run (main.tsx `framed`);
     // the groups hold the lines themselves, not their copies in the plane
     const framed = Array.from(this.others.values()).some((r) => r.crs !== this.data.crs);
     const visible = all.filter((l) => (l.over ? s.showOver : s.showClean) && passes(l, f)
-      && (!f.favOnly || !this.favouritesOn || this.favourites.has(this.keyOf(l))));
+      && (!f.favOnly || !this.favouritesOn || this.favouriteSet.has(l)));
     const planar = framed ? inLocalPlane(visible, this.data.center[0], this.data.center[1]) : visible;
-    const original = new Map<Line, Line>(planar.map((p, k) => [p, visible[k]]));
-    let groups: Group<Line>[] = s.group
-      ? groupLines(planar, s.distance, s.by).map((g) => ({rep: original.get(g.rep)!,
-                                                         members: g.members.map((m) => original.get(m)!)}))
+    const original = framed ? new Map<Line, Line>(planar.map((p, k) => [p, visible[k]])) : null;
+    this.grouped = s.group
+      ? groupLines(planar, s.distance, s.by).map((g) => original ? {rep: original.get(g.rep)!,
+                                                                    members: g.members.map((m) => original.get(m)!)} : g)
       : visible.map((l) => ({rep: l, members: [l]}));
-    this.largestGroup = groups.reduce((m, g) => Math.max(m, g.members.length), 1);
+    this.largestGroup = this.grouped.reduce((m, g) => Math.max(m, g.members.length), 1);
+    this.ranges = this.rangesNow();
+    this.showGroups();
+  }
+
+  /** The filters' ranges: of the values only when the lines changed. */
+  private rangesNow(): FilterRanges {
+    if (this.valueRanges?.of !== this.all) {
+      this.valueRanges = {of: this.all, ranges: lineRanges(this.all, this.data.high_above, 1, false)};
+    }
+    const largest = this.largestGroup;
+    return {...this.valueRanges.ranges, group: largest > 1 ? {min: 1, max: largest} : null, favourites: this.favouritesOn};
+  }
+
+  /** The groups shown (the group size filter) and their rows again. */
+  private showGroups() {
+    const f = this.filters, s = this.state;
+    let groups = this.grouped;
     if (s.group && f.groupMin !== null) groups = groups.filter((g) => g.members.length >= f.groupMin!);
     // groupLines gives clear groups first; without grouping the lines come in their order, so the
     // rows (clear first, as main.tsx sorts them) keep that order within each kind
@@ -215,7 +248,6 @@ export class ResultModel {
       .sort((a, b) => +a.group.rep.over - +b.group.rep.over);
     this.groups = this.baseRows.map((r) => r.group);
     this.shown = {spots: groups.length, lines: groups.reduce((n, g) => n + g.members.length, 0)};
-    this.ranges = lineRanges(all, this.data.high_above, this.largestGroup, this.favouritesOn);
     this.sortRows();
     this.reselect();
   }
@@ -235,18 +267,16 @@ export class ResultModel {
 
   /** The selection on the groups shown now: the group holding the selected line, else none. */
   private reselect() {
-    const key = this.selectedKey;
-    const group = key === null ? undefined : this.groups.find((g) => g.members.some((m) => this.keyOf(m) === key));
-    if (!group) { this.selected = null; this.selectedKey = null; return; }
+    const group = this.selectedLine && this.groupOf(this.selectedLine);
+    if (!group) { this.selected = null; this.selectedLine = null; return; }
     const line = this.shownOf(group);
     this.selected = {group, line};
-    this.selectedKey = this.keyOf(line);
+    this.selectedLine = line;
   }
 
   /** The group (shown now) holding a line, or undefined. */
   groupOf(l: Line): Group<Line> | undefined {
-    const key = this.keyOf(l);
-    return this.groups.find((g) => g.members.some((m) => this.keyOf(m) === key));
+    return this.groups.find((g) => g.members.includes(l));
   }
 
   // --- changes ---
@@ -279,14 +309,14 @@ export class ResultModel {
   /** Select a group, or a line (shown for its group: chosen if it is not), or nothing. */
   select(target: Group<Line> | Line | null) {
     if (target === null) {
-      this.selectedKey = null;
+      this.selectedLine = null;
     } else if ("members" in target) {
-      this.selectedKey = this.keyOf(this.shownOf(target));
+      this.selectedLine = this.shownOf(target);
     } else {
       const group = this.groupOf(target);
       if (!group) return;
       if (this.shownOf(group) !== target) this.setChosen(group, target);
-      this.selectedKey = this.keyOf(target);
+      this.selectedLine = target;
       this.refreshRows();
       this.notify();
       return;
@@ -319,8 +349,8 @@ export class ResultModel {
   }
 
   private setChosen(g: Group<Line>, line: Line) {
-    g.members.forEach((m) => this.chosen.delete(this.keyOf(m)));
-    this.chosen.add(this.keyOf(line));
+    g.members.forEach((m) => this.chosen.delete(m));
+    this.chosen.add(line);
   }
 
   /** Show another line of a group (the representative too is a choice: it wins over a favourite in it);
@@ -329,7 +359,7 @@ export class ResultModel {
     if (!g.members.includes(line)) return;
     const wasSelected = this.selected?.group === g;
     this.setChosen(g, line);
-    if (wasSelected) this.selectedKey = this.keyOf(line);
+    if (wasSelected) this.selectedLine = line;
     this.refreshRows();
     this.notify();
   }
@@ -348,8 +378,11 @@ export class ResultModel {
     if (!this.wantFavourites) return;
     this.api.loadFavourites(runId).then((found) => {
       found.forEach((coords) => this.favourites.add(runLineKey(runId, coords)));
+      this.markFavourites(runId, found);
+      const regroup = this.filters.favOnly;
       this.favouritesOn = true;
-      this.compute();
+      if (regroup) this.compute();
+      else { this.ranges = this.rangesNow(); this.refreshRows(); }
       this.notify();
     }, () => {});
   }
@@ -357,25 +390,40 @@ export class ResultModel {
   /** Mark or unmark a favourite at once; rolled back with a note when the server does not save it. */
   toggleFavourite(l: Line): Promise<void> {
     const key = this.keyOf(l), on = !this.favourites.has(key);
-    const flip = (to: boolean) => { if (to) this.favourites.add(key); else this.favourites.delete(key); };
+    const flip = (to: boolean) => {
+      if (to) { this.favourites.add(key); this.favouriteSet.add(l); }
+      else { this.favourites.delete(key); this.favouriteSet.delete(l); }
+    };
     // A line shown stays shown in its group
     const group = this.groupOf(l);
-    if (!on && group && this.shownOf(group) === l) this.chosen.add(key);
+    if (!on && group && this.shownOf(group) === l) this.chosen.add(l);
     flip(on);
     this.note = null;
-    this.compute();
-    this.notify();
+    this.afterFavourite();
     return this.api.saveFavourite(this.runOf(l), l, on).catch((e) => {
       flip(!on);
       this.note = {text: "The favourite was not saved: " + e.message};
-      this.compute();
-      this.notify();
+      this.afterFavourite();
     });
+  }
+
+  /** The groups (only favourites shown) or the lines shown again after a favourite changed. */
+  private afterFavourite() {
+    if (this.filters.favOnly) this.compute(); else this.refreshRows();
+    this.notify();
+  }
+
+  /** The lines of a run whose coordinates (keys.lineCoords) are among `found` become favourites
+   *  (keys are built only for the lines whose first latitude is among theirs). */
+  private markFavourites(runId: string, found: string[]) {
+    const lines = runId === this.runId ? this.lines : this.others.get(runId)?.lines || [];
+    const wanted = new Set(found), lat1 = new Set(found.map((coords) => Number(coords.split(",")[0])));
+    for (const l of lines) if (lat1.has(l.lat1) && wanted.has(lineCoords(l))) this.favouriteSet.add(l);
   }
 
   /** The favourite lines of the runs shown. */
   favouriteLines(): Line[] {
-    return this.all.filter((l) => this.favourites.has(this.keyOf(l)));
+    return this.all.filter((l) => this.favouriteSet.has(l));
   }
 
   setNote(note: Note | null) {
@@ -398,8 +446,8 @@ export class ResultModel {
       return null;
     }
     this.note = null;
-    this.chosen.add(this.keyOf(line));
-    this.compute();
+    this.chosen.add(line);
+    this.refreshRows();
     if (this.groupOf(line)) {
       this.select(line);
       return line;
@@ -408,6 +456,7 @@ export class ResultModel {
       this.filters = {...NO_FILTERS};
       saveFilters(this.filters);
       this.state = {...this.state, showClean: true, showOver: true};
+      this.compute();
       this.openLinked(hash);
     }};
     this.notify();
@@ -421,6 +470,7 @@ export class ResultModel {
     const run = {info, color};
     this.others.set(info.id, {info, color, crs: loaded.crs, area: loaded.area,
                               lines: loaded.lines.map((row) => toLine(row, run))});
+    this.gather();
     this.compute();
     this.notify();
     this.loadRunFavourites(info.id);
@@ -428,6 +478,7 @@ export class ResultModel {
 
   removeRun(id: string) {
     if (!this.others.delete(id)) return;
+    this.gather();
     this.compute();
     this.notify();
   }
