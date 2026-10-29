@@ -427,7 +427,9 @@ python3 -c "import secrets; print(secrets.token_urlsafe(48))" > secrets/findalin
 - `secrets/` (secrets/README.md): the client secrets into their files (`nano
   secrets/findaline_github_client_secret`, the value alone), the file of a provider you do
   not use left empty, `opentopography_api_key` with an OpenTopography key for `--source
-  nasadem` (administrators only) or empty. Each service gets only its own: the sign-in secrets
+  nasadem` (administrators only) or empty. OpenTopography's terms allow one user per key: put
+  your own key here only when you are the only administrator in `FINDALINE_ADMINS`, otherwise
+  leave the file empty. Each service gets only its own: the sign-in secrets
   the web service, the OpenTopography key the worker. They must be readable by the containers'
   user (uid 10001) and nobody else:
   ```sh

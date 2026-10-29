@@ -10,7 +10,7 @@ quotes; the files are git-ignored and never enter the image.
 | `findaline_session_secret` | A long random string that signs the sign-in cookie: `python -c "import secrets; print(secrets.token_urlsafe(48))"` |
 | `findaline_github_client_secret` | The client secret of the GitHub OAuth app |
 | `findaline_google_client_secret` | The client secret of the Google OAuth client |
-| `opentopography_api_key` | The OpenTopography API key for `--source nasadem` (admins only on the public site; free at [opentopography.org](https://portal.opentopography.org/myopentopo)) |
+| `opentopography_api_key` | The OpenTopography API key for `--source nasadem` (admins only on the public site; free at [opentopography.org](https://portal.opentopography.org/myopentopo)). OpenTopography allows one user per key: your own key only when you are the site's only administrator, otherwise empty |
 
 `deploy/secrets.example/` holds the four files empty: `cp -n deploy/secrets.example/* secrets/`,
 then put the values in. Every file must exist (compose refuses to start without it): leave the file of a provider you do not
