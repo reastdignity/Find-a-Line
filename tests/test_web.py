@@ -1240,9 +1240,13 @@ FAVOURITES_SCRIPT = """
   const saved = () => fetch("/api/runs/" + encodeURIComponent(run) + "/favourites").then((r) => r.json());
   const starred = () => Object.values(map._layers).filter((l) => l.getTooltip && l.getTooltip()
     && String(l.getTooltip().getContent()).startsWith("★ ")).length;
-  // waits for the server, which virtual time does not wait for
-  const until = (count, then, tries = 30) => saved().then((body) => body.lines.length === count || !tries
-    ? then(body) : later(() => until(count, then, tries - 1), 300));
+  // a step that throws or waits in vain ends the test with what it saw (an empty result says nothing)
+  const fail = (error) => { out.textContent = JSON.stringify({error: String(error), result}); };
+  window.addEventListener("error", (e) => fail(e.message));
+  window.addEventListener("unhandledrejection", (e) => fail(e.reason));
+  // waits for the server's answer to a change: every try asks it once
+  const until = (count, then, tries = 30) => saved().then((body) => body.lines.length === count ? then(body)
+    : tries ? later(() => until(count, then, tries - 1), 300) : fail("favourites: " + body.lines.length));
   let blob = null;
   URL.createObjectURL = (b) => { blob = b; return "blob:test"; };
   HTMLAnchorElement.prototype.click = function () { result.download = this.download; };
@@ -1350,6 +1354,7 @@ def test_favourites_in_the_map_and_the_app(tmp_path, monkeypatch):
             .replace("</body>", '<script src="fav_test.js"></script></body>'), encoding="utf-8")
     dom = _edge_page(tmp_path, f"runs/{run_id}/fav_test.html")
     result = json.loads(re.search(r'<pre id="result">(.*?)</pre>', dom, re.S).group(1).replace("&quot;", '"'))
+    assert "error" not in result, result
     assert result["stars"] == 100 and result["halo"] and result["starred"] == 1, result
     assert result["groupLength"] == result["memberLength"] and result["popupFavourite"], result
     assert result["onlyFavourites"] == 2, result
