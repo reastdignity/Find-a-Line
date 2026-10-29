@@ -150,6 +150,7 @@ export interface SearchOptions {
   schema: Schema;
   onStarted(jobId: string): void;
   initial?: SearchRequest | null;  // a search to edit and run again
+  preset?: string;                 // the preset a new search starts with (not one to edit); none: the defaults
 }
 
 export interface SearchState {
@@ -202,9 +203,18 @@ function mapMode(mode: SearchMode, areaKind: AreaKind): Mode {
 }
 
 /** A new search: the state of the panel, its request, the live estimate and the start. */
-export function useSearch({place, schema, onStarted, initial}: SearchOptions): SearchState {
+export function useSearch({place, schema, onStarted, initial, preset: preset0}: SearchOptions): SearchState {
   const byName = useMemo(() => Object.fromEntries(schema.fields.map((f) => [f.name, f])), [schema]);
-  const start0 = useMemo(() => fromRequest(initial, byName), []);
+  const start0 = useMemo(() => {
+    const found = fromRequest(initial, byName);
+    const chosen = !initial && schema.presets.find((p) => p.id === preset0);
+    if (chosen && chosen.available && chosen.values) {
+      for (const [key, v] of Object.entries(chosen.values)) {
+        if (byName[key]) found.values = withValue(found.values, byName[key], v);
+      }
+    }
+    return found;
+  }, []);
   const [mode, setMode] = useState<SearchMode>(start0.mode === "point" ? "point" : start0.mode === "file" ? "file"
     : start0.mode === "draw" || start0.preset === "osm" ? "area" : "cliffs");
   const [areaKind, setAreaKind] = useState<AreaKind>(start0.mode === "preset" && start0.preset === "osm" ? "osm" : "draw");
