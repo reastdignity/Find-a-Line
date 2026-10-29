@@ -2257,3 +2257,60 @@ def test_no_server_paths_in_public_events(tmp_path, monkeypatch):
         for form in (folder, folder.replace("\\", "/"), json.dumps(folder)[1:-1]):
             assert form not in texts, form
     assert "saved to runs" in texts
+
+
+def test_usage(tmp_path, settings, account_settings, providers, monkeypatch):
+    """GET /api/usage: a limited user's use of the last 24 hours (km², downloads, Nominatim, searches),
+    the searches waiting or running and the size of the runs, each with its quota; users without limits
+    and administrators get the counts of jobs and runs without quotas; the local app (no
+    FINDALINE_LIMIT_*, or with them: its one user has no quotas) the same. Nothing is recorded."""
+    from settings import Limits
+    limits = Limits.load(public=True)
+    app = _public_app(tmp_path, settings, account_settings, providers, limits=limits)
+    people = _clients(app, tmp_path, account_settings, ("a", "unlimited", "admin"))
+    jobs = app.state.jobs
+    a = people["a"]
+    point = {"params": {"lat": 50.1, "lon": 19.7, "radius": 100}, "geometry": None}
+    assert a.post("/api/jobs", json=point).status_code == 200
+    jobs.use(a.user_id, "km2", 3.5, limits.km2_day_max)
+    jobs.use(a.user_id, "download_mb", 12, limits.download_mb_day_max)
+    jobs.add_run("run-a", a.user_id, int(2e8))
+    import sqlite3
+
+    def audit_rows() -> int:
+        db = sqlite3.connect(tmp_path / "audit.sqlite")
+        try:
+            return db.execute("SELECT COUNT(*) FROM audit").fetchone()[0]
+        finally:
+            db.close()
+    audited = audit_rows()
+    answer = a.get("/api/usage")
+    assert answer.status_code == 200
+    usage = answer.json()
+    assert usage["limited"] and usage["hours"] == 24
+    assert usage["usage"]["km2"] == {"used": 3.5, "limit": limits.km2_day_max}
+    assert usage["usage"]["download_mb"] == {"used": 12, "limit": limits.download_mb_day_max}
+    assert usage["usage"]["nominatim"] == {"used": 0, "limit": limits.nominatim_day_max}
+    assert usage["usage"]["jobs_day"] == {"used": 1, "limit": limits.jobs_day_max}
+    assert usage["usage"]["jobs_active"] == {"used": 1, "limit": limits.jobs_active_max}
+    assert usage["usage"]["runs_gb"] == {"used": 0.2, "limit": limits.runs_gb_max}
+    assert audit_rows() == audited  # read-only: no audit event
+    for who in ("unlimited", "admin"):
+        usage = people[who].get("/api/usage").json()
+        assert not usage["limited"], who
+        assert all(item["limit"] is None for item in usage["usage"].values()), usage
+        assert usage["usage"]["km2"]["used"] is None and usage["usage"]["jobs_active"]["used"] == 0
+    anonymous = TestClient(app, base_url=URL)
+    assert anonymous.get("/api/usage").status_code == 401
+    for client in [*people.values(), anonymous]:
+        client.close()
+    for env in ({}, {"FINDALINE_LIMIT_KM2_DAY_MAX": "10"}):
+        for key, value in env.items():
+            monkeypatch.setenv(key, value)
+        local = tmp_path / ("local" + str(len(env)))
+        local.mkdir()
+        with TestClient(web.create_app(str(local), token=TOKEN, start_scheduler=False), base_url=LOCAL) as client:
+            assert client.post("/api/jobs", json=point, headers={"x-findaline-token": TOKEN}).status_code == 200
+            usage = client.get("/api/usage").json()
+        assert not usage["limited"] and usage["usage"]["jobs_active"] == {"used": 1, "limit": None}, usage
+        assert usage["usage"]["km2"] == {"used": None, "limit": None}

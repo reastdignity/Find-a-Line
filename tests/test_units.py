@@ -469,3 +469,35 @@ def test_replacing(tmp_path):
             f.write(b"half")
             raise ValueError("failed")
     assert path.read_text(encoding="utf-8") == "first" and os.listdir(tmp_path) == ["runs.js"]
+
+
+def test_labels_topics_and_presets():
+    """Every field of SearchParams has a label and a unit (params.LABELS); every field the web may
+    set belongs to one topic of the form (params.TOPICS); each preset sets only fields of
+    PRESET_FIELDS and validates as SearchParams; a preset outside a user's bounds is unavailable."""
+    import web
+    from settings import Limits
+    web_fields = [f["name"] for f in web.schema()]
+    assert set(pm.LABELS) == {n for n, i in pm.SearchParams.model_fields.items()
+                              if not {"cli_only", "web_only"} & set(i.json_schema_extra or {})}
+    assert all(label and not label.endswith(".") for label, _ in pm.LABELS.values())
+    topics = [n for _, names in pm.TOPICS.values() for n in names]
+    assert sorted(topics) == sorted(web_fields), set(topics) ^ set(web_fields)
+    for preset, (label, values) in pm.PRESETS.items():
+        assert label and (values is None or set(values) <= set(pm.PRESET_FIELDS)), preset
+        full = pm.preset_values(preset)
+        if full is not None:
+            assert set(full) == set(pm.PRESET_FIELDS)
+            pm.SearchParams(lat=50.1, lon=19.7, **full)  # valid on its own
+    assert pm.preset_values("typical") == {"min_length": 30, "max_length": 150, "max_anchor_diff_m": 10}
+    assert pm.preset_values("long")["max_anchor_diff_m"] == pm.SearchParams.model_fields["max_anchor_diff_m"].default
+    offered = {p["id"]: p for p in web.presets(Limits.load(public=True))}
+    assert list(offered) == ["typical", "long", "short", "custom"] and all(p["available"] for p in offered.values())
+    assert offered["custom"]["values"] is None
+    tight = {p["id"]: p for p in web.presets(Limits(max_length_max=200))}
+    assert tight["typical"]["available"] and not tight["long"]["available"]
+    assert tight["long"]["reason"] == "max_length: at most 200 on this site"
+    fields = {f["name"]: f for f in web.schema()}
+    assert fields["max_anchor_diff_m"]["label"] == "Height difference of the anchors"
+    assert fields["max_anchor_diff_m"]["unit"] == "m" and fields["max_anchor_diff_m"]["topic"] == "lines"
+    assert fields["source"]["choice_labels"]["auto"] == "Automatic"

@@ -1719,3 +1719,16 @@ def test_results_ui(tmp_path, monkeypatch):
     assert r["width"] < 768 and r["sheet"] and not r["panel"], r
     assert r["head"].startswith("Spot ") and r["profile"] and not r["wider"], r
     assert _violations(dom) == []
+
+
+def test_schema_has_labels_topics_and_presets(client):
+    """The form's metadata: each field's label, unit and topic, the topics' titles and the presets
+    (their values validate as a request of the web)."""
+    schema = client.get("/api/schema").json()
+    assert all(f["label"] and f["topic"] in schema["topics"] for f in schema["fields"])
+    assert schema["topics"]["lines"] == "Lines" and schema["groups"] == web.pm.GROUPS  # the old form's groups
+    presets = {p["id"]: p for p in schema["presets"]}
+    assert [p["label"] for p in schema["presets"]] == ["Typical highline", "Long lines", "Short & low", "Custom"]
+    for preset in presets.values():
+        if preset["values"]:
+            web.check_request({"params": {"lat": 50.1, "lon": 19.7, **preset["values"]}})

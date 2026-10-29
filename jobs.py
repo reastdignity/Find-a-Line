@@ -285,6 +285,36 @@ class Jobs:
                 audit.Audit(self.data_dir).log("refused", user_id, None, {"reason": str(refused), "status": 429})
             raise refused
 
+    def usage(self, user_id: Optional[int], limits: Optional[Limits]) -> Dict:
+        """A user's use of the quotas, as admission() and use() count it (the last 24 hours, the jobs
+        waiting or running now, the size of the runs), each with its quota of `limits` (None: no
+        quotas; then the counts of USAGE, kept only against a quota, are None as well). user_id None:
+        the local app's jobs and runs (those without an owner)."""
+        owner = "user_id IS ?" if user_id is None else "user_id = ?"
+        active = WAITING + ACTIVE
+        since = (datetime.now() - timedelta(seconds=DAY)).isoformat(timespec="seconds")
+        db = self._db()
+        try:
+            counted = limits is not None and user_id is not None
+            used = {kind: self._used(db, user_id, kind) if counted else None for kind in USAGE}
+            jobs_active = db.execute(f"SELECT COUNT(*) FROM jobs WHERE {owner} AND status IN {_in(active)}",
+                                     (user_id, *active)).fetchone()[0]
+            jobs_day = db.execute(f"SELECT COUNT(*) FROM jobs WHERE {owner} AND created >= ?",
+                                  (user_id, since)).fetchone()[0]
+            runs_bytes = db.execute(f"SELECT COALESCE(SUM(bytes), 0) FROM runs WHERE {owner}",
+                                    (user_id,)).fetchone()[0]
+        finally:
+            db.close()
+        quota = (lambda name: getattr(limits, name)) if limits is not None else (lambda name: None)
+        return {"limited": limits is not None, "hours": DAY / 3600, "usage": {
+            "km2": {"used": used["km2"], "limit": quota("km2_day_max")},
+            "download_mb": {"used": used["download_mb"], "limit": quota("download_mb_day_max")},
+            "nominatim": {"used": used["nominatim"], "limit": quota("nominatim_day_max")},
+            "jobs_day": {"used": jobs_day, "limit": quota("jobs_day_max")},
+            "jobs_active": {"used": jobs_active, "limit": quota("jobs_active_max")},
+            "runs_gb": {"used": runs_bytes / 1e9, "limit": quota("runs_gb_max")},
+        }}
+
     def forget_usage(self) -> int:
         """Delete what users used before the last two days (the quotas look at 24 hours)."""
         with self._db() as db:

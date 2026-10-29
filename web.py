@@ -119,10 +119,37 @@ def schema(limits: Optional[Limits] = None, hidden_sources=()) -> List[Dict]:
         elif low is not None or high is not None:
             said = ([] if low is None else [f"at least {low:g}"]) + ([] if high is None else [f"at most {high:g}"])
             text += f" (on this site {' and '.join(said)})"
+        label, unit = pm.LABELS.get(name, (name.replace("_", " "), ""))
+        names = {c: ("Automatic" if c == "auto" else src.SOURCES[c].name) for c in choices or []}             if name == "source" else None
         fields.append({"name": name, "type": kind, "choices": choices, "default": default,
                        "help": text, "group": extra.get("group"), "min": low, "max": high,
-                       "optional": not info.is_required() and default is None})
+                       "optional": not info.is_required() and default is None,
+                       "label": label, "unit": unit, "topic": pm.TOPIC_OF.get(name), "choice_labels": names})
     return fields
+
+
+def presets(limits: Optional[Limits] = None) -> List[Dict]:
+    """The presets of params.PRESETS for the form: each with its values for every field of
+    PRESET_FIELDS (None: "custom", the values stay as they are) and whether it is available under
+    `limits`. A value outside a user's bounds, or a field the site does not allow, makes the preset
+    unavailable (with the reason): clamping it would give another kind of lines under the same name."""
+    import sources as src
+    answer = []
+    for preset, (label, _) in pm.PRESETS.items():
+        values = pm.preset_values(preset)
+        problems = []
+        for name, value in (values or {}).items():
+            if limits and not limits.allows(name):
+                problems.append(f"{name}: not allowed on this site")
+                continue
+            low, high = limits.bounds(name, src.MIN_RESOLUTION) if limits else (None, None)
+            if low is not None and value < low:
+                problems.append(f"{name}: at least {low:g} on this site")
+            if high is not None and value > high:
+                problems.append(f"{name}: at most {high:g} on this site")
+        answer.append({"id": preset, "label": label, "values": values, "available": not problems,
+                       "reason": "; ".join(problems) or None})
+    return answer
 
 
 def check_request(request: Dict, limits: Optional[Limits] = None, hidden_sources=()) -> Dict:
@@ -683,7 +710,17 @@ def create_app(data_dir: str, token: Optional[str] = None, port: int = PORT, sta
 
     @app.get("/api/schema")
     def get_schema(user: ac.User = Depends(current_user)):
-        return {"fields": schema(user_limits(user), hidden_sources(user)), "groups": pm.GROUPS}
+        return {"fields": schema(user_limits(user), hidden_sources(user)), "groups": pm.GROUPS,
+                "topics": {topic: title for topic, (title, _) in pm.TOPICS.items()},
+                "presets": presets(user_limits(user))}
+
+    @app.get("/api/usage")
+    def get_usage(user: ac.User = Depends(current_user)):
+        """What the user used in the last 24 hours and holds now, with the quotas that apply (None:
+        none; for users without limits, administrators and the local app, whose one user has no id:
+        Jobs.admission and Jobs.use count no quotas for it). Read-only: nothing is recorded."""
+        quotas = limits if user.id is not None and user.limited else None
+        return jobs.usage(user.id, quotas)
 
     def parse(body: Dict, user: ac.User) -> Tuple[Dict, pm.SearchParams]:
         """The checked request and its validated parameters (400 otherwise); in a thread (a drawn
