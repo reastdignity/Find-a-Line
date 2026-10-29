@@ -1,28 +1,10 @@
 // The queue: every job with its status, live progress, messages and result.
 
 import { useState } from "preact/hooks";
-import { api, type Job, type JobEvent } from "./api";
+import { api, type JobEvent } from "./api";
+import { STATUS, type Bar, type JobView } from "./useJobs";
 
-export interface Bar {
-  bar: string;
-  stage: string;
-  count: number;
-  total: number;
-  unit: string;
-  extra: Record<string, unknown>;
-  done: boolean;
-  step?: string;
-}
-
-export interface JobView extends Job {
-  step: string;                // e.g. "Tile 3/15 · Step 3/5: evaluating anchor pairs"
-  bars: Record<string, Bar>;   // "Download", "Compute"
-  log: JobEvent[];             // messages seen since the page was opened
-}
-
-const STATUS: Record<Job["status"], string> = {
-  queued: "waiting", downloading: "downloading data", ready: "data ready, waiting to compute",
-  computing: "computing", done: "done", failed: "failed", cancelled: "cancelled"};
+export type { Bar, JobView };
 
 function ProgressBar({bar}: {bar: Bar}) {
   const share = bar.total ? Math.min(1, bar.count / bar.total) : bar.done ? 1 : 0;

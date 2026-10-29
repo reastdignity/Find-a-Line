@@ -1,5 +1,8 @@
 // The map of the app: a click sets the centre of a circle, or areas are drawn
 // (Leaflet-Geoman: polygons and rectangles), or an uploaded area is shown.
+// The new interfaces reuse its Leaflet map (`map`) for the results too: setSearchVisible(false)
+// takes the search's layers, tools and clicks off it, and `controls` moves its controls (the old
+// app keeps the defaults).
 
 import "@geoman-io/leaflet-geoman-free";
 import "@geoman-io/leaflet-geoman-free/dist/leaflet-geoman.css";
@@ -24,15 +27,21 @@ export class PlaceMap {
                                           style: {color: "#d95f02", weight: 2, dashArray: "6 4", fillOpacity: 0.08}});
   private favourites = L.featureGroup();  // the tab "Favourites"
   private mode: Mode = "point";
+  private hidden = false;    // setSearchVisible(false)
+  private controls: L.ControlPosition;  // of the zoom buttons, the layers and the drawing tools
   onPoint: (lat: number, lon: number) => void = () => {};
   onDrawn: () => void = () => {};
 
-  constructor(element: HTMLElement) {
-    this.map = L.map(element, {center: START, zoom: 13, maxZoom: MAX_ZOOM});
+  /** `options.controls`: where the zoom buttons, the layer switch and the drawing tools go (the old
+   *  app: zoom and tools top left, layers top right). */
+  constructor(element: HTMLElement, options: {controls?: L.ControlPosition} = {}) {
+    this.controls = options.controls ?? "topleft";
+    this.map = L.map(element, {center: START, zoom: 13, maxZoom: MAX_ZOOM, zoomControl: !options.controls});
+    if (options.controls) L.control.zoom({position: options.controls}).addTo(this.map);
     L.control.scale().addTo(this.map);
     const layers = baseLayers(null, MAX_ZOOM);
     Object.values(layers)[0].addTo(this.map);
-    L.control.layers(layers, {}, {position: "topright"}).addTo(this.map);
+    L.control.layers(layers, {}, {position: options.controls ?? "topright"}).addTo(this.map);
     this.drawn.addTo(this.map);
     this.shown.addTo(this.map);
     this.preview.addTo(this.map);
@@ -43,14 +52,34 @@ export class PlaceMap {
     });
     this.map.on("pm:remove", () => this.onDrawn());
     this.map.on("click", (e: L.LeafletMouseEvent) => {
-      if (this.mode === "point") this.onPoint(e.latlng.lat, e.latlng.lng);
+      if (this.mode === "point" && !this.hidden) this.onPoint(e.latlng.lat, e.latlng.lng);
     });
+  }
+
+  /** Shows or hides the search on the map: the point and circle, the drawn and uploaded areas, the
+   *  preview, the drawing tools and the clicks that set the centre (the results use the map then). */
+  setSearchVisible(visible: boolean) {
+    if (visible === !this.hidden) return;
+    this.hidden = !visible;
+    if (visible) {
+      this.preview.addTo(this.map);
+      this.setMode(this.mode);
+      return;
+    }
+    this.map.pm.removeControls();
+    for (const layer of [this.marker, this.circle, this.drawn, this.shown, this.preview]) layer?.remove();
+    this.map.getContainer().style.cursor = "";
+  }
+
+  get searchVisible(): boolean {
+    return !this.hidden;
   }
 
   setMode(mode: Mode) {
     this.mode = mode;
+    if (this.hidden) return;  // setSearchVisible(true) applies it
     if (mode === "draw") {
-      this.map.pm.addControls({position: "topleft", drawMarker: false, drawCircleMarker: false,
+      this.map.pm.addControls({position: this.controls, drawMarker: false, drawCircleMarker: false,
                                drawPolyline: false, drawText: false, drawCircle: false, cutPolygon: false,
                                rotateMode: false});
     } else this.map.pm.removeControls();
@@ -66,9 +95,12 @@ export class PlaceMap {
   /** The centre of the circle and its radius in metres. */
   setPoint(lat: number, lon: number, radius: number) {
     if (!this.marker) {
-      this.marker = L.marker([lat, lon]).addTo(this.map);
-      this.circle = L.circle([lat, lon], {radius, color: COLOR, weight: 2, fill: false, interactive: false})
-        .addTo(this.map);
+      this.marker = L.marker([lat, lon]);
+      this.circle = L.circle([lat, lon], {radius, color: COLOR, weight: 2, fill: false, interactive: false});
+      if (!this.hidden) {
+        this.marker.addTo(this.map);
+        this.circle.addTo(this.map);
+      }
     }
     this.marker.setLatLng([lat, lon]);
     this.circle!.setLatLng([lat, lon]).setRadius(radius);

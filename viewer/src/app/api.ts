@@ -14,6 +14,35 @@ export interface Field {
   optional: boolean;
   min: number | null;  // the site's limits (web.schema), null: none
   max: number | null;
+  label: string;       // a short human label (params.LABELS)
+  unit: string;        // "m", "%", "°", ... or ""
+  topic: string | null;  // the topic of the new form (params.TOPICS)
+  choice_labels: Record<string, string> | null;  // names of the choices (the sources)
+}
+
+/** A preset of the kind of lines (params.PRESETS, web.presets). */
+export interface Preset {
+  id: string;
+  label: string;
+  values: Record<string, number> | null;  // null: "custom", the values stay as they are
+  available: boolean;                     // false: a value is outside the user's bounds
+  reason: string | null;
+}
+
+/** /api/schema: the fields, the old form's groups, the new form's topics and the presets. */
+export interface Schema {
+  fields: Field[];
+  groups: Record<string, string>;
+  topics: Record<string, string>;
+  presets: Preset[];
+}
+
+/** One quota of /api/usage: what is used (null: not counted) and the quota (null: none). */
+export interface UsageItem { used: number | null; limit: number | null }
+export interface Usage {
+  limited: boolean;
+  hours: number;
+  usage: Record<"km2" | "download_mb" | "nominatim" | "jobs_day" | "jobs_active" | "runs_gb", UsageItem>;
 }
 
 export interface Estimate {
@@ -88,8 +117,13 @@ export interface PageUser { local?: boolean; name?: string; provider?: string; s
 export const user: PageUser = JSON.parse(
   document.querySelector<HTMLMetaElement>("meta[name=findaline-user]")?.content || "{\"local\": true}");
 
-async function call<T>(method: string, url: string, body?: unknown): Promise<T> {
-  const init: RequestInit = {method, headers: {"X-Findaline-Token": token}};
+/** An error answer of the server, with its HTTP status (429: a rate, 503: no worker, ...). */
+export class ApiError extends Error {
+  constructor(message: string, readonly status: number) { super(message); }
+}
+
+async function call<T>(method: string, url: string, body?: unknown, signal?: AbortSignal): Promise<T> {
+  const init: RequestInit = {method, headers: {"X-Findaline-Token": token}, signal};
   if (body !== undefined) {
     init.body = JSON.stringify(body);
     (init.headers as Record<string, string>)["Content-Type"] = "application/json";
@@ -98,14 +132,17 @@ async function call<T>(method: string, url: string, body?: unknown): Promise<T> 
   const data = await response.json().catch(() => ({}));
   if (!response.ok) {
     const detail = data.detail;
-    throw new Error(typeof detail === "string" ? detail : JSON.stringify(detail || response.statusText));
+    throw new ApiError(typeof detail === "string" ? detail : JSON.stringify(detail || response.statusText),
+                       response.status);
   }
   return data as T;
 }
 
 export const api = {
-  schema: () => call<{fields: Field[]; groups: Record<string, string>}>("GET", "/api/schema"),
-  estimate: (request: SearchRequest) => call<Estimate>("POST", "/api/estimate", request),
+  schema: () => call<Schema>("GET", "/api/schema"),
+  usage: () => call<Usage>("GET", "/api/usage"),
+  /** `signal` aborts the request: the server forgets its waiting task (a newer one replaces it). */
+  estimate: (request: SearchRequest, signal?: AbortSignal) => call<Estimate>("POST", "/api/estimate", request, signal),
   start: (request: SearchRequest) => call<{id: string}>("POST", "/api/jobs", request),
   jobs: () => call<{jobs: Job[]; seq: number; worker: boolean}>("GET", "/api/jobs"),
   jobEvents: (id: string) => call<{events: JobEvent[]}>("GET", `/api/jobs/${encodeURIComponent(id)}/events`),

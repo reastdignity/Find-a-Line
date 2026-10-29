@@ -1,0 +1,109 @@
+/* The search panel of the new interfaces (SearchPanel.tsx) and its demo page (?ui=kit-search).
+   Everything under the kit's root class .ui, classes s-*. */
+
+.ui .s-panel { display: flex; flex-direction: column; gap: 14px; }
+.ui .s-panel .u-h.s-gap { margin-top: 6px; }
+.ui .s-where { display: flex; flex-direction: column; gap: 12px; }
+.ui .s-hint { margin: 0; font-size: 12.5px; color: var(--muted); }
+.ui .s-point { display: flex; align-items: center; gap: 6px; color: var(--ink-2); }
+.ui .s-point .u-ic { width: 15px; height: 15px; color: var(--accent); }
+.ui .s-areas { color: var(--ink-2); font-weight: 500; }
+.ui .s-within { display: flex; gap: 8px; }
+.ui .s-within .u-input { flex: 1; min-width: 0; }
+.ui .s-file { font-size: 13px; max-width: 100%; }
+.ui select.u-input { padding-right: 8px; }
+.ui .s-row-end { display: flex; justify-content: flex-end; margin: -6px 0 -4px; }
+.ui .s-link { border: 0; background: none; padding: 0; color: var(--accent); font-weight: 500; cursor: pointer; text-decoration: underline; }
+
+/* Presets: chips (B) or cards (C) */
+.ui .s-preset:disabled, .ui .s-card:disabled { opacity: .5; cursor: not-allowed; }
+.ui .s-cards { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.ui .s-card { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; text-align: left; padding: 10px 12px;
+  border: 1px solid var(--line); border-radius: 12px; background: var(--surface); cursor: pointer; }
+.ui .s-card b { font-weight: 600; }
+.ui .s-card span { font-size: 12.5px; color: var(--ink-2); }
+.ui .s-card.u-on { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); background: var(--accent-soft); }
+.ui .s-keys { display: flex; flex-direction: column; gap: 14px; }
+
+/* Changed values and problems (as the old form marks them) */
+.ui .s-changed { color: var(--accent); }
+.ui .s-changed::after { content: " •"; }
+.ui .s-problem { color: var(--bad); font-weight: 500; }
+.ui .u-input.s-invalid { border-color: var(--bad); }
+.ui .s-reset { border: 0; background: none; padding: 0; font: 500 12px var(--font); color: var(--accent); cursor: pointer; text-decoration: underline; }
+.ui .s-check { width: 18px; height: 18px; accent-color: var(--accent); }
+
+/* More settings: topics */
+.ui .s-more { border: 1px solid var(--line); border-radius: 12px; background: var(--surface-2); overflow: hidden; }
+.ui .s-more-head { width: 100%; display: flex; align-items: center; gap: 8px; min-height: 44px; padding: 0 12px; border: 0; background: none;
+  font-weight: 500; color: var(--ink-2); text-align: left; cursor: pointer; }
+.ui .s-topics { display: flex; flex-direction: column; background: var(--surface); }
+.ui .s-topic { border-top: 1px solid var(--line); }
+.ui .s-topic > summary { display: flex; align-items: center; gap: 8px; padding: 10px 12px; cursor: pointer; font-weight: 600; list-style: none; }
+.ui .s-topic > summary::-webkit-details-marker { display: none; }
+.ui .s-topic > summary::before { content: "›"; color: var(--muted); transition: transform .15s; width: 10px; }
+.ui .s-topic[open] > summary::before { transform: rotate(90deg); }
+.ui .s-topic-body { display: flex; flex-direction: column; gap: 14px; padding: 4px 12px 14px; }
+
+/* The estimate */
+.ui .s-estimate { display: flex; flex-direction: column; gap: 10px; }
+/* In a scrolling panel or sheet the estimate and the button stay in view at its bottom */
+.ui .u-sheet-body .s-estimate { position: sticky; bottom: 0; z-index: 1; background: var(--surface); padding: 8px 0 2px;
+  margin-bottom: -2px; box-shadow: 0 -10px 12px -10px rgb(0 0 0 / .18); }
+.ui .s-topic.s-first { border-top: 0; padding-top: 12px; }
+.ui .s-est { border-radius: 12px; padding: 10px 12px; display: flex; flex-direction: column; gap: 8px; background: var(--surface-2);
+  border: 1px solid transparent; }
+.ui .s-est.s-ok { background: var(--ok-soft); }
+.ui .s-est.s-warn { background: var(--warn-soft); }
+.ui .s-est.s-bad { background: var(--bad-soft); }
+.ui .s-est-row { display: flex; flex-wrap: wrap; gap: 6px 16px; }
+.ui .s-stat { display: flex; flex-direction: column; min-width: 0; }
+.ui .s-stat b { font: 600 17px/1.15 var(--display); font-variant-numeric: tabular-nums; }
+.ui .s-stat span { font-size: 11.5px; color: var(--ink-2); }
+.ui .s-est-line { display: flex; align-items: flex-start; gap: 6px; font-size: 13px; color: var(--ink-2); }
+.ui .s-est-line .u-ic { width: 16px; height: 16px; margin-top: 1px; }
+.ui .s-est-line.s-ok { color: var(--ok); font-weight: 500; }
+.ui .s-est-line.s-warn { color: var(--warn); }
+.ui .s-est-line.s-bad { color: var(--bad); }
+.ui .s-warnings { margin: 0; padding-left: 18px; font-size: 12.5px; color: var(--warn); }
+
+/* C's bottom bar */
+.ui .s-bar { display: flex; align-items: center; gap: 18px; min-height: 72px; padding: 10px 24px; background: var(--surface);
+  border-top: 1px solid var(--line); flex-wrap: wrap; }
+.ui .s-bar .s-stat { flex-direction: row; align-items: baseline; gap: 5px; }
+.ui .s-bar-line { font-size: 13px; color: var(--ink-2); }
+.ui .s-bar.s-bad .s-bar-line { color: var(--bad); }
+
+/* Usage meters */
+.ui .s-meters { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px 14px; }
+.ui .s-meter { min-width: 0; font-size: 12.5px; color: var(--ink-2); }
+.ui .s-nolimits { align-self: center; }
+
+/* The demo page (?ui=kit-search): a grid; the map and its overlays share the area "map", C's form
+   column and bar take "form" and "bar" (.s-cols) */
+.ui.s-kit { display: grid; grid-template: "map" 1fr / 1fr; }
+.ui.s-kit.s-cols { grid-template: "form map" 1fr "bar bar" auto / 460px 1fr; }
+.ui.s-kit .s-kit-map { grid-area: map; min-width: 0; min-height: 0; background: var(--map-bg); }
+.ui.s-kit .s-kit-over { grid-area: map; position: relative; min-width: 0; min-height: 0; pointer-events: none; z-index: 1001; }
+.ui.s-kit .s-kit-over > * { pointer-events: auto; }
+.ui.s-kit .s-kit-error { grid-area: map; z-index: 1002; align-self: start; justify-self: center; background: var(--surface); padding: 8px 12px; }
+.ui.s-kit .u-side, .ui.s-kit .u-sheet { z-index: 1001; }
+.ui.s-kit .s-kit-jobs { position: absolute; top: 12px; right: 12px; width: 320px; max-height: calc(100% - 24px); overflow-y: auto; }
+.ui.s-kit .s-kit-toggle { position: absolute; top: 12px; left: 50%; transform: translateX(-50%); background: var(--surface);
+  border-radius: 12px; box-shadow: var(--shadow); padding: 2px; }
+.ui.s-kit .s-c-form { grid-area: form; overflow-y: auto; padding: 20px 24px; background: var(--surface); border-right: 1px solid var(--line); }
+.ui.s-kit .s-c-bar { grid-area: bar; }
+.ui.s-kit .s-searches { display: flex; flex-direction: column; gap: 12px; }
+.ui.s-kit .s-jobs { display: flex; flex-direction: column; gap: 8px; }
+.ui.s-kit .s-job { display: flex; flex-direction: column; gap: 6px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); }
+.ui.s-kit .s-job-head { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.ui.s-kit .s-job-head b { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ui.s-kit .s-job-error { color: var(--bad); font-size: 12.5px; }
+.ui.s-kit .s-sheet-jobs { display: flex; flex-direction: column; gap: 10px; margin-top: 18px; }
+.ui.s-kit .leaflet-bar a { background: var(--surface); color: var(--ink); border-color: var(--line); }
+.ui.s-kit .leaflet-bar a:hover { background: var(--surface-2); }
+.ui.s-kit .leaflet-bar, .ui.s-kit .leaflet-control-layers { border-color: var(--line); box-shadow: var(--shadow); }
+.ui.s-kit .leaflet-control-layers-expanded { background: var(--surface); color: var(--ink); }
+@media (max-width: 1199px) and (min-width: 768px) {
+  .ui.s-kit:not(.s-cols) .s-kit-toggle { left: auto; right: 344px; transform: none; }
+}

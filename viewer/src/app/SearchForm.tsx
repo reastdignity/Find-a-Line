@@ -7,9 +7,8 @@ import { api, type Estimate, type Field, type SearchRequest } from "./api";
 import { countAreas } from "./areas";
 import { readAreaFile } from "./files";
 import type { Mode, PlaceMap } from "./PlaceMap";
+import { buildRequest, fromRequest, parseValue, PLACE_FIELDS, withValue } from "./request";
 
-// Fields set by the "Where" part of the form, not in the parameter groups
-const PLACE_FIELDS = new Set(["lat", "lon", "northing", "easting", "area", "buffer", "within", "radius", "name"]);
 const GROUP_ORDER = ["search", "data", "rigging", "output"];
 
 function label(name: string): string {
@@ -32,10 +31,7 @@ function Input({field, value, onChange}: {field: Field; value: unknown; onChange
   const text = shown === null || shown === undefined ? "" : String(shown);
   const bounds = {min: field.min ?? undefined, max: field.max ?? undefined};  // the site's limits
   const placeholder = field.optional ? "default" : "";
-  const changed = (e: Event) => {
-    const value = (e.currentTarget as HTMLInputElement).value.trim();
-    onChange(value === "" ? (field.optional ? null : field.default) : numeric ? Number(value) : value);
-  };
+  const changed = (e: Event) => onChange(parseValue(field, (e.currentTarget as HTMLInputElement).value));
   // The page is drawn again on every event of the queue: a number field keeps what is
   // being typed (defaultValue) and is read when it is left; a text field follows every key
   return numeric
@@ -50,27 +46,6 @@ export interface SearchFormProps {
   groups: Record<string, string>;
   initial?: SearchRequest | null;  // a job to edit ("edit" in the queue)
   onStarted(id: string): void;
-}
-
-/** The form's starting state from a job's request. */
-function fromRequest(request: SearchRequest | null | undefined, byName: Record<string, Field>) {
-  const p = (request?.params || {}) as Record<string, any>;
-  const values: Record<string, unknown> = {};
-  for (const [key, value] of Object.entries(p)) {
-    if (!PLACE_FIELDS.has(key) && byName[key] && value !== byName[key].default) values[key] = value;
-  }
-  const area = p.area as string | undefined;
-  return {
-    mode: (request?.geometry ? "draw" : area ? "preset" : "point") as Mode,
-    point: p.lat !== undefined && p.lat !== null ? [p.lat, p.lon] as [number, number] : null,
-    radius: Number(p.radius ?? byName.radius?.default ?? 1000),
-    buffer: Number(p.buffer ?? byName.buffer?.default ?? 100),
-    preset: area?.startsWith("osm:") ? "osm" : area || "cliffs",
-    osmName: area?.startsWith("osm:") ? area.slice(4) : "",
-    within: (p.within as string) || "",
-    name: (p.name as string) || "",
-    values,
-  };
 }
 
 export function SearchForm({place, fields, groups, initial, onStarted}: SearchFormProps) {
@@ -122,35 +97,8 @@ export function SearchForm({place, fields, groups, initial, onStarted}: SearchFo
     setName("");
   };
 
-  const request = (): SearchRequest | string => {
-    const params: Record<string, unknown> = {...values};
-    if (name.trim()) params.name = name.trim();
-    let geometry = null;
-    if (mode === "point") {
-      if (!point) return "Click the map to set the centre of the search.";
-      Object.assign(params, {lat: point[0], lon: point[1], radius});
-    } else if (mode === "draw") {
-      geometry = place.drawnAreas();
-      if (!geometry) return "Draw a polygon or a rectangle with the tools on the left of the map.";
-      params.buffer = buffer;
-    } else if (mode === "file") {
-      if (!file) return "Choose a GeoJSON, KML or GPX file.";
-      geometry = file.areas;
-      params.buffer = buffer;
-    } else {
-      if (preset === "osm") {
-        if (!osmName.trim()) return "Give the name of an OpenStreetMap area.";
-        params.area = "osm:" + osmName.trim();
-      } else {
-        if (!within.trim()) return "Coast and cliffs need a limit: an OSM name or the map view.";
-        params.area = preset;
-      }
-      params.buffer = buffer;
-      if (within.trim()) params.within = within.trim().startsWith("osm:") || /^[-\d.,\s]+$/.test(within)
-        ? within.trim() : "osm:" + within.trim();
-    }
-    return {params, geometry};
-  };
+  const request = (): SearchRequest | string =>
+    buildRequest({mode, point, radius, buffer, preset, osmName, within, name}, values, place.drawnAreas(), file);
 
   const run = async (start: boolean) => {
     const r = request();
@@ -188,11 +136,7 @@ export function SearchForm({place, fields, groups, initial, onStarted}: SearchFo
     }
   };
 
-  const set = (key: string, value: unknown) => {
-    const next = {...values};
-    if (value === byName[key].default) delete next[key]; else next[key] = value;
-    setValues(next);
-  };
+  const set = (key: string, value: unknown) => setValues(withValue(values, byName[key], value));
   const bufferInput = <label class="fa-row" title={byName.buffer?.help}>buffer, m <input
     type="number" min={0} max={byName.buffer?.max ?? undefined} defaultValue={String(buffer)}
     onChange={(e) => setBuffer(Number(e.currentTarget.value))} />

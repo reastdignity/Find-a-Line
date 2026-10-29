@@ -10,8 +10,9 @@ import shadowUrl from "leaflet/dist/images/marker-shadow.png";
 import { render } from "preact";
 import { useEffect, useRef, useState } from "preact/hooks";
 import "./app.css";
-import { api, subscribe, user, type Field, type JobEvent, type RunListed, type SearchRequest } from "./api";
-import { JobList, type Bar, type JobView } from "./Jobs";
+import { api, user, type Field, type RunListed, type SearchRequest } from "./api";
+import { JobList } from "./Jobs";
+import { useJobs } from "./useJobs";
 import { AdminPanel } from "./Admin";
 import { Favourites } from "./Favourites";
 import { OsmPanel } from "./OsmPanel";
@@ -21,13 +22,13 @@ import { AppB } from "./b/AppB";
 import { AppC } from "./c/AppC";
 import { Gallery } from "../ui/Gallery";
 import { KitResult } from "../result/view/KitResult";
+import { KitSearch } from "../search/KitSearch";
 import { chooseUi, uiHref } from "../ui/choice";
 
 L.Icon.Default.mergeOptions({iconRetinaUrl, iconUrl, shadowUrl});
 delete (L.Icon.Default.prototype as any)._getIconUrl;
 
 type Tab = "search" | "jobs" | "runs" | "favourites" | "osm" | "admin";
-const LOG_KEEP = 500;  // messages kept per job
 
 /** Share link of a run (the public site): made, renewed or revoked by its owner; a new link is shown
  *  once (the server keeps only its hash). */
@@ -83,9 +84,9 @@ function App() {
   const [place, setPlace] = useState<PlaceMap | null>(null);
   const [schema, setSchema] = useState<{fields: Field[]; groups: Record<string, string>} | null>(null);
   const [tab, setTab] = useState<Tab>("search");
-  const [jobs, setJobs] = useState<JobView[]>([]);
-  const [error, setError] = useState("");
-  const [worker, setWorker] = useState(true);  // whether a worker runs the searches
+  const {jobs, worker, error: jobsError, active} = useJobs();
+  const [ownError, setError] = useState("");
+  const error = ownError || jobsError;
   const [editing, setEditing] = useState<{request: SearchRequest | null; key: number}>({request: null, key: 0});
   const edit = (id: string) => api.job(id).then((job) => {
     setEditing((e) => ({request: job.request, key: e.key + 1}));  // a new form with the job's values
@@ -97,16 +98,8 @@ function App() {
     (window as any).FINDALINE_PLACE = placeMap;  // for tests and the browser console
     setPlace(placeMap);
     api.schema().then(setSchema, (e) => setError(e.message));
-    let stop = () => {};
-    api.jobs().then(({jobs: listed, seq, worker: alive}) => {
-      setJobs(listed.map((j) => ({...j, bars: {}, log: [], step: ""})));
-      setWorker(alive);
-      stop = subscribe(seq, (event) => setJobs((current) => apply(current, event)), setWorker);
-    }, (e) => setError(e.message));
-    return () => stop();
   }, []);
 
-  const active = jobs.filter((j) => !["done", "failed", "cancelled"].includes(j.status)).length;
   return <div class="fa-app">
     <div class="fa-map" ref={mapRef}></div>
     <div class="fa-side">
@@ -148,32 +141,6 @@ function App() {
   </div>;
 }
 
-/** A job event applied to the list of jobs. */
-function apply(jobs: JobView[], event: JobEvent): JobView[] {
-  let found = jobs.some((j) => j.id === event.job);
-  if (!found && event.kind === "status") {  // a new job (from this or another page)
-    jobs = [{id: event.job, created: event.data.created || "", status: event.data.status,
-             title: event.data.title || event.job, run_id: null, error: null, finished: null, bars: {}, log: [],
-             step: ""},
-            ...jobs];
-    found = true;
-  }
-  return jobs.map((job) => {
-    if (job.id !== event.job) return job;
-    if (event.kind === "status") {
-      const next = {...job, ...event.data};
-      if (event.data.status === "downloading" || event.data.status === "computing") { next.bars = {}; next.step = ""; }
-      return next;
-    }
-    if (event.kind === "progress") {
-      const bar = event.data as Bar;
-      const step = bar.step ?? job.step;
-      return bar.bar ? {...job, step, bars: {...job.bars, [bar.bar]: bar}} : {...job, step};
-    }
-    return {...job, log: job.log.concat([event]).slice(-LOG_KEEP)};
-  });
-}
-
-const SHELLS = {old: App, b: AppB, c: AppC, kit: Gallery, "kit-result": KitResult};
+const SHELLS = {old: App, b: AppB, c: AppC, kit: Gallery, "kit-result": KitResult, "kit-search": KitSearch};
 const Shell = SHELLS[chooseUi()];
 render(<Shell />, document.getElementById("app")!);
