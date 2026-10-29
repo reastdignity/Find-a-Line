@@ -169,9 +169,9 @@ export class ResultMap {
     return this.area.getBounds();
   }
 
-  fitArea(padding: Padding = {top: 0, right: 0, bottom: 0, left: 0}) {
+  fitArea(padding: Padding = {top: 0, right: 0, bottom: 0, left: 0}, animate = true) {
     this.map.fitBounds(this.area.getBounds(), {paddingTopLeft: [padding.left, padding.top],
-                                               paddingBottomRight: [padding.right, padding.bottom]});
+                                               paddingBottomRight: [padding.right, padding.bottom], animate});
   }
 
   /** Fit the map to a line, `padding` px kept free on each side (panels over the map) plus a margin. */

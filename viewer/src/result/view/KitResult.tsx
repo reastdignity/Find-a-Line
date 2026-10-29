@@ -78,7 +78,7 @@ function Result({data}: {data: RunData}) {
     L.control.scale({position: "bottomleft"}).addTo(map);
     const resultMap = new ResultMap(map, model);
     (window as any).FINDALINE_RESULT = {model, view: resultMap};
-    resultMap.fitArea(padding());
+    resultMap.fitArea(padding(), false);
     setView(resultMap);
     const observer = new ResizeObserver(() => map.invalidateSize());
     observer.observe(mapRef.current!);
