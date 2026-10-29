@@ -11,7 +11,7 @@ import { UsageMeters, type UsageState } from "../../search";
 import { api, type RunListed } from "../api";
 import { beingSaved, jobProgress, type JobsState, type JobView } from "../useJobs";
 import { editHash, go, runHash } from "./route";
-import { Thumb, type ThumbSource } from "./Thumb";
+import { Thumb, THUMB_CREDIT, type ThumbSource } from "./Thumb";
 import { Trip } from "./Trip";
 
 export interface RunsState {
@@ -225,6 +225,7 @@ export function Home({jobs, runs, usage, highlight, wide}: HomeProps) {
         : <div class="c-cards">{shown.map((c) =>
             <SearchCard key={c.key} card={c} runs={runs} jobs={jobs} publicSite={runs.public}
                         highlight={!!highlight && c.job?.id === highlight} />)}</div>}
+      {runs.runs !== null && shown.length > 0 && <p class="u-small c-thumb-credit">{THUMB_CREDIT}</p>}
       {!wide && example && <a class="c-example c-example-phone" href={runHash(example.id)} data-run={example.id}>
         <span class="c-example-icon"><Icon name="rope" /></span>
         <span><b>{runs.public ? "Explore an example" : "Open the latest result"}</b>

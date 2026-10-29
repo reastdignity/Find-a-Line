@@ -107,21 +107,45 @@ function shapeOf(source: ThumbSource): Promise<Shape> | null {
 
 // ---- drawing ---------------------------------------------------------------------------------
 
-/** The shape in the thumbnail's frame: an equirectangular projection fitted into W × H. */
+const TILE = 256, MAX_ZOOM = 17;  // OpenTopoMap's tiles, the run maps' first base layer (layers.ts)
+export const THUMB_CREDIT = "Mini maps: © OpenStreetMap contributors, SRTM | map style © OpenTopoMap (CC-BY-SA)";
+
+/** Web Mercator pixels of a point at zoom 0 (one 256 px tile for the world). */
+function mercator([lon, lat]: Position): [number, number] {
+  const s = Math.sin(Math.max(-85.0511, Math.min(85.0511, lat)) * Math.PI / 180);
+  return [(lon + 180) / 360 * TILE, (0.5 - Math.log((1 + s) / (1 - s)) / (4 * Math.PI)) * TILE];
+}
+
+/** The shape in the thumbnail's frame (Web Mercator fitted into W × H, as the map's tiles), with the
+ *  OpenTopoMap tiles under it: the largest whole zoom at which it fits, the tiles scaled to fill. */
 function draw(shape: Shape) {
   const points: Position[] = shape.rings.flat();
   shape.lines.forEach((l) => points.push(l.a, l.b));
   if (!points.length) return null;
-  let [w, s, e, n] = [Infinity, Infinity, -Infinity, -Infinity];
-  for (const [x, y] of points) { w = Math.min(w, x); e = Math.max(e, x); s = Math.min(s, y); n = Math.max(n, y); }
-  const k = Math.cos((s + n) / 2 * Math.PI / 180);
-  const width = Math.max((e - w) * k, 1e-9), height = Math.max(n - s, 1e-9);
-  const scale = Math.min((W - 2 * MARGIN) / width, (H - 2 * MARGIN) / height);
-  const x0 = (W - width * scale) / 2, y0 = (H - height * scale) / 2;
-  const xy = ([x, y]: Position) => `${(x0 + (x - w) * k * scale).toFixed(1)} ${(y0 + (n - y) * scale).toFixed(1)}`;
+  let [x0, y0, x1, y1] = [Infinity, Infinity, -Infinity, -Infinity];
+  for (const p of points) {
+    const [x, y] = mercator(p);
+    x0 = Math.min(x0, x); x1 = Math.max(x1, x); y0 = Math.min(y0, y); y1 = Math.max(y1, y);
+  }
+  const fit = Math.min((W - 2 * MARGIN) / Math.max(x1 - x0, 1e-9), (H - 2 * MARGIN) / Math.max(y1 - y0, 1e-9));
+  const zoom = Math.max(0, Math.min(MAX_ZOOM, Math.floor(Math.log2(fit))));
+  const scale = fit / 2 ** zoom > 2 ? 2 ** (zoom + 1) : fit;  // past the tiles' zoom: at most twice their size
+  const cx = (x0 + x1) / 2 * scale, cy = (y0 + y1) / 2 * scale;  // the centre in pixels of `scale`
+  const px = (p: Position): [number, number] => { const [x, y] = mercator(p); return [x * scale - cx + W / 2, y * scale - cy + H / 2]; };
+  const xy = (p: Position) => px(p).map((v) => v.toFixed(1)).join(" ");
   const area = shape.rings.map((r) => "M" + r.map(xy).join("L") + "Z").join("");
   const path = (over: boolean) => shape.lines.filter((l) => l.over === over).map((l) => `M${xy(l.a)}L${xy(l.b)}`).join("");
-  return {area, clean: path(false), over: path(true)};
+  const size = TILE * scale / 2 ** zoom, n = 2 ** zoom;  // a tile's size in the frame
+  const tiles: {href: string; x: number; y: number; size: number}[] = [];
+  for (let ty = Math.floor((cy - H / 2) / size); ty <= Math.floor((cy + H / 2) / size); ty++) {
+    if (ty < 0 || ty >= n) continue;
+    for (let tx = Math.floor((cx - W / 2) / size); tx <= Math.floor((cx + W / 2) / size); tx++) {
+      const wrapped = ((tx % n) + n) % n;
+      tiles.push({href: `https://${"abc"[(wrapped + ty) % 3]}.tile.opentopomap.org/${zoom}/${wrapped}/${ty}.png`,
+                  x: tx * size - cx + W / 2, y: ty * size - cy + H / 2, size});
+    }
+  }
+  return {area, clean: path(false), over: path(true), tiles};
 }
 
 /** Whether an element has come near the viewport (once). */
@@ -163,7 +187,9 @@ export function Thumb({source, class: cls = ""}: {source: ThumbSource; class?: s
   const mode = drawn ? shape!.mode : "placeholder";
   return <div ref={ref} class={`c-thumb ${cls}`} data-thumb={shape ? mode : failed ? "failed" : "loading"}
               data-lines={shape ? shape.lines.length : undefined} aria-hidden="true">
-    {drawn ? <svg viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="xMidYMid meet">
+    {drawn ? <svg viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="xMidYMid slice">
+      <g class="c-thumb-tiles">{drawn.tiles.map((t) => <image key={t.href} href={t.href} x={t.x} y={t.y}
+                                                              width={t.size + 0.5} height={t.size + 0.5} />)}</g>
       {drawn.area && <path class="c-thumb-area" d={drawn.area} />}
       {drawn.clean && <path class="c-thumb-line" d={drawn.clean} stroke={COLORS.clean} />}
       {drawn.over && <path class="c-thumb-line" d={drawn.over} stroke={COLORS.over} />}
