@@ -23,6 +23,42 @@ What the site needs from the outside, and what stays closed:
 | `web`, `worker` | the host, private addresses (the provider's private network, its metadata service), other containers | nothing: the firewall rules of section 2 |
 | `worker` | `web` | nothing: they share no network (they talk through the data volume) |
 
+**The script.** `deploy/vps.sh` runs the commands of these sections on the server; the sections
+say what each step does and why, and remain the way to do it by hand. Left to you: the server
+and a block volume for Docker (section 1), the DNS record (3), the sign-in apps at GitHub and
+Google (7), the restic repository (11) and the checks that need a browser or another network
+(12). After cloning the checkout (section 1):
+
+```sh
+cd /srv/find-a-line
+sudo deploy/vps.sh setup --site findaline.example.org --email you@example.org --my-ip 203.0.113.7
+```
+
+Run it with `sudo` as your own user, not as root: SSH passwords are turned off only once this
+user has a key in `~/.ssh/authorized_keys` and has logged in with it in the last week. `setup`
+installs Docker from Docker's repository and the packages (section 1), turns SSH passwords and
+root's login off and sets up `ufw` with the containers' rules (2), checks the DNS record (3),
+installs nginx and, once the A record points at the server, the certificate (4), fail2ban (5)
+and the automatic updates (6), writes `findaline.env`, `.env` (the worker's cores and, on a
+server with less than 10 GB, its memory) and the secrets (8; in a terminal it asks for the
+sign-in apps' client ids and secrets and for the GitHub login of the administrator), builds and
+starts the site (9), installs the daily backup once `/etc/findaline-backup.env` exists (11) and
+runs the checks of `deploy/vps.sh check`. Each step looks at what is already there, so run it
+again after it stops: it ends with a list of what is still missing (the DNS record, a secret, a
+reboot). Options:
+- `--site`, the site's name (afterwards read from `FINDALINE_PUBLIC_URL`);
+- `--email`, for Let's Encrypt's expiry notices and, without `--contact`, `FINDALINE_CONTACT`;
+- `--my-ip`, a fixed address of your own: SSH from it only (`allow OpenSSH` is removed; the
+  script asks first unless an SSH connection from it is open now) and never banned by fail2ban
+  (`/etc/fail2ban/jail.d/00-ignore.local`); leave it out without a fixed address;
+- `--data-root /srv/docker`, Docker's data on a volume of its own (section 1, *Disk*; only
+  before the site's volumes exist);
+- `--yes`, yes to its questions.
+
+Later: `sudo deploy/vps.sh update` (section 13) and `sudo deploy/vps.sh check` (sections 2 and
+12: the answers of nginx, the firewall from inside the containers, the jail, the certificate's
+timer, SSH, the free disk).
+
 ## 1. Prerequisites
 - A VPS with Ubuntu 26.04 LTS and a public IPv4 address, with Docker Engine and the Compose plugin
   from Docker's repository (docs.docker.com/engine/install/ubuntu; `docker compose version`), at
@@ -620,6 +656,13 @@ so (section 5).
    the network `web` (section 14, *Everyone shares one rate limit*).
 
 ## 13. Updates
+`sudo deploy/vps.sh update` does the steps below: it checks the CI of the new commits (GitHub's
+check runs of the newest one; a private repository's are not readable without a token, so it
+asks, and `--skip-ci` leaves the check out), pulls them, installs the files of `deploy/` again
+where they changed (nginx reloaded, fail2ban restarted, the blocks of `ufw`'s files replaced and
+`ufw` reloaded), builds the image, restarts the services and warns when the examples of the
+settings changed. By hand:
+
 1. Check the CI first: the commit you are about to deploy must have passed GitHub Actions (tests
    on Linux and Windows, the audits and the Docker job, which also runs nginx and fail2ban with
    these files), on the repository's *Actions* page or `gh run list --limit 5`.
@@ -635,7 +678,7 @@ so (section 5).
    ```
    A search running at that moment is stopped by the restart of the worker and marked
    interrupted (a large area resumes when it is run again).
-3. Read the commit messages for changes to `deploy/` (copy the nginx files again with the commands
+3. Read the commit messages for changes to `deploy/` (`deploy/vps.sh update` installs them) (copy the nginx files again with the commands
    of section 4 from `SITE=` on, without the certificate, then `sudo nginx -t && sudo systemctl
    reload nginx`; the fail2ban files of section 5 and `sudo systemctl restart fail2ban`; the
    firewall files of section 2: restore the `.bak` copies and add the block and the rule again),
