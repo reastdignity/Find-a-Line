@@ -1,0 +1,17 @@
+# Find-a-Line: copy to /etc/fail2ban/jail.d/findaline.local (docs/deployment.md, section 5).
+# Bans an address that gets more than 100 refusals (401, 403, 429) in 10 minutes for an hour, on
+# the host's firewall (Ubuntu's banaction, nftables; nginx runs on the host, so the ban covers the
+# site). Normal use stays far below: an expired session or a pending account gives a few 401/403
+# per page load, the app's own rate limits a few 429 per minute at most, and nginx's limit_req only
+# refuses beyond 20 requests per second (with a burst of 200). Only 127.0.0.1 and ::1 are never
+# banned: add your own fixed address to ignoreip, or test the jail from another network.
+[findaline]
+enabled  = true
+port     = http,https
+filter   = findaline
+logpath  = /var/log/nginx/findaline.access.log
+backend  = auto
+maxretry = 100
+findtime = 600
+bantime  = 3600
+#ignoreip = 127.0.0.1/8 ::1 203.0.113.7
