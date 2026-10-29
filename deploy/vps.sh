@@ -343,8 +343,13 @@ firewall() {
     ufw insert 1 deny in on br-fal-worker >/dev/null
     ufw --force enable >/dev/null
     [ "$CHANGED" = 1 ] && ufw reload >/dev/null
-    iptables -S DOCKER-USER | grep -q -- '-i br-fal-+ -d 169.254.0.0/16 -j DROP' \
-        || die "DOCKER-USER lacks the rules of ufw-after.rules (iptables -S DOCKER-USER)"
+    # iptables -S prints a rule's options in its own order (-d before -i), not the file's
+    local rules range
+    rules=$(iptables -S DOCKER-USER)
+    for range in 10.0.0.0/8 172.16.0.0/12 192.168.0.0/16 169.254.0.0/16 100.64.0.0/10; do
+        grep -qxF -- "-A DOCKER-USER -d $range -i br-fal-+ -j DROP" <<< "$rules" \
+            || die "DOCKER-USER lacks the rules of ufw-after.rules ($range; iptables -S DOCKER-USER)"
+    done
     iptables -S ufw-before-input | grep -q -- '-i br-fal-+ -j DROP' \
         || die "ufw-before-input lacks the rule of ufw-before.rules"
     note "ufw active: $(ufw status | grep -c ALLOW) rules allow, the containers kept from the host and private addresses"
