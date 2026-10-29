@@ -56,12 +56,8 @@ function useResultMap(model: ResultModel, data: RunData, padding: () => Padding)
     observer.observe(ref.current!);
     return () => {
       observer.disconnect();
-      const canvases = Object.values((map as any)._layers).filter((l) => l instanceof L.Canvas);
       resultMap.destroy();
       map.remove();
-      // Removing the lines asks their canvas for a redraw, which a browser may still run after the canvas is
-      // gone (seen in headless Edge: clearRect of undefined): the removed canvases draw nothing more
-      canvases.forEach((c: any) => { c._redraw = () => {}; });
     };
   }, [model]);
   return {ref, view};

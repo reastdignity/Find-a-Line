@@ -154,6 +154,29 @@ FastAPI and Starlette stay pinned in `uv.lock` and are raised deliberately (Fast
 - **Another line of a group**: the user picks any member (thin variants clicked, ◀ ▶ in the popup, the group's row unfolded in the list); only the line shown changes, never the members, so `groupLines` still matches `mapping.group_lines`. Decided: the choice lasts until the map is closed (groups change with the distance and the filters, so a stored choice would be ambiguous); a favourite is the lasting way. `map.html#line=lat1,lon1,lat2,lon2` opens a line.
 - **Favourites** (decided: on the server, per account, not in the browser's storage): table `favourites` of `jobs.sqlite` (migration 8, automatic), marked from a map served by the app (it gets the token of its changes from the GET of its favourites: a map is a static page without one, and `runs.js` could be included by a foreign page), listed in the app's tab *Favourites*. The map sends the line's values with it and the server keeps them (`FavouriteLine`: the user's own data, shown only to them), so the tab needs no run's `lines.csv`; the line itself is not checked against the run (at most `FAVOURITES_MAX` = 10000 per user bounds the rows). Maps from disk and share links have none. Priority of the line shown in a group: chosen in the session, then a favourite, then the representative. Export as GeoJSON/CSV in the browser (the columns of `lines.csv`).
 
+## UI prototypes B and C (built 2026-10-29, branch `ui-prototypes`, not merged)
+
+Users found the app hard to navigate.
+- **Review:** ten workflows, a diagnosis and three proposals with mockups (A guided steps, B map-first, C dashboard), in a private artifact (https://claude.ai/artifact/Lqu4f7ZfGctPjYbgzz2nNT).
+- **Built:** B and C, both in one build next to the old app, chosen with `?ui=b` / `?ui=c` (remembered in the browser; `?ui=old` goes back, and the old app stays the default).
+- **Shared by both:**
+  - one results panel: summary with legend, filter chips, an unfolded list sorted by clearance, line details with next/previous spot, profile with tap-and-drag, Share/Download/Compare/Measure;
+  - a search panel: modes Point · Area · Along cliffs · File, presets (`params.PRESETS`), human labels and topics (`params.LABELS`, `TOPICS`), a live estimate instead of the Estimate button;
+  - `GET /api/usage` for the quota meters.
+- **Decided:**
+  - `map.html` stays unchanged until one proposal wins.
+  - New searches in B and C start with the "Typical highline" preset (30–150 m, Δh ≤ 10 m).
+  - No search field "clearance ≥ x" (the results' filter does it).
+  - No GPX export yet (to be compared with libraries first).
+- **Open:**
+  - The choice between B and C (or parts of both).
+  - Then:
+    - the winner's result view in `map.html` (from disk and share links), removing the copies noted in `result/model.ts`;
+    - the old app removed;
+    - the orthophoto in B's results;
+    - a place-name search box;
+    - the old Admin/OSM panels in the new look.
+
 ## New data sources
 Researched 2026-10-25 (how: docs/data-sources.md). Order: Slovakia (DSM needs a hosted copy, see below), then Switzerland (done first, 2026-10-26: it needed no hosting); Greece has no usable national source. The USA was researched on 2026-10-26 (below); nothing is planned for it yet.
 

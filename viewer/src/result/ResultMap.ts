@@ -63,6 +63,9 @@ export class ResultMap {
     this.hoverAt(null);
     this.layers.forEach((layer) => this.map.removeLayer(layer));
     [this.renderer, this.variantRenderer].forEach((r) => { if (this.map.hasLayer(r)) this.map.removeLayer(r); });
+    // Removing the lines asks their canvas for a redraw, which a browser may still run after the canvas is gone
+    // (headless Edge: "clearRect of undefined"); the renderers are this map's own, so they draw nothing more
+    [this.renderer, this.variantRenderer].forEach((r) => { (r as any)._redraw = () => {}; });
     this.map.off("click", this.onMapClick);
     document.removeEventListener("keydown", this.onKey);
   }
