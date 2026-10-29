@@ -1,11 +1,11 @@
 // Which interface the app shows: ?ui=old|b|c|d|kit|kit-result|kit-search, remembered in localStorage (per browser) until
-// another is chosen. The old interface stays the default.
+// another is chosen. D is the default; the old interface stays at ?ui=old.
 
 export type UiChoice = "old" | "b" | "c" | "d" | "kit" | "kit-result" | "kit-search";
 const CHOICES: UiChoice[] = ["old", "b", "c", "d", "kit", "kit-result", "kit-search"];
 const STORAGE_KEY = "findaline-ui";
 
-/** The interface of this page: the parameter (remembered), else the remembered one, else "old". */
+/** The interface of this page: the parameter (remembered), else the remembered one, else "d". */
 export function chooseUi(search: string = location.search): UiChoice {
   const asked = new URLSearchParams(search).get("ui") as UiChoice | null;
   if (asked && CHOICES.includes(asked)) {
@@ -16,7 +16,7 @@ export function chooseUi(search: string = location.search): UiChoice {
     const kept = localStorage.getItem(STORAGE_KEY) as UiChoice | null;
     if (kept && CHOICES.includes(kept)) return kept;
   } catch { /* no storage */ }
-  return "old";
+  return "d";
 }
 
 /** The address of this page in another interface (the hash, a route of the new shells, is dropped). */

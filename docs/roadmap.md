@@ -158,7 +158,7 @@ FastAPI and Starlette stay pinned in `uv.lock` and are raised deliberately (Fast
 
 Users found the app hard to navigate.
 - **Review:** ten workflows, a diagnosis and three proposals with mockups (A guided steps, B map-first, C dashboard), in a private artifact (https://claude.ai/artifact/Lqu4f7ZfGctPjYbgzz2nNT).
-- **Built:** B and C, both in one build next to the old app, chosen with `?ui=b` / `?ui=c` (remembered in the browser; `?ui=old` goes back, and the old app stays the default).
+- **Built:** B and C, both in one build next to the old app, chosen with `?ui=b` / `?ui=c` (remembered in the browser; `?ui=old` goes back). Since 2026-10-29 D is the default (the user), the old app stays at `?ui=old`.
 - **Shared by both:**
   - one results panel: summary with legend, filter chips, an unfolded list sorted by clearance, line details with next/previous spot, profile with tap-and-drag, Share/Download/Compare/Measure;
   - a search panel: modes Point · Area · Along cliffs · File, presets (`params.PRESETS`), human labels and topics (`params.LABELS`, `TOPICS`), a live estimate instead of the Estimate button;

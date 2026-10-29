@@ -888,7 +888,7 @@ def test_app_counts_and_clears_areas(tmp_path):
         '<script src="/app/app.js"></script>',
         '<script src="stubs.js"></script><script src="/app/app.js"></script><script src="test.js"></script>'),
         encoding="utf-8")
-    dom = _edge_page(tmp_path, "runs/apptest/index.html")
+    dom = _edge_page(tmp_path, "runs/apptest/index.html?ui=old")  # the old app (D is the default)
     text = re.search(r'<pre id="result">(.*?)</pre>', dom, re.S).group(1)
     drawn, cleared, started = text.split(" | ")[:3]
     assert drawn.startswith("2 separate areas (3 shapes"), text
@@ -967,7 +967,7 @@ def test_app_reads_area_files(tmp_path):
         '<script src="/app/app.js"></script>',
         '<script src="stubs.js"></script><script src="/app/app.js"></script><script src="test.js"></script>'),
         encoding="utf-8")
-    dom = _edge_page(tmp_path, "runs/apptest/index.html")
+    dom = _edge_page(tmp_path, "runs/apptest/index.html?ui=old")  # the old app (D is the default)
     text = re.search(r'<pre id="result">(.*?)</pre>', dom, re.S).group(1)
     kml, gpx, started = text.split(" | ")[:3]
     assert kml.startswith("crag.kml: 2 shapes"), text
@@ -1383,7 +1383,7 @@ def test_favourites_in_the_map_and_the_app(tmp_path, monkeypatch):
         '<script src="/app/app.js"></script>',
         '<script src="stubs.js"></script><script src="/app/app.js"></script><script src="test.js"></script>'),
         encoding="utf-8")
-    dom = _edge_page(tmp_path, "runs/apptest/index.html")
+    dom = _edge_page(tmp_path, "runs/apptest/index.html?ui=old")  # the old app (D is the default)
     result = json.loads(re.search(r'<pre id="result">(.*?)</pre>', dom, re.S).group(1).replace("&quot;", '"'))
     assert result["cards"] == 2 and result["mapLines"] == 2, result
     assert result["lengths"][0] == 999 and result["lengths"] == sorted(result["lengths"], reverse=True), result
@@ -1451,7 +1451,7 @@ UI_SCRIPT = """
   out.id = "result";
   document.body.appendChild(out);
   setTimeout(() => {
-    const found = ["fa-tabs", "fa-try", "u-gallery", "u-app-b", "u-app-c", "u-rail", "u-bnav", "u-sheet"]
+    const found = ["fa-tabs", "fa-try", "u-gallery", "u-app-b", "u-app-c", "u-app-d", "u-rail", "u-bnav", "u-sheet"]
       .filter((name) => document.querySelector("." + name));
     const sheet = document.querySelector(".u-sheet");
     const kept = localStorage.getItem("findaline-ui");
@@ -1469,7 +1469,7 @@ UI_SCRIPT = """
 
 @pytest.mark.skipif(not os.path.exists(EDGE), reason="needs Microsoft Edge")
 def test_interface_switch(tmp_path):
-    """?ui= picks the interface: the old app without it, the gallery of the new components (kit) and the
+    """?ui= picks the interface: D without it, the old app, the gallery of the new components (kit) and the
     prototypes B and C, each without CSP violations; the choice is remembered (localStorage)."""
     import html
     import re
@@ -1490,7 +1490,8 @@ def test_interface_switch(tmp_path):
         assert _violations(dom) == [], query  # style-src 'self': no inline styles
         return json.loads(html.unescape(re.search(r'<pre id="result">(.*?)</pre>', dom, re.S).group(1)))
 
-    assert {"fa-tabs", "fa-try"} <= set(shown("")["found"])  # the default, with the way to the new ones
+    assert "u-app-d" in shown("")["found"]  # the default
+    assert {"fa-tabs", "fa-try"} <= set(shown("?ui=old")["found"])  # with the way to the new ones
     kit = shown("?ui=kit")
     assert {"u-gallery", "u-rail", "u-bnav", "u-sheet"} <= set(kit["found"]), kit
     assert "u-half" in kit["snaps"].split(" -> ")[0] and "u-full" in kit["snaps"].split(" -> ")[1], kit

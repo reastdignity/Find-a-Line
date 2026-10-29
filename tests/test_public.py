@@ -1420,13 +1420,13 @@ def test_signed_in_app_and_shared_map_in_edge(tmp_path, clip_run, account_settin
     try:
         while not server.started:
             time.sleep(0.1)
-        dom = _edge(f"{site}/login/github?next=/", tmp_path / "edge")
+        dom = _edge(f"{site}/login/github?next=/%3Fui%3Dold", tmp_path / "edge")
         result = json.loads(re.search(r'<pre id="result">(.*?)</pre>', dom, re.S).group(1).replace("&quot;", '"'))
         assert result["user"] and result["user"].startswith("a") and "sign out" in result["user"], result
         assert result["tabs"] == ["New search", "Queue", "Runs", "Favourites"], result  # no OSM, no Admin
         assert _violations(dom) == []
         signing_in[0] = {"id": 1, "login": "admin"}  # FINDALINE_ADMINS: the admin tab
-        dom = _edge(f"{site}/login/github?next=/", tmp_path / "edge-admin")
+        dom = _edge(f"{site}/login/github?next=/%3Fui%3Dold", tmp_path / "edge-admin")
         result = json.loads(re.search(r'<pre id="result">(.*?)</pre>', dom, re.S).group(1).replace("&quot;", '"'))
         assert result["tabs"] == ["New search", "Queue", "Runs", "Favourites", "Admin"], result
         assert {"Users", "All searches", "Runs", "OpenStreetMap extracts"} <= set(result["sections"]), result
