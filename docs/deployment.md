@@ -41,7 +41,7 @@ root's login off and sets up `ufw` with the containers' rules (2), checks the DN
 installs nginx and, once the A record points at the server, the certificate (4), fail2ban (5)
 and the automatic updates (6), writes `findaline.env`, `.env` (the worker's cores and, on a
 server with less than 10 GB, its memory) and the secrets (8; in a terminal it asks for the
-sign-in apps' client ids and secrets and for the GitHub login of the administrator), builds and
+sign-in apps' client ids and secrets and for the GitHub login or id of the administrator), builds and
 starts the site (9), installs the daily backup once `/etc/findaline-backup.env` exists (11) and
 runs the checks of `deploy/vps.sh check`. Each step looks at what is already there, so run it
 again after it stops: it ends with a list of what is still missing (the DNS record, a secret, a
@@ -368,7 +368,8 @@ The site keeps no passwords: visitors sign in with GitHub or Google (one of them
 The callback addresses must match exactly.
 
 **GitHub** (no scopes: the site reads the public user id and name):
-1. github.com, *Settings*, *Developer settings*, *OAuth Apps*, *New OAuth App*.
+1. github.com, *Settings*, *Developer settings*, *OAuth Apps*, *New OAuth App* (not *GitHub
+   Apps*, the entry above it: its form asks for a *Redirect URI*, a webhook and permissions).
 2. *Application name* `Find-a-Line`, *Homepage URL* `https://findaline.example.org`,
    *Authorization callback URL* `https://findaline.example.org/auth/github`; leave *Enable
    Device Flow* off. *Register application*.
