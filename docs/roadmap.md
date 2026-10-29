@@ -168,8 +168,9 @@ Users found the app hard to navigate.
   - New searches in B and C start with the "Typical highline" preset (30–150 m, Δh ≤ 10 m).
   - No search field "clearance ≥ x" (the results' filter does it).
   - No GPX export yet (to be compared with libraries first).
+- **D (2026-10-29):** the user prefers C's home and new search with B's way of working with a finished run, above all the profile docked at the bottom; `?ui=d` combines them (B's result view is now `result/view/ResultWorkspace.tsx`, shared by B and D). B and C stay for comparison.
 - **Open:**
-  - The choice between B and C (or parts of both).
+  - The choice between B, C and D (D is the user's current preference).
   - Then:
     - the winner's result view in `map.html` (from disk and share links), removing the copies noted in `result/model.ts`;
     - the old app removed;
