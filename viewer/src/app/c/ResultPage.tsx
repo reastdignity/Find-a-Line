@@ -18,7 +18,7 @@ import { editHash, parseRoute, runHash } from "./route";
 import { when } from "./Home";
 
 /** The orthophoto's cache folder is relative to the run's map.html; the app's page is elsewhere. */
-function orthoForApp(ortho: Ortho | null, runId: string): Ortho | null {
+export function orthoForApp(ortho: Ortho | null, runId: string): Ortho | null {
   if (!ortho || !ortho.cache) return ortho;
   const map = `${location.origin}/runs/${encodeURIComponent(runId)}/map.html`;
   return {...ortho, cache: new URL(ortho.cache, map).pathname};

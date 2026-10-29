@@ -1,6 +1,6 @@
 // The app (python findaline.py web): the map on the left, a new search, the queue, the saved
 // runs and the favourite lines on the right. Results open as the runs' own maps (runs/<id>/map.html).
-// ?ui=b|c|kit shows a prototype of a new interface instead (ui/choice.ts); this one stays the default.
+// ?ui=b|c|d|kit shows a prototype of a new interface instead (ui/choice.ts); this one stays the default.
 
 import "leaflet/dist/leaflet.css";
 import L from "leaflet";
@@ -20,6 +20,7 @@ import { PlaceMap } from "./PlaceMap";
 import { SearchForm } from "./SearchForm";
 import { AppB } from "./b/AppB";
 import { AppC } from "./c/AppC";
+import { AppD } from "./d/AppD";
 import { Gallery } from "../ui/Gallery";
 import { KitResult } from "../result/view/KitResult";
 import { KitSearch } from "../search/KitSearch";
@@ -76,7 +77,7 @@ function Runs() {
 
 /** The way to the prototypes of a new interface. */
 function TryNew() {
-  return <span class="fa-try">Try the new interface: <a href={uiHref("b")}>B</a> · <a href={uiHref("c")}>C</a></span>;
+  return <span class="fa-try">Try the new interface: <a href={uiHref("b")}>B</a> · <a href={uiHref("c")}>C</a> · <a href={uiHref("d")}>D</a></span>;
 }
 
 function App() {
@@ -141,6 +142,6 @@ function App() {
   </div>;
 }
 
-const SHELLS = {old: App, b: AppB, c: AppC, kit: Gallery, "kit-result": KitResult, "kit-search": KitSearch};
+const SHELLS = {old: App, b: AppB, c: AppC, d: AppD, kit: Gallery, "kit-result": KitResult, "kit-search": KitSearch};
 const Shell = SHELLS[chooseUi()];
 render(<Shell />, document.getElementById("app")!);

@@ -62,9 +62,6 @@
 .ui.b-app .b-top-title svg { width: 28px; height: 18px; }
 .ui.b-app .b-top-jobs { display: inline-flex; align-items: center; gap: 6px; min-height: 36px; margin-left: auto; padding: 0 12px;
   border: 0; border-radius: 999px; background: var(--surface); color: var(--ink-2); box-shadow: var(--shadow); font: 500 13px var(--font); cursor: pointer; }
-.ui.b-app .b-top-run .b-pill { flex: 1; min-width: 0; max-width: none; }
-.ui.b-app .b-top-run .r-actions { flex-wrap: nowrap; flex: none; }
-.ui.b-app .b-top-run .r-actions .u-ib { background: var(--surface); box-shadow: var(--shadow); border-radius: 50%; }
 
 /* Cards of My searches (and the search being followed) */
 .ui.b-app .b-searches, .ui.b-app .b-following { display: flex; flex-direction: column; gap: 10px; }
@@ -113,31 +110,9 @@
 .ui.b-app .b-legacy .fa-hint { color: var(--muted); }
 .ui.b-app .b-legacy .fa-error { color: var(--bad); }
 
-/* Results: the pill, the actions, the panel and the profile */
-.ui.b-app .b-top-left { position: absolute; top: 12px; left: 12px; z-index: 2; display: flex; gap: 8px; max-width: calc(100% - 820px);
-  min-width: 260px; }
-.ui.b-app .b-pill { display: flex; align-items: center; gap: 6px; min-height: 44px; padding: 0 8px 0 4px; border-radius: 999px;
-  background: var(--surface); box-shadow: var(--shadow); border: 1px solid var(--line); font-weight: 500; min-width: 0; max-width: 100%; }
-.ui.b-app .b-pill-name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; display: inline-flex; align-items: center; gap: 8px; }
-.ui.b-app .b-pill-date { white-space: nowrap; }
-.ui.b-app .b-pill .r-error { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; }
-.ui.b-app .b-switch { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
-.ui.b-app .b-switch button { width: 100%; display: flex; flex-direction: column; align-items: flex-start; gap: 1px; padding: 6px 8px; border: 0;
-  border-radius: 8px; background: none; color: var(--ink); text-align: left; cursor: pointer; }
-.ui.b-app .b-switch button:hover { background: var(--surface-2); }
-.ui.b-app .b-switch button.u-on { background: var(--accent-soft); }
-.ui.b-app .b-run-actions { position: absolute; top: 12px; right: 408px; z-index: 2; }
-.ui.b-app .b-results { position: absolute; top: 12px; right: 12px; bottom: 12px; width: 384px; z-index: 2; display: flex; flex-direction: column;
-  overflow: hidden; }
-.ui.b-app .b-results-head { padding: 14px 16px 12px; display: flex; flex-direction: column; gap: 10px; border-bottom: 1px solid var(--line);
-  max-height: 55%; overflow-y: auto; flex: none; }
-.ui.b-app .b-results-body { flex: 1; min-height: 0; overflow-y: auto; padding: 4px 8px 8px; }
-.ui.b-app .b-dock { position: absolute; left: 12px; right: 408px; bottom: 12px; z-index: 2; pointer-events: none; }
-.ui.b-app .b-dock > .r-dock { pointer-events: auto; border: 1px solid var(--line); border-radius: 14px; box-shadow: var(--shadow); max-height: 46vh; }
+/* Results: the pill, the panel and the dock are the workspace's (result/view/workspace.css) */
 .ui.b-app .u-sheet .u-sheet-body { display: flex; flex-direction: column; gap: 10px; }
-.ui.b-app .u-sheet .b-pill { flex: 1; }
 @media (max-width: 1100px) {
-  .ui.b-app .b-top-left { max-width: calc(100% - 420px); min-width: 0; top: 64px; }
   .ui.b-app.b-in-run:not(.b-phone) .leaflet-top.leaflet-right { top: 52px; }
 }
 /* A sheet's sticky estimate covers the body's bottom padding too, so nothing peeks out under Find lines */

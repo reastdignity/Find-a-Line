@@ -1,0 +1,15 @@
+/* Prototype D (AppD.tsx): C's pages (c.css) and B's result (result/view/workspace.css) on its own
+   full-screen map; classes d-*, under the kit's .ui. */
+
+.ui .d-result { flex: 1; min-width: 0; position: relative; overflow: hidden; }
+.ui .d-map { position: absolute; inset: 0; background: var(--map-bg); isolation: isolate; }
+/* A layer over the map: only the workspace's parts take the pointer */
+.ui .d-layer { position: absolute; inset: 0; z-index: 1; pointer-events: none; }
+/* The map's controls under the run's actions, left of the panel; on phones under the top bar */
+.ui .d-result.d-wide .leaflet-top.leaflet-right { right: 396px; top: 52px; }
+.ui .d-result.d-phone .leaflet-top { top: 60px; }
+.ui .d-result .leaflet-control-scale-line { background: color-mix(in srgb, var(--surface) 80%, transparent); color: var(--ink);
+  border-color: var(--ink-2); }
+.ui .d-result .leaflet-control-attribution { background: color-mix(in srgb, var(--surface) 80%, transparent); color: var(--ink-2); }
+.ui .d-result .leaflet-control-attribution a { color: var(--accent); }
+.ui .d-result .leaflet-tooltip { background: var(--surface); color: var(--ink); border-color: var(--line); }

@@ -7,7 +7,7 @@ import { useEffect, useRef, useState } from "preact/hooks";
 import type { ComponentChildren } from "preact";
 import { Button, Segmented, type Theme } from "../../ui/components";
 import { Icon } from "../../ui/icons";
-import { storeTheme, uiHref } from "../../ui/choice";
+import { storeTheme, uiHref, type UiChoice } from "../../ui/choice";
 import { Popover } from "../../result/view";
 import { AdminPanel } from "../Admin";
 import { api, user } from "../api";
@@ -19,7 +19,11 @@ import { go } from "./route";
 const THEMES = [{value: "auto" as const, label: "Auto"}, {value: "light" as const, label: "Light"},
                 {value: "dark" as const, label: "Dark"}];
 
-export function AccountBody({theme, setTheme, onPick}: {theme: Theme; setTheme(t: Theme): void; onPick?(): void}) {
+/** The other interfaces the account links to (C: the old one and B). */
+export const TRIES_C: UiChoice[] = ["old", "b"];
+
+export function AccountBody({theme, setTheme, onPick, tries = TRIES_C}:
+                            {theme: Theme; setTheme(t: Theme): void; onPick?(): void; tries?: UiChoice[]}) {
   const pick = () => onPick?.();
   return <div class="c-account">
     <div class="c-account-who">
@@ -32,8 +36,9 @@ export function AccountBody({theme, setTheme, onPick}: {theme: Theme; setTheme(t
       {user.local && <a class="c-menu-item" href="#osm" onClick={pick}><Icon name="layers" />OpenStreetMap extracts</a>}
       {!user.local && <a class="c-menu-item" href="/privacy" target="_blank"><Icon name="info" />Privacy</a>}
       {!user.local && <a class="c-menu-item" href="/about" target="_blank"><Icon name="info" />About and data licences</a>}
-      <a class="c-menu-item" href={uiHref("old")}><Icon name="back" />Old interface</a>
-      <a class="c-menu-item" href={uiHref("b")}><Icon name="next" />Try B</a>
+      {tries.map((ui) => ui === "old"
+        ? <a key={ui} class="c-menu-item" href={uiHref(ui)}><Icon name="back" />Old interface</a>
+        : <a key={ui} class="c-menu-item" href={uiHref(ui)}><Icon name="next" />Try {ui.toUpperCase()}</a>)}
     </nav>
     <div class="c-account-theme"><span class="u-small">Theme</span>
       <Segmented label="Theme" options={THEMES} value={theme} onChange={(t) => { storeTheme(t); setTheme(t); }} /></div>
@@ -43,7 +48,7 @@ export function AccountBody({theme, setTheme, onPick}: {theme: Theme; setTheme(t
 }
 
 /** The header's account button with its menu. */
-export function AccountMenu({theme, setTheme}: {theme: Theme; setTheme(t: Theme): void}) {
+export function AccountMenu({theme, setTheme, tries}: {theme: Theme; setTheme(t: Theme): void; tries?: UiChoice[]}) {
   const [open, setOpen] = useState(false);
   return <Popover label="Account" align="right" open={open} onOpen={setOpen}
                   button={(on, toggle) => <button type="button" class={`c-account-btn${on ? " u-on" : ""}`}
@@ -51,7 +56,7 @@ export function AccountMenu({theme, setTheme}: {theme: Theme; setTheme(t: Theme)
                     <span class="c-avatar"><Icon name="user" /></span>
                     <span class="c-account-name">{user.local ? "Local" : user.name}</span>
                     <Icon name="down" /></button>}>
-    <AccountBody theme={theme} setTheme={setTheme} onPick={() => setOpen(false)} />
+    <AccountBody theme={theme} setTheme={setTheme} onPick={() => setOpen(false)} tries={tries} />
   </Popover>;
 }
 

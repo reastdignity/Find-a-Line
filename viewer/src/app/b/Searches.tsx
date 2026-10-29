@@ -11,6 +11,9 @@ import { Button, Progress, StatusChip } from "../../ui/components";
 import { Icon } from "../../ui/icons";
 import { UsageMeters } from "../../search/SearchPanel";
 import { ShareRun } from "../../result/view/RunActions";
+import { runCounts } from "../../result/view/ResultWorkspace";
+
+export { runCounts };
 
 const cx = (...names: (string | false | null | undefined)[]) => names.filter(Boolean).join(" ");
 
@@ -19,12 +22,6 @@ export function when(iso: string | null | undefined): string {
   if (!iso) return "";
   const day = iso.slice(0, 10), today = new Date().toISOString().slice(0, 10);
   return day === today ? iso.slice(11, 16) : iso.slice(0, 16).replace("T", " ");
-}
-
-/** "48 lines in 31 spots" of a run. */
-export function runCounts(run: RunListed): string {
-  const {lines, spots} = run.summary;
-  return `${lines} ${lines === 1 ? "line" : "lines"} in ${spots} ${spots === 1 ? "spot" : "spots"}`;
 }
 
 /** The steps of a search: the elevation data, finding the lines (tiles and steps), the map. */
