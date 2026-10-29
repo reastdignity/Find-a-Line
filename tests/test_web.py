@@ -1732,3 +1732,266 @@ def test_schema_has_labels_topics_and_presets(client):
     for preset in presets.values():
         if preset["values"]:
             web.check_request({"params": {"lat": 50.1, "lon": 19.7, **preset["values"]}})
+
+
+
+# The search panel's demo page (?ui=kit-search): no event stream; the estimates are answered here and
+# recorded (their bodies), RATE_LIMITED of them answered with 429 first, SLOW_FIRST delays the first one
+SEARCH_STUBS = CSP_STUB + """
+window.EventSource = class { constructor() {} close() {} };
+window.ESTIMATES = [];
+window.RATE_LIMITED = 0;
+window.SLOW_FIRST = 0;
+const realFetch = window.fetch;
+window.fetch = (url, init) => {
+  if (!String(url).startsWith("/api/estimate")) return realFetch(url, init);
+  const n = ESTIMATES.push(JSON.parse(init.body));
+  const json = (body, status) => new Response(JSON.stringify(body), {status, headers: {"content-type": "application/json"}});
+  if (RATE_LIMITED > 0) {
+    RATE_LIMITED--;
+    return Promise.resolve(json({detail: "too many estimates: try again in a minute"}, 429));
+  }
+  const answer = json({source: "test-" + n, resolution: 1, km2: null, tiles: 1, download_mb: 3, work_gb: 0,
+                       reasons: [], messages: [], area: null}, 200);
+  return new Promise((resolve) => setTimeout(() => resolve(answer), n === 1 && SLOW_FIRST ? SLOW_FIRST : 50));
+};
+"""
+
+# Helpers of the search panel's tests (before each script)
+SEARCH_HELPERS = """
+const out = document.createElement("pre");
+out.id = "result";
+document.body.appendChild(out);
+const found = {};
+const say = (key, value) => { found[key] = value; out.textContent = JSON.stringify(found); };
+const $ = (selector) => document.querySelector(selector);
+const text = (selector) => ($(selector) || {}).textContent || "";
+const button = (label) => [...document.querySelectorAll("button")].find((b) => b.textContent.trim() === label);
+const wait = (ok, then, tries = 150) => ok() ? then() : tries ? setTimeout(() => wait(ok, then, tries - 1), 100)
+                                                  : say("timeout", text(".s-est-line") + " | " + text(".s-panel").slice(0, 200));
+const status = () => text(".s-est-line") || text(".s-bar-line");  // B's box or C's bar
+const fieldValue = (label) => [...document.querySelectorAll(".u-field-lab")].find((l) => l.textContent.startsWith(label))
+  ?.querySelector("b")?.textContent;
+const setRange = (input, value) => { input.value = String(value); input.dispatchEvent(new Event("input", {bubbles: true})); };
+"""
+
+SEARCH_SCRIPT = SEARCH_HELPERS + """
+wait(() => window.FINDALINE_PLACE && $(".s-panel"), () => {
+  const map = window.FINDALINE_PLACE.map;
+  say("initial", {estimate: text(".s-est-line"), preset: text(".s-preset.u-on")});
+  map.fire("click", {latlng: {lat: 50.1559508, lng: 19.7562722}});
+  setTimeout(() => setRange($(".s-where input[type=range]"), 150), 100);
+  wait(() => text(".s-est-line").startsWith("Ready"), () => {
+    say("point", {centre: text(".s-point"), radius: fieldValue("Radius"), calls: ESTIMATES.length,
+                  stats: text(".s-est-row"), body: ESTIMATES[ESTIMATES.length - 1]});
+    button("Typical highline").click();
+    setTimeout(() => {
+      say("preset", {length: fieldValue("Line length"), diff: fieldValue("Height difference of the anchors"),
+                     on: text(".s-preset.u-on")});
+      wait(() => ESTIMATES.length === 2 && text(".s-est-line").startsWith("Ready"), () => {
+        say("again", {source: text(".s-est-row"), body: ESTIMATES[1].params});
+        button("Find lines").click();
+        wait(() => $(".s-started") && $(".s-job"), () => {
+          say("started", {id: $(".s-started").dataset.started, job: $(".s-job").dataset.job, card: text(".s-job"),
+                          meters: [...document.querySelectorAll(".s-meter")].map((m) => m.dataset.usage),
+                          usage: text(".s-meters")});
+        });
+      });
+    }, 100);
+  });
+});
+"""
+
+
+def _search_page(tmp_path, script: str, stubs: str = SEARCH_STUBS, folder_name: str = "searchtest") -> str:
+    """A copy of the app's page in runs/<folder_name>/ with the stubs before and the script after the app."""
+    folder = tmp_path / "runs" / folder_name
+    folder.mkdir(parents=True)
+    (folder / "stubs.js").write_text(stubs, encoding="utf-8")
+    (folder / "test.js").write_text(script, encoding="utf-8")
+    app = web.create_app(str(tmp_path), token=TOKEN, start_scheduler=False)
+    with TestClient(app, base_url=LOCAL) as client:
+        page = client.get("/").text
+    (folder / "index.html").write_text(page.replace(
+        '<script src="/app/app.js"></script>',
+        '<script src="stubs.js"></script><script src="/app/app.js"></script><script src="test.js"></script>'),
+        encoding="utf-8")
+    return f"runs/{folder_name}/index.html"
+
+
+def _result_of(dom: str) -> dict:
+    import html
+    import re
+    found = re.search(r'<pre id="result">(.*?)</pre>', dom, re.S)
+    assert found, dom[-3000:]
+    return json.loads(html.unescape(found.group(1)))
+
+
+@pytest.mark.skipif(not os.path.exists(EDGE), reason="needs Microsoft Edge")
+def test_search_panel(tmp_path):
+    """The search panel (?ui=kit-search): a click on the map sets the centre, the estimate comes by
+    itself once the changes stop (one request for the click and the radius), a preset sets the length
+    fields (and asks again), Find lines queues the job that useJobs lists; the usage meters show; no
+    CSP violations."""
+    page = _search_page(tmp_path, SEARCH_SCRIPT)
+    dom = _edge_page(tmp_path, page + "?ui=kit-search&theme=light")
+    r = _result_of(dom)
+    assert "timeout" not in r, r
+    assert r["initial"]["estimate"].startswith("Click the map") and r["initial"]["preset"] == "Custom", r
+    point = r["point"]
+    assert "50.15595, 19.75627" in point["centre"] and point["radius"] == "150 m", point
+    assert point["calls"] == 1, point  # debounced: the click and the radius are one estimate
+    assert point["body"] == {"params": {"lat": 50.1559508, "lon": 19.7562722, "radius": 150}, "geometry": None}
+    assert "0.07 km²" in point["stats"] and "test-1" in point["stats"], point  # π × 150² for a circle
+    assert r["preset"] == {"length": "30 – 150 m", "diff": "≤ 10 m", "on": "Typical highline"}, r
+    assert r["again"]["body"] == {"lat": 50.1559508, "lon": 19.7562722, "radius": 150, "max_length": 150,
+                                  "max_anchor_diff_m": 10}, r  # min_length 30 is the default: not sent
+    started = r["started"]
+    assert started["id"] == started["job"] and "waiting" in started["card"], started
+    assert started["meters"] == ["runs_gb", "jobs_day", "jobs_active"], started  # locally: no km² counted
+    assert "No daily limits" in started["usage"] and "Searches today · 1" in started["usage"], started
+    queued = Jobs(str(tmp_path)).get(started["id"])
+    assert json.loads(queued["request"])["params"] == r["again"]["body"]
+    assert _violations(dom) == []
+
+
+RATE_SCRIPT = SEARCH_HELPERS + """
+window.SLOW_FIRST = 1500;
+wait(() => window.FINDALINE_PLACE && $(".s-panel"), () => {
+  const map = window.FINDALINE_PLACE.map;
+  map.fire("click", {latlng: {lat: 50.1559508, lng: 19.7562722}});
+  // A change while the first estimate is in flight: its (slow) answer is dropped
+  wait(() => ESTIMATES.length === 1, () => {
+    setRange($(".s-where input[type=range]"), 200);
+    wait(() => ESTIMATES.length === 2 && text(".s-est-line").startsWith("Ready"), () => {
+      setTimeout(() => {
+        say("dropped", {stats: text(".s-est-row"), calls: ESTIMATES.length});
+        // Too many estimates: paused, asked again once after RETRY_MS, never more
+        window.RATE_LIMITED = 5;
+        setRange($(".s-where input[type=range]"), 250);
+        wait(() => text(".s-est-line").startsWith("Estimate paused"), () => {
+          say("paused", {line: text(".s-est-line"), calls: ESTIMATES.length, start: !button("Find lines").disabled});
+          setTimeout(() => say("later", {line: text(".s-est-line"), calls: ESTIMATES.length,
+                                         again: !!button("Try again")}), 26000);
+        });
+      }, 2000);
+    });
+  });
+});
+"""
+
+
+@pytest.mark.skipif(not os.path.exists(EDGE), reason="needs Microsoft Edge")
+def test_search_panel_estimate_rate(tmp_path):
+    """The live estimate drops the answer to a request made before the last change; refused by the rate
+    (429) it says so, keeps Start enabled, asks again once after RETRY_MS and then waits for the user."""
+    page = _search_page(tmp_path, RATE_SCRIPT)
+    r = _result_of(_edge_page(tmp_path, page + "?ui=kit-search"))
+    assert "timeout" not in r, r
+    assert "test-2" in r["dropped"]["stats"] and r["dropped"]["calls"] == 2, r  # the first answer came later
+    assert r["paused"]["calls"] == 3 and r["paused"]["start"], r
+    assert "Trying again" in r["paused"]["line"], r
+    assert r["later"]["calls"] == 4 and r["later"]["line"].startswith("Estimate paused") and r["later"]["again"], r
+
+
+AREA_SCRIPT = SEARCH_HELPERS + """
+const box = (w, s, e, n) => ({type: "Feature", properties: {},
+  geometry: {type: "Polygon", coordinates: [[[w, s], [e, s], [e, n], [w, n], [w, s]]]}});
+const shapes = {type: "FeatureCollection", features: [box(19.750, 50.154, 19.756, 50.157),
+  box(19.753, 50.155, 19.759, 50.158), box(19.770, 50.150, 19.772, 50.152)]};  // two overlap
+const load = (name, then) => {
+  const input = $("input[type=file]");
+  const files = new DataTransfer();
+  files.items.add(new File([FILES[name]], name));
+  input.files = files.files;
+  input.dispatchEvent(new Event("change", {bubbles: true}));
+  wait(() => text(".s-where").includes(name + ":"), then);
+};
+const last = () => ESTIMATES[ESTIMATES.length - 1] || {params: {}};
+wait(() => window.FINDALINE_PLACE && $(".s-panel"), () => {
+  const place = window.FINDALINE_PLACE;
+  button("Area").click();
+  setTimeout(() => {
+    say("draw", {tools: !!$(".leaflet-pm-toolbar"), buffer: fieldValue("Buffer")});
+    place.loadDrawn(shapes);
+    wait(() => text(".s-areas") && status().startsWith("Ready"), () => {
+      say("area", {areas: text(".s-areas"), features: last().geometry.features.length, buffer: last().params.buffer});
+      button("Named OSM area").click();
+      setTimeout(() => {
+        const input = $(".s-where input[type=text]");
+        input.value = "Gozo";
+        input.dispatchEvent(new Event("input", {bubbles: true}));
+        wait(() => last().params.area === "osm:Gozo", () => {
+          say("osm", last());
+          button("Along cliffs").click();
+          setTimeout(() => {
+            say("cliffs", {line: status(), tools: !!$(".leaflet-pm-toolbar")});
+            button("Use the map view").click();
+            wait(() => last().params.area === "cliffs", () => {
+              say("within", last().params);
+              button("File").click();
+              setTimeout(() => load("crag.kml", () => {
+                say("file", {help: text(".s-where"), areas: text(".s-areas")});
+                wait(() => last().geometry && status().startsWith("Ready"), () => {
+                  button("Start search").click();
+                  wait(() => $(".s-started"), () => say("started", $(".s-started").dataset.started));
+                });
+              }), 200);
+            });
+          }, 200);
+        });
+      }, 200);
+    });
+  }, 200);
+});
+"""
+
+
+@pytest.mark.skipif(not os.path.exists(EDGE), reason="needs Microsoft Edge")
+def test_search_panel_modes(tmp_path):
+    """C's variant (the estimate in the bottom bar): Area (drawn with Geoman's tools, counted as separate
+    areas, the buffer shown; or a named OSM area), Along cliffs (the limit from the map view) and File (a
+    KML read in the browser, started as a job)."""
+    page = _search_page(tmp_path, "const FILES = " + json.dumps(AREA_FILES) + ";\n" + AREA_SCRIPT)
+    dom = _edge_page(tmp_path, page + "?ui=kit-search&variant=c", size="1280,900")
+    r = _result_of(dom)
+    assert "timeout" not in r, r
+    assert r["draw"] == {"tools": True, "buffer": "100 m"}, r
+    assert r["area"]["areas"].startswith("2 separate areas (3 shapes") and r["area"]["features"] == 3, r
+    assert r["area"]["buffer"] == 100, r
+    assert r["osm"] == {"params": {"buffer": 100, "area": "osm:Gozo"}, "geometry": None}, r
+    assert r["cliffs"]["line"].startswith("Coast and cliffs need a limit") and not r["cliffs"]["tools"], r
+    within = r["within"]
+    assert within["area"] == "cliffs" and len(within["within"].split(",")) == 4, within  # S,W,N,E of the view
+    assert "crag.kml: 2 shapes" in r["file"]["help"], r
+    queued = Jobs(str(tmp_path)).get(r["started"])
+    geometry = json.loads(queued["request"])["geometry"]
+    assert [f["geometry"]["type"] for f in geometry["features"]] == ["Polygon", "Point"]
+    assert _violations(dom) == []
+
+
+PHONE_SEARCH_SCRIPT = SEARCH_HELPERS + """
+wait(() => window.FINDALINE_PLACE && $(".s-panel"), () => {
+  window.FINDALINE_PLACE.map.fire("click", {latlng: {lat: 50.1559508, lng: 19.7562722}});
+  wait(() => text(".s-est-line").startsWith("Ready"), () => {
+    const start = button("Find lines").getBoundingClientRect();
+    say("phone", {width: innerWidth, scroll: document.documentElement.scrollWidth, sheet: !!$(".u-sheet"),
+                  side: !!$(".u-side"), jobs: !!$(".s-sheet-jobs"),
+                  modes: [...document.querySelectorAll(".s-where .u-seg button")].map((b) => b.textContent),
+                  start: start.bottom <= innerHeight && start.top >= 0});
+  });
+});
+"""
+
+
+@pytest.mark.skipif(not os.path.exists(EDGE), reason="needs Microsoft Edge")
+def test_search_panel_on_a_phone(tmp_path):
+    """Below 768 px the panel is a bottom sheet with short mode names, the page does not scroll sideways
+    and Find lines stays in view (sticky at the bottom of the sheet)."""
+    page = _search_page(tmp_path, PHONE_SEARCH_SCRIPT)
+    dom = _edge_page(tmp_path, page + "?ui=kit-search", size="500,900")
+    r = _result_of(dom)["phone"]
+    assert r["width"] < 768 and r["scroll"] <= r["width"], r
+    assert r["sheet"] and not r["side"] and r["jobs"], r
+    assert r["modes"][:2] == ["Point", "Area"] and r["modes"][2:4] == ["Cliffs", "File"] and r["start"], r
+    assert _violations(dom) == []
