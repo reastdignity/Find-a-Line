@@ -19,6 +19,7 @@ import { storedTheme, storeTheme, uiHref } from "../../ui/choice";
 import { useUsage } from "../../search/useSearch";
 import { forgetRun } from "../../result/load";
 import { FavouritesB } from "./FavouritesB";
+import { useJobAreas } from "./jobAreas";
 import { ResultsB } from "./ResultsB";
 import { parseRoute, routeHash, type Route, type Section } from "./route";
 import { SearchB } from "./SearchB";
@@ -72,6 +73,7 @@ export function AppB() {
   const [ready, setReady] = useState<Ready | null>(null);
   const [menu, setMenu] = useState(false);        // the phone's menu, or the rail's account panel
   const seen = useRef(new Map<string, string>());  // the jobs' statuses seen
+  const [following, setFollowing] = useState("");  // the job the search panel follows
 
   const refreshRuns = () => api.runs().then((r) => { setRuns(r.runs); setSharing(r.public); return r.runs; },
                                             (e) => { setError(e.message); return [] as RunListed[]; });
@@ -108,8 +110,10 @@ export function AppB() {
       seen.current.set(job.id, job.status);
       if (!before || FINISHED.includes(before as any) || !FINISHED.includes(job.status)) continue;
       usage.refresh();
+      refreshRuns();
+      if (job.id === following && route.section === "search") continue;  // the panel shows it: not elsewhere
       if (job.status === "done") {
-        refreshRuns().then((listed) => {
+        api.runs().then(({runs: listed}) => {
           const run = listed.find((r) => r.id === job.run_id);
           const name = run?.name || job.title;
           setReady({jobId: job.id, runId: job.run_id, title: name, failed: false,
@@ -120,6 +124,7 @@ export function AppB() {
       }
     }
   }, [jobs.jobs]);
+  useJobAreas(place, schema, jobs.jobs, route.section === "searches");
 
   const go = (next: Route) => {
     const hash = routeHash(next);
@@ -166,7 +171,8 @@ export function AppB() {
       {place && schema && <>
         <div class="b-layer" hidden={section !== "search"}>
           <SearchB key={editing.key} place={place} schema={schema} initial={editing.request} jobs={jobs} usage={usage}
-                   runs={runs} wide={wide} onShow={(id) => show(id)} onEdit={edit} />
+                   runs={runs} wide={wide} onShow={(id) => show(id)} onEdit={edit}
+                   onFollow={setFollowing} />
         </div>
         {section === "searches" && <div class="b-layer">{panel("My searches",
           <Searches jobs={jobs} runs={runs} sharing={sharing} usage={usage.usage} onShow={(id) => show(id)}

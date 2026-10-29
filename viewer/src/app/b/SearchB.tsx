@@ -11,7 +11,7 @@ import { SearchPanel } from "../../search/SearchPanel";
 import { useSearch, type UsageState } from "../../search/useSearch";
 import type { RunListed } from "../api";
 import { JobCard } from "./Searches";
-import { useState } from "preact/hooks";
+import { useEffect, useState } from "preact/hooks";
 
 export interface SearchBProps {
   place: PlaceMap;
@@ -24,10 +24,13 @@ export interface SearchBProps {
   wide: boolean;
   onShow(runId: string): void;
   onEdit(jobId: string): void;
+  /** The job the panel follows after Start ("" again for a new search). */
+  onFollow?(jobId: string): void;
 }
 
-export function SearchB({place, schema, initial, jobs, usage, runs, wide, onShow, onEdit}: SearchBProps) {
+export function SearchB({place, schema, initial, jobs, usage, runs, wide, onShow, onEdit, onFollow}: SearchBProps) {
   const [started, setStarted] = useState("");
+  useEffect(() => onFollow?.(started), [started]);
   const search = useSearch({place, schema, initial, preset: "typical", onStarted: (id) => {
     setStarted(id);
     jobs.refresh();
