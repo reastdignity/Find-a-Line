@@ -202,6 +202,7 @@ PY
     # `nofail` the boot goes on without it, and Docker would start on an empty folder)
     if mountpoint -q "$root"; then
         CHANGED=0
+        mkdir -p /etc/systemd/system/docker.service.d
         put /etc/systemd/system/docker.service.d/findaline-data-root.conf 644 <<EOF
 [Unit]
 RequiresMountsFor=$root
