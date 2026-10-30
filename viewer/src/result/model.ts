@@ -1,11 +1,11 @@
 // The result of a run without its UI: lines, filters, groups, the list's rows and order, the chosen
 // line of each group, favourites, the selection, other runs shown with it, links to lines and
-// profiles. The same logic as start() in main.tsx (filters first, then groupLines, then the group
-// size; the same rows in the same order), for the app's shells, which draw it with ResultMap and
-// their own panels. Plain TypeScript (no DOM but fetch), so tests run it under Node.
+// profiles: filters first, then groupLines, then the group size. The app's shells and a run's map.html
+// draw it with ResultMap and their own panels. Plain TypeScript (no DOM but fetch), so tests run it
+// under Node.
 
 import { dh, drop, lowerAnchor, NO_FILTERS, passes, prominence, range as valueRange, saveFilters, savedFilters,
-         wallAngle, type Filters } from "../filters";
+         wallAngle, type FilterRanges, type Filters, type LinesState } from "../filters";
 import { groupLines, type Group } from "../grouping";
 import { detailMessage } from "../i18n";
 import { addFolder, loadRunFavourites, moveFavourite, saveFavourite, type FavouriteFolder,
@@ -14,7 +14,6 @@ import { FolderTree } from "../folders";
 import { lineCoords, lineKey, runLineKey } from "../keys";
 import { hasSavedList, saveList, savedList, sortKey, sortRows, type ListState, type Row } from "../list";
 import { colorOf, inLocalPlane } from "../others";
-import type { FilterRanges, LinesState } from "../panels";
 import { toLine, type Line, type Profile, type RunData, type RunInfo, type RunLines } from "../types";
 
 export type { Filters, Group, LinesState, ListState, FilterRanges };
@@ -50,7 +49,7 @@ export interface ResultApi {
   profile(runId: string, line: string): Promise<Profile>;
 }
 
-/** web.py /api/profile, with the header it wants (as fetchProfile in main.tsx). */
+/** web.py /api/profile, with the header it wants. */
 export async function fetchProfile(runId: string, line: string): Promise<Profile> {
   const response = await fetch("/api/profile?run=" + encodeURIComponent(runId) + "&line=" + line,
                                {headers: {"X-Findaline-Profile": "1"}});
@@ -67,7 +66,7 @@ export const SERVER_API: ResultApi = {
 const LAST_FOLDER = "findaline.lastFolder";  // the folder a new favourite goes to: this browser's convenience
 
 export interface ResultOptions {
-  /** Load and mark the user's favourites (default as main.tsx: FINDALINE_APP.favourites, else from a server). */
+  /** Load and mark the user's favourites (default: FINDALINE_APP.favourites, else from a server). */
   favourites?: boolean;
   /** May the server compute profiles and measure (default: FINDALINE_APP.profiles, else from a server). */
   profiles?: boolean;
@@ -81,8 +80,7 @@ const fromServer = () => typeof location !== "undefined" && location.protocol.st
 const appFlags = () => typeof window !== "undefined" ? window.FINDALINE_APP : undefined;
 const finite = (v: number) => isFinite(v) ? v : null;
 
-// Copied from main.tsx (start: the `ranges` prop of LinesPanel, and below the line of its measuring):
-// remove the copies there when map.html uses this module.
+/** The ranges of the lines' values the filters offer. */
 function lineRanges(all: Line[], highAbove: number, largestGroup: number, favourites: boolean): FilterRanges {
   return {len: valueRange(all, (l) => l.len), clr: valueRange(all, (l) => l.clr),
           clrN: valueRange(all, (l) => l.clrN), dh: valueRange(all, dh),
@@ -95,7 +93,7 @@ function lineRanges(all: Line[], highAbove: number, largestGroup: number, favour
           water: all.some((l) => l.water > 0), filled: all.some((l) => l.filled > 0), favourites};
 }
 
-/** A line measured between two points from its profile (as main.tsx's measuring). */
+/** A line measured between two points from its profile. */
 export function measuredLine(a: [number, number], b: [number, number], p: Profile): Line {
   const n = p.d.length - 1;
   if (p.z[0] === null || p.z[n] === null) throw new Error("no terrain data at a point");
@@ -224,11 +222,11 @@ export class ResultModel {
     return this.favouriteSet.has(l) && !this.chosen.has(l);
   }
 
-  /** The groups and rows again (drawLines in main.tsx): after a change of the filters, of the grouping
+  /** The groups and rows again: after a change of the filters, of the grouping
    *  or of the runs shown. */
   private compute() {
     const all = this.all, f = this.filters, s = this.state;
-    // Runs in another coordinate system are grouped in a local plane around this run (main.tsx `framed`);
+    // Runs in another coordinate system are grouped in a local plane around this run;
     // the groups hold the lines themselves, not their copies in the plane
     const framed = Array.from(this.others.values()).some((r) => r.crs !== this.data.crs);
     const visible = all.filter((l) => (l.over ? s.showOver : s.showClean) && passes(l, f)
@@ -259,7 +257,7 @@ export class ResultModel {
     let groups = this.grouped;
     if (s.group && f.groupMin !== null) groups = groups.filter((g) => g.members.length >= f.groupMin!);
     // groupLines gives clear groups first; without grouping the lines come in their order, so the
-    // rows (clear first, as main.tsx sorts them) keep that order within each kind
+    // rows (clear first) keep that order within each kind
     this.baseRows = groups.map((g) => ({line: this.shownOf(g), n: g.members.length, members: g.members, group: g}))
       .sort((a, b) => +a.group.rep.over - +b.group.rep.over);
     this.groups = this.baseRows.map((r) => r.group);
@@ -276,7 +274,7 @@ export class ResultModel {
   }
 
   private sortRows() {
-    // As LinesList: "lines in the group" without grouping sorts by length
+    // "Lines in the group" without grouping sorts by length
     const key = sortKey(this.list.sort === "n" && !this.state.group ? "len" : this.list.sort);
     this.rows = sortRows(this.baseRows, key, this.list.desc);
   }
@@ -314,7 +312,7 @@ export class ResultModel {
     this.setFilters({...NO_FILTERS});
   }
 
-  /** The list's state (sorting, unfolded, in view): kept in the browser as main.tsx's list. */
+  /** The list's state (sorting, unfolded, in view): kept in the browser. */
   setList(next: ListState) {
     this.list = next;
     saveList(next);

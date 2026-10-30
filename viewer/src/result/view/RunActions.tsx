@@ -23,11 +23,14 @@ export interface RunActionsProps {
   compact?: boolean;
   /** Which actions (default all that can work here). */
   show?: ("measure" | "compare" | "share" | "download")[];
-  /** The folder of the runs' files (default "/runs/"). */
+  /** The folder of the runs' folders (default "/runs/"). */
   base?: string;
+  /** The folder of this run's files (default its folder in `base`; a shared map's is its own page's). */
+  folder?: string;
 }
 
-const runFile = (base: string, id: string, file: string) => base + encodeURIComponent(id) + "/" + file;
+/** The folder of the run's files (RunActionsProps.folder). */
+export const runFolder = (id: string, base = "/runs/", folder?: string) => folder ?? base + encodeURIComponent(id) + "/";
 
 /** Measure: the next two clicks on the map; the profile between them is computed by the server. */
 function Measure({model, view, onMeasured, compact}: RunActionsProps) {
@@ -172,16 +175,16 @@ export function ShareRun({runId, run: given, compact, align = "right", onChange}
 }
 
 /** Download: the lines of the run as CSV and GeoJSON. */
-function Download({model, compact, base = "/runs/"}: RunActionsProps) {
-  const id = model.runId;
+function Download({model, compact, base, folder}: RunActionsProps) {
+  const id = model.runId, files = runFolder(id, base, folder);
   return <Popover label="Download" align="right"
                   button={(open, toggle) => compact ? <IconButton icon="download" label="Download" expanded={open} onClick={toggle} />
                     : <Button icon="download" aria-expanded={open} onClick={toggle}>Download</Button>}>
     <div class="r-downloads">
       <b class="u-h4">Download the lines</b>
-      <a class="u-btn" href={runFile(base, id, "lines.csv")} download={`${id}.csv`}><Icon name="download" />
+      <a class="u-btn" href={files + "lines.csv"} download={`${id}.csv`}><Icon name="download" />
         CSV <span class="u-small">table, every line</span></a>
-      <a class="u-btn" href={runFile(base, id, "lines.geojson")} download={`${id}.geojson`}><Icon name="download" />
+      <a class="u-btn" href={files + "lines.geojson"} download={`${id}.geojson`}><Icon name="download" />
         GeoJSON <span class="u-small">for GIS and map apps</span></a>
     </div>
   </Popover>;

@@ -1,12 +1,10 @@
-// Other runs shown with the current one: their lines.js, colours, which are nearby,
-// and which were chosen last time (kept in the browser).
+// Other runs shown with the current one: their lines.js, colours and which are nearby.
 
 import type { Line, RunInfo, RunLines } from "./types";
 
 export const NEARBY_KM = 20;
 // Colours of other runs (not the pink and orange of the current run)
 const PALETTE = ["#1f77b4", "#2ca02c", "#9467bd", "#17becf", "#8c564b", "#7f7f00", "#1a237e", "#d62728"];
-const STORAGE_KEY = "findaline.otherRuns";
 const EARTH_RADIUS = 6371008.8;
 
 /** The same colour for a run on every map. */
@@ -45,22 +43,6 @@ export function listOthers(runs: RunInfo[], currentId: string, box: number[]): {
   return runs.filter((r) => r.id !== currentId && r.has_lines && r.bbox)
     .map((run) => ({run, km: boxDistanceKm(box, run.bbox!)}))
     .sort((a, b) => a.km - b.km);
-}
-
-export function savedChoice(): string[] {
-  try {
-    return JSON.parse(localStorage.getItem(STORAGE_KEY) || "[]");
-  } catch {
-    return [];
-  }
-}
-
-export function saveChoice(ids: string[]) {
-  try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(ids));
-  } catch {
-    // storage blocked: the choice is just not kept
-  }
 }
 
 /** Lines with coordinates in metres of a local plane around (lat0, lon0), for grouping

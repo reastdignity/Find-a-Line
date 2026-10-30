@@ -1,5 +1,5 @@
 // The text of an error answer of the server (web.py error_detail), without the message catalogue: the
-// map of a run (main.tsx, favourites.ts) shows the server's English text. The app renders coded
+// favourite lines of a run's map (favourites.ts) show the server's English text. The app renders coded
 // errors in its language (app/api.ts ApiError, i18n.ts errorText).
 
 /** The detail of an error answer as a text: a plain text, or the "message" of {message, code, params}. */

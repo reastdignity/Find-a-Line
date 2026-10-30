@@ -1,6 +1,7 @@
 // A finished run on a full-screen map, as prototype B shows it and D reuses: the run's data (loadRun),
 // its model and its layer (ResultMap) on the caller's Leaflet map, a pill "‹ run name" with the
 // caller's back action (and, in B, a switcher of runs), the run's actions with the caller's extra ones,
+// the data credits in the map's attribution,
 // the panel on the right (summary, filters, the list with the selected line's details under its row)
 // and the profile docked at the bottom; on phones a top bar and a sheet whose peek is "Spot k of N"
 // with ‹ ›. The selected line goes into the hash (the caller's `hashOf`, replaced, not pushed), so a
@@ -12,6 +13,7 @@ import { useEffect, useMemo, useRef, useState } from "preact/hooks";
 import type { RunListed } from "../../app/api";
 import { IconButton, Sheet, type Snap } from "../../ui/components";
 import { Icon } from "../../ui/icons";
+import { creditsHtml } from "../../layers";
 import type { Line, RunData } from "../../types";
 import { loadRun } from "../load";
 import { ResultModel } from "../model";
@@ -22,7 +24,7 @@ import { LineDetails } from "./LineDetails";
 import { LinesTable } from "./LinesTable";
 import { ProfileDock } from "./ProfileDock";
 import { ResultSummary } from "./ResultSummary";
-import { RunActions } from "./RunActions";
+import { RunActions, runFolder, type RunActionsProps } from "./RunActions";
 import "./workspace.css";
 
 const PANEL = 384 + 12;  // the results panel's width and its margin (workspace.css .b-results)
@@ -38,7 +40,8 @@ export interface ResultWorkspaceProps {
   line: string | null;
   nav: number;
   wide: boolean;
-  back: BackAction;
+  /** None: the pill has no way back (a shared map). */
+  back?: BackAction;
   /** The route's hash of the run with a selected line (its ResultModel.lineLink) or none. */
   hashOf(runId: string, line: string | null): string;
   /** The link "Copy link" gives (default: this page's address with the hash, LineDetails' appLink). */
@@ -52,20 +55,28 @@ export interface ResultWorkspaceProps {
   menu?: ComponentChildren;
   /** The run's data was loaded (e.g. for the map's base layers). */
   onData?(data: RunData): void;
+  /** The run's data when the caller has it (a run's map.html: its data.js); else loaded from `base`. */
+  data?: RunData;
+  /** The folder of the runs' folders (default "/runs/") and of this run's files (RunActionsProps). */
+  base?: string;
+  folder?: string;
+  /** The run's actions that can work here (default all). */
+  show?: RunActionsProps["show"];
 }
 
-function Back({back, wide}: {back: BackAction; wide: boolean}) {
+function Back({back, wide}: {back?: BackAction; wide: boolean}) {
+  if (!back) return null;
   if (back.text && wide) return <button type="button" class="u-btn u-ghost b-back b-back-text" aria-label={back.label}
                                         onClick={back.onClick}><Icon name="back" />{back.label}</button>;
   return <IconButton icon="back" label={back.label} plain round onClick={back.onClick} class="b-back" />;
 }
 
 /** The pill: back, the run's name and date, and the other runs to switch to. */
-function Pill({data, runs, back, wide, onRun}: {data: RunData; runs?: RunListed[] | null; back: BackAction; wide: boolean;
+function Pill({data, runs, back, wide, onRun}: {data: RunData; runs?: RunListed[] | null; back?: BackAction; wide: boolean;
                                                 onRun?(id: string): void}) {
   const others = (runs || []).filter((r) => r.has_map);
   const [switching, setSwitching] = useState(false);
-  return <div class="b-pill">
+  return <div class={back ? "b-pill" : "b-pill b-pill-alone"}>
     <Back back={back} wide={wide} />
     <span class="u-grow b-pill-name" title={data.run.name}>{data.run.name}</span>
     <span class="u-small b-pill-date">{data.run.created.slice(0, 10)}</span>
@@ -86,7 +97,7 @@ export function runCounts(run: RunListed): string {
   return `${lines} ${lines === 1 ? "line" : "lines"} in ${spots} ${spots === 1 ? "spot" : "spots"}`;
 }
 
-function Result({map, data, line, nav, wide, back, hashOf, linkOf, runs, onRun, actions, menu}:
+function Result({map, data, line, nav, wide, back, hashOf, linkOf, runs, onRun, actions, menu, base, folder, show}:
                 ResultWorkspaceProps & {data: RunData}) {
   const model = useMemo(() => new ResultModel(data, {list: {sort: "clr", desc: true}}), [data]);
   useModel(model);
@@ -103,6 +114,15 @@ function Result({map, data, line, nav, wide, back, hashOf, linkOf, runs, onRun, 
     const dock = dockRef.current?.querySelector<HTMLElement>(".r-dock")?.offsetHeight ?? 0;
     return {top: 60, right: PANEL + 12, bottom: dock ? dock + 24 : 12, left: 12};
   };
+
+  // The licences of the run's data, as long as it is shown
+  useEffect(() => {
+    const credits = data.attribution || [], control = map.attributionControl;
+    if (!credits.length || !control) return;
+    const html = creditsHtml(credits, runFolder(data.run.id, base, folder) + "ATTRIBUTION.txt");
+    control.addAttribution(html);
+    return () => { control.removeAttribution(html); };
+  }, [data]);
 
   useEffect(() => {
     const resultMap = new ResultMap(map, model);
@@ -149,11 +169,13 @@ function Result({map, data, line, nav, wide, back, hashOf, linkOf, runs, onRun, 
   const closeMeasured = () => { setMeasured(null); view?.clearMeasure(); };
   const link = linkOf && ((l: Line) => linkOf(model, l));
   const pill = <Pill data={data} runs={runs} back={back} wide={wide} onRun={onRun} />;
+  const files = {base, folder};
+  const phoneShow = (["measure", "share", "download"] as const).filter((a) => !show || show.includes(a));
 
   if (!wide) {
     return <div class="r-ws">
       <div class="b-top b-top-run">{menu}{pill}{actions?.(true)}
-        <RunActions model={model} view={view} onMeasured={measuredNow} compact show={["measure", "share", "download"]} />
+        <RunActions model={model} view={view} onMeasured={measuredNow} compact show={phoneShow} {...files} />
       </div>
       <Sheet label="Results" desktop="sheet" snap={snap} onSnap={setSnap} peek={132} top={64}
              header={model.selected ? <LineDetails model={model} part="head" onStep={reveal} />
@@ -169,7 +191,7 @@ function Result({map, data, line, nav, wide, back, hashOf, linkOf, runs, onRun, 
   const details = <LineDetails model={model} onZoom={zoom} onStep={reveal} linkOf={link} />;
   return <div class="r-ws">
     <div class="b-top-left">{pill}</div>
-    <div class="b-run-actions">{actions?.(false)}<RunActions model={model} view={view} onMeasured={measuredNow} /></div>
+    <div class="b-run-actions">{actions?.(false)}<RunActions model={model} view={view} onMeasured={measuredNow} show={show} {...files} /></div>
     <aside class="u-panel b-results" aria-label="Results">
       <div class="b-results-head"><ResultSummary model={model} /><FilterBar model={model} /></div>
       <div class="b-results-body"><LinesTable model={model} view={view} details={details} onSelect={reveal} /></div>
@@ -182,13 +204,14 @@ function Result({map, data, line, nav, wide, back, hashOf, linkOf, runs, onRun, 
 
 /** A run's result on the caller's map: loaded first (the pill says so meanwhile). */
 export function ResultWorkspace(props: ResultWorkspaceProps) {
-  const [data, setData] = useState<RunData | null>(null);
+  const [data, setData] = useState<RunData | null>(props.data || null);
   const [error, setError] = useState("");
   useEffect(() => {
+    if (props.data) { props.onData?.(props.data); return; }
     let live = true;
     setData(null);
     setError("");
-    loadRun(props.runId).then((d) => { if (!live) return; props.onData?.(d); setData(d); },
+    loadRun(props.runId, props.base).then((d) => { if (!live) return; props.onData?.(d); setData(d); },
                               (e) => { if (live) setError(e.message); });
     return () => { live = false; };
   }, [props.runId]);

@@ -82,7 +82,7 @@ let limits = 0;  // ids of the limits' sliders
 export interface Bounds { min: number; max: number }
 
 /** A filter's limit: a slider over the lines' range and a number field; at the end of the range, no
- *  limit (as panels.tsx Limit). The groups are computed when the slider is released. */
+ *  limit. The groups are computed when the slider is released. */
 export function Limit({label, value, range, step, kind, unit, onChange}: {
   label: string; value: number | null; range: Bounds; step: number; kind: "min" | "max"; unit: string;
   onChange(v: number | null): void;

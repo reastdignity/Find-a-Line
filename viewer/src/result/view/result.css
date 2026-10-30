@@ -1,6 +1,5 @@
-/* The results UI (result/view): classes r-*, only under the root class .ui (ui/tokens.css), so the
-   old map and app keep their look. The profile's own classes (.fal-*, Profile.tsx) are styled here
-   inside .r-profile only: viewer.css is not part of the app. */
+/* The results UI (result/view): classes r-*, only under the root class .ui (ui/tokens.css). The
+   profile's own classes (.fal-*, Profile.tsx) are styled here inside .r-profile. */
 
 /* Small pieces */
 .ui .r-sw { display: inline-block; width: 16px; height: 4px; border-radius: 2px; flex: none; vertical-align: middle; }

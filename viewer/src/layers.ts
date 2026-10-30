@@ -3,7 +3,7 @@
 // the base tiles alone) and Esri World Imagery.
 
 import L from "leaflet";
-import type { Ortho } from "./types";
+import type { Credit, Ortho } from "./types";
 
 const OSM = '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors';
 
@@ -62,4 +62,18 @@ export function baseLayers(ortho: Ortho | null, maxZoom: number): Record<string,
       attribution: "Tiles &copy; Esri &mdash; Source: Esri, i-cubed, USDA, USGS, AEX, GeoEye, Getmapping, " +
         "Aerogrid, IGN, IGP, UPR-EGP, and the GIS User Community"});
   return layers;
+}
+
+function escape(text: string): string {
+  return text.replace(/[&<>"']/g, (c) => "&#" + c.charCodeAt(0) + ";");
+}
+
+/** The data credits of a run for Leaflet's attribution control, which renders HTML: escaped text, links
+ *  to http(s) only, and the run's ATTRIBUTION.txt (`notices`, a URL of ours) with the full notices. */
+export function creditsHtml(credits: Credit[], notices: string): string {
+  const parts = credits.map((c) => escape(c.attribution) + " (" + (/^https?:\/\//.test(c.url)
+    ? '<a href="' + escape(c.url) + '" target="_blank" rel="noopener">' + escape(c.licence) + "</a>"
+    : escape(c.licence)) + ")");
+  return "Data: " + Array.from(new Set(parts)).join(" | ") +
+    ' · <a href="' + escape(notices) + '" target="_blank">notices</a>';
 }

@@ -1,6 +1,6 @@
 // The filters of a result: chips of the main ones (length, clearance, height above the ground, only
-// clear lines; a set one is removable, a click edits it) and "More filters": every filter of the old
-// map (panels.tsx FiltersPanel, filters.ts), shown only when the lines have its data, and the grouping.
+// clear lines; a set one is removable, a click edits it) and "More filters": every filter of
+// filters.ts, shown only when the lines have its data, and the grouping.
 // Values come from and go to the ResultModel (filters, state, ranges). "How to read the result"
 // (ResultIntro) opens once, from here: the FilterBar is in every layout of a result.
 

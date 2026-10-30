@@ -179,8 +179,8 @@ def check_browser(run_dir: str, work: str, found: dict) -> list:
     with open(os.path.join(folder, "zz_check.js"), "w", encoding="utf-8") as f:
         f.write('window.addEventListener("load", function() { setTimeout(function() {'
                 'var p = document.createElement("pre"); p.id = "result";'
-                'p.textContent = document.querySelector(".fal-summary").textContent;'
-                'document.body.appendChild(p); }, 500); });')
+                'p.textContent = document.querySelector(".r-summary-count").textContent;'
+                'document.body.appendChild(p); }, 2000); });')
     with open(os.path.join(folder, "map.html"), encoding="utf-8") as f:
         page = f.read().replace("</body>", '<script src="zz_check.js"></script></body>')
     with open(os.path.join(folder, "zz_check.html"), "w", encoding="utf-8") as f:

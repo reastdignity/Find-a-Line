@@ -13,6 +13,8 @@
   min-width: 260px; }
 .ui .r-ws .b-pill { display: flex; align-items: center; gap: 6px; min-height: 44px; padding: 0 8px 0 4px; border-radius: 999px;
   background: var(--surface); box-shadow: var(--shadow); border: 1px solid var(--line); font-weight: 500; min-width: 0; max-width: 100%; }
+/* Without a way back (a shared map) the name keeps the pill's round edge's distance */
+.ui .r-ws .b-pill-alone { padding-left: 16px; }
 .ui .r-ws .b-pill-name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; display: inline-flex; align-items: center; gap: 8px; }
 .ui .r-ws .b-pill-date { white-space: nowrap; }
 .ui .r-ws .b-pill .r-error { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; }
@@ -42,3 +44,12 @@
 .ui .r-ws .b-top-run .b-pill { flex: 1; min-width: 0; max-width: none; }
 .ui .r-ws .b-top-run .r-actions { flex-wrap: nowrap; flex: none; }
 .ui .r-ws .b-top-run .r-actions .u-ib, .ui .r-ws .b-top-run > .u-ib { background: var(--surface); box-shadow: var(--shadow); border-radius: 50%; }
+
+/* The result on a map of its own (RunOnMap.tsx: D's result and a run's map.html; class names are D's) */
+.ui .d-result { flex: 1; min-width: 0; position: relative; overflow: hidden; }
+.ui .d-map { position: absolute; inset: 0; background: var(--map-bg); isolation: isolate; }
+/* A layer over the map: only the workspace's parts take the pointer */
+.ui .d-layer { position: absolute; inset: 0; z-index: 1; pointer-events: none; }
+/* The map's controls under the run's actions, left of the panel; on phones under the top bar */
+.ui .d-result.d-wide .leaflet-top.leaflet-right { right: 396px; top: 52px; }
+.ui .d-result.d-phone .leaflet-top { top: 60px; }

@@ -1,4 +1,4 @@
-// Terrain profile of the clicked line, in a panel along the bottom of the map:
+// Terrain profile of the selected line (ProfileDock, docked at the bottom of the result):
 // terrain, trees/buildings, water, the safety limit of the search, the sag
 // estimator (webbing, envelope, fall zone, athlete under the cursor). The same panel shows
 // two points measured on the map, with their anchors at a height above the ground.

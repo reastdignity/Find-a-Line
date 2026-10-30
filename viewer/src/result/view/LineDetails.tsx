@@ -1,5 +1,5 @@
 // The selected line of a result (model.selected): "Spot k of N" with ‹ › and × (ends the selection), its
-// numbers (the facts of lineInfo in main.tsx), the other lines of its spot, and its actions: favourite,
+// numbers, the other lines of its spot, and its actions: favourite,
 // copy link, zoom, and the profile again after it was closed.
 
 import { Fragment } from "preact";

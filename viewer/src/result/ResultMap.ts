@@ -88,7 +88,7 @@ export class ResultMap {
     return l.run ? 2.5 : 3;
   }
 
-  /** A line of the map; lines of other runs are dashed over trees/buildings (as main.tsx). */
+  /** A line of the map; lines of other runs are dashed over trees/buildings. */
   private polyline(l: Line, options: L.PolylineOptions): L.Polyline {
     return L.polyline([[l.lat1, l.lon1], [l.lat2, l.lon2]],
                       {color: this.color(l), renderer: this.renderer, bubblingMouseEvents: false,
@@ -123,7 +123,7 @@ export class ResultMap {
         .addTo(this.otherAreas);
     });
     const opacity = selected ? DIM : 0.9;
-    // Lines over trees/buildings first, so clear lines stay on top (as main.tsx)
+    // Lines over trees/buildings first, so clear lines stay on top
     const order = model.groups.filter((g) => g.rep.over).concat(model.groups.filter((g) => !g.rep.over));
     for (const g of order) {
       if (selected && g === selected.group) continue;
@@ -261,7 +261,7 @@ export class ResultMap {
     done(a, b);
   }
 
-  // A click beside the lines (theirs do not bubble) ends the selection, as the old map's popup closed
+  // A click beside the lines (theirs do not bubble) ends the selection
   private onMapClick = (e: L.LeafletMouseEvent) => {
     if (this.measuring) this.addPoint(e.latlng);
     else if (this.model.selected) this.model.select(null);

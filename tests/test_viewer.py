@@ -315,7 +315,7 @@ const out = {};
 
 
 def test_result_model(tmp_path, clip_data):
-    """result/model.ts on a real run: its groups and rows are those of main.tsx's drawLines (Python's grouping,
+    """result/model.ts on a real run: its groups and rows (Python's grouping,
     clear groups first), filters before grouping and the group size after, next/prev, choosing a variant,
     links to lines, favourites (shown in their group, only favourites, a refused change rolled back)."""
     text, data = clip_data

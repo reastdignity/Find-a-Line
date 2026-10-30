@@ -691,33 +691,6 @@ def test_run_again_and_edit(client, tmp_path):
 
 EDGE = r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe"
 
-MEASURE_SCRIPT = """
-(function () {
-  const out = document.createElement("pre");
-  out.id = "result";
-  document.body.appendChild(out);
-  const row = window.FINDALINE_RUN.lines[0], map = window.FINDALINE_MAP;
-  const title = () => (document.querySelector(".fal-profile-title") || {}).textContent || "";
-  const wait = (ok, then, tries = 100) => ok() ? then() : tries ? setTimeout(() => wait(ok, then, tries - 1), 200)
-                                                    : (out.textContent += " | timeout: " + title());
-  setTimeout(() => {
-    document.querySelector(".fal-measure button").click();
-    map.fire("click", {latlng: {lat: row[0], lng: row[1]}});
-    map.fire("click", {latlng: {lat: row[2], lng: row[3]}});
-    wait(() => title().startsWith("Measured"), () => {
-      out.textContent = title();
-      const input = document.querySelector(".fal-heights input");
-      input.value = "5";
-      input.dispatchEvent(new Event("change"));
-      setTimeout(() => { out.textContent += " | " + title(); }, 300);
-    });
-  }, 500);
-})();
-"""
-
-
-
-
 @contextlib.contextmanager
 def _server(data_dir, start_scheduler: bool = False):
     """The app on a real server (uvicorn in a thread) over the data folder; yields its port."""
@@ -779,25 +752,6 @@ def _edge_page(tmp_path, page: str, start_scheduler: bool = False, size: str = "
              *([f"--window-size={size}"] if size else []),
              "--virtual-time-budget=60000", "--dump-dom", f"http://127.0.0.1:{port}/{page}"],
             capture_output=True, text=True, encoding="utf-8", timeout=180).stdout
-
-
-@pytest.mark.skipif(not os.path.exists(EDGE), reason="needs Microsoft Edge")
-def test_measure_in_the_map(tmp_path, monkeypatch):
-    """The Measure button of a map served by the app: two clicks give the profile between
-    them, and a height above the ground raises its anchor."""
-    import re
-    run_id = _clip_run(tmp_path, monkeypatch)
-    row = _lines_of(tmp_path, run_id)[0]
-    folder = tmp_path / "runs" / run_id
-    (folder / "measure_test.js").write_text(MEASURE_SCRIPT, encoding="utf-8")
-    page = (folder / "map.html").read_text(encoding="utf-8")
-    (folder / "measure_test.html").write_text(
-        page.replace("</body>", '<script src="measure_test.js"></script></body>'), encoding="utf-8")
-    dom = _edge_page(tmp_path, f"runs/{run_id}/measure_test.html", start_scheduler=True)
-    text = re.search(r'<pre id="result">(.*?)</pre>', dom, re.S).group(1)
-    first, _, raised = text.partition(" | ")
-    assert first.startswith(f"Measured: {row[8]:.0f} m, A1 {row[11]:.1f} m"), text
-    assert raised.startswith(f"Measured: {row[8]:.0f} m, A1 {row[11] + 5:.1f} m"), text
 
 
 # The intros of the app (ui/Intro.tsx) put away, so that no dialog covers a test's page
@@ -986,333 +940,237 @@ def test_app_reads_area_files(tmp_path):
 
 XSS_NAME = "<img src=x onerror=window.XSS=1>"
 
-OTHER_RUN_SCRIPT = """
-(function () {
-  const out = document.createElement("pre");
-  out.id = "result";
-  document.body.appendChild(out);
-  const map = window.FINDALINE_MAP;
-  const wait = (ok, then, tries = 100) => ok() ? then() : tries ? setTimeout(() => wait(ok, then, tries - 1), 200)
-                                                    : (out.textContent += "timeout: " + JSON.stringify({
-      boxes: document.querySelectorAll(".fal-other input").length,
-      others: document.querySelector(".fal-others") && document.querySelector(".fal-others").textContent,
-      popups: Object.values(map._layers).filter((l) => l.getPopup && l.getPopup()).length}));
-  const box = () => [...document.querySelectorAll(".fal-other input")][0];
-  const otherLine = () => Object.values(map._layers).find((l) => l.getPopup && l.getPopup()
-    && String(l.getPopup().getContent()).includes("Run:"));
-  wait(() => box(), () => {
-    box().click();
-    wait(() => otherLine(), () => {
-      otherLine().openPopup();
-      setTimeout(() => {
-        const popup = document.querySelector(".leaflet-popup-content");
-        const swatch = popup.querySelector(".fal-swatch");
-        const link = popup.querySelector("a");
-        out.textContent = JSON.stringify({swatch: swatch.style.background, link: link.getAttribute("href"),
-          text: popup.textContent.slice(0, 400), xss: window.XSS || null, imgs: popup.querySelectorAll("img").length});
-      }, 300);
+# Between data.js and the viewer: credits as a run records them, one with markup in its texts
+CREDITS_STUB = """
+window.FINDALINE_RUN.attribution = [
+  {data: "FABDEM V1-2", attribution: "FABDEM V1-2 © University of Bristol", licence: "CC BY-NC-SA 4.0",
+   url: "https://creativecommons.org/licenses/by-nc-sa/4.0/", notice: ""},
+  {data: "Bad", attribution: "<img src=x onerror=window.XSS=1>", licence: "<b>x</b>",
+   url: "javascript:window.XSS=2", notice: ""}];
+"""
+
+# The steps of a test of a run's map.html (the result view of the app, result/view/RunOnMap): each step
+# runs when its page shows what it waits for; the result (or where it stopped) goes into <pre id="result">
+MAP_HELPERS = """
+const out = document.createElement("pre");
+out.id = "result";
+const result = {};
+const done = () => { out.textContent = JSON.stringify(result); document.body.appendChild(out); };
+let step = "";
+const show = () => { result.at = step; done(); };  // what was seen so far, should the page's time run out
+window.addEventListener("error", (e) => { result.error = e.message; show(); });
+window.addEventListener("unhandledrejection", (e) => { result.error = String(e.reason); show(); });
+const $ = (s) => document.querySelector(s), $$ = (s) => [...document.querySelectorAll(s)];
+const text = (s) => ($(s) || {}).textContent || "";
+const button = (label) => $$("button").find((b) => b.textContent.trim() === label || b.getAttribute("aria-label") === label);
+const rows = () => $$(".b-results .r-rows > .r-spot > .r-row");
+const model = () => window.FINDALINE_RESULT && window.FINDALINE_RESULT.model;
+const later = (then, ms = 300) => setTimeout(then, ms);
+const wait = (ok, then, tries = 150) => ok() ? then() : tries ? setTimeout(() => wait(ok, then, tries - 1), 200)
+                                                  : (result.timeout = step, done());
+const run = (steps) => {
+  const names = Object.keys(steps);
+  const go = (k) => { if (k >= names.length) { step = "end"; return show(); } step = names[k]; show(); steps[step](() => go(k + 1)); };
+  go(0);
+};
+const credits = () => {
+  const control = $(".leaflet-control-attribution");
+  return {text: control.textContent, links: $$(".leaflet-control-attribution a").map((a) => a.getAttribute("href")),
+          imgs: control.querySelectorAll("img").length};
+};
+"""
+
+# A map served by the app (with its worker: profiles and measuring)
+MAP_SCRIPT = MAP_HELPERS + """
+const saved = () => fetch("/api/runs/" + encodeURIComponent(model().runId) + "/favourites").then((r) => r.json());
+const until = (count, then, tries = 30) => saved().then((body) => body.lines.length === count || !tries
+  ? then(body) : later(() => until(count, then, tries - 1)));
+run({
+  linked(next) { wait(() => model() && $(".r-note"), () => {
+    // the map was opened with #line= of a line hidden by the filters: the note clears them and opens it
+    result.back = $$(".b-pill .b-back").map((b) => b.getAttribute("aria-label"));
+    result.credits = credits();
+    result.note = text(".r-note");
+    button("clear filters").click();
+    wait(() => rows().length, () => {
+      result.linked = model().selected ? model().lineLink(model().selected.line) : null;
+      result.hashKept = decodeURIComponent(location.hash);
+      result.spots = model().shown.spots;
+      result.summary = text(".r-summary-count");
+      next();
     });
-  });
-})();
+  }); },
+  select(next) {
+    rows()[0].click();
+    wait(() => $(".b-results .r-dtitle") && $(".b-dock .fal-profile-title"), () => {
+      result.profile = text(".b-dock .fal-profile-title");
+      result.hash = decodeURIComponent(location.hash) === "#line=" + model().lineLink(model().selected.line);
+      next();
+    });
+  },
+  favourite(next) {
+    result.favouritesOn = model().favouritesOn;
+    // the details are drawn again once the selection settled: the button of then, not of now
+    wait(() => $(".b-results .r-details .r-fav"), () => later(() => {
+      $(".b-results .r-details .r-fav").click();
+      wait(() => $(".r-pop .r-folder"), () => { $(".r-pop .r-folder").click(); until(1, (body) => {
+        result.favourite = body.lines[0] === model().lineLink(model().selected.line);
+        next();
+      }); });
+    }, 600));
+  },
+  downloads(next) {
+    button("Download").click();
+    later(() => {
+      const links = $$(".r-downloads a").map((a) => a.getAttribute("href"));
+      Promise.all(links.map((href) => fetch(href).then((r) => r.status))).then((statuses) => {
+        result.downloads = links.map((href, k) => href + " " + statuses[k]);
+        button("Download").click();
+        next();
+      });
+    });
+  },
+  compare(next) {
+    button("Compare").click();
+    wait(() => $(".r-other input"), () => {
+      result.others = $$(".r-other").map((o) => o.textContent);
+      $(".r-other input").click();
+      wait(() => model().others.size === 1, () => {
+        result.otherLines = [...model().others.values()][0].lines.length;
+        result.xss = window.XSS || null;
+        result.imgs = $$(".r-others img").length;
+        button("Compare").click();
+        next();
+      });
+    });
+  },
+  measure(next) {
+    const map = window.FINDALINE_MAP, l = model().lines[0];
+    button("Measure").click();
+    map.fire("click", {latlng: {lat: l.lat1, lng: l.lon1}});
+    map.fire("click", {latlng: {lat: l.lat2, lng: l.lon2}});
+    wait(() => text(".b-dock .fal-profile-title").startsWith("Measured"), () => {
+      result.measured = text(".b-dock .fal-profile-title");
+      result.expectedLength = l.len.toFixed(0);
+      next();
+    });
+  },
+});
 """
 
 
-@pytest.mark.skipif(not os.path.exists(EDGE), reason="needs Microsoft Edge")
-def test_map_without_inline_styles(tmp_path, monkeypatch):
-    """A map served by the app runs under style-src 'self' without violations; another run shown
-    in it, named like an HTML tag, gets its swatch colour and its link, and runs no script."""
-    import re
-    run_id = _clip_run(tmp_path, monkeypatch)
-    other = _clip_run(tmp_path, monkeypatch, "--name", XSS_NAME, "--easting", "554066")  # lines of its own
-    folder = tmp_path / "runs" / run_id
-    (folder / "csp_stub.js").write_text(CSP_STUB, encoding="utf-8")
-    (folder / "other_test.js").write_text(OTHER_RUN_SCRIPT, encoding="utf-8")
+def _map_page(folder, name: str, script: str, before_data: str = "", after_data: str = "") -> str:
+    """A copy of the run's map.html with test scripts (`before_data` first in its head, `after_data` between
+    data.js and the viewer, `script` at the end); its file name."""
     page = (folder / "map.html").read_text(encoding="utf-8")
     assert "<style" not in page and " style=" not in page
-    (folder / "other_test.html").write_text(
-        page.replace("<head>", '<head><script src="csp_stub.js"></script>')
-            .replace("</body>", '<script src="other_test.js"></script></body>'), encoding="utf-8")
-    dom = _edge_page(tmp_path, f"runs/{run_id}/other_test.html")
-    result = json.loads(re.search(r'<pre id="result">(.*?)</pre>', dom, re.S).group(1)
-                        .replace("&quot;", '"').replace("&lt;", "<").replace("&gt;", ">").replace("&amp;", "&"))
-    assert result["swatch"].startswith("rgb"), result       # coloured through the CSSOM
-    assert result["link"] == f"../{other}/map.html", result
-    assert XSS_NAME in result["text"] and result["xss"] is None and result["imgs"] == 0, result
+    for suffix, content in (("before", before_data), ("after", after_data), ("test", script)):
+        (folder / f"{name}_{suffix}.js").write_text(content, encoding="utf-8")
+    (folder / f"{name}.html").write_text(
+        page.replace("<head>", f'<head><script src="{name}_before.js"></script>')
+            .replace('<script src="data.js"></script>', f'<script src="data.js"></script><script src="{name}_after.js"></script>')
+            .replace("</body>", f'<script src="{name}_test.js"></script></body>'), encoding="utf-8")
+    return f"{name}.html"
+
+
+def _result_in(dom: str) -> dict:
+    import html
+    import re
+    found = re.search(r'<pre id="result">(.*?)</pre>', dom, re.S)
+    assert found, dom[-3000:]
+    return json.loads(html.unescape(found.group(1)))
+
+
+@pytest.mark.skipif(not os.path.exists(EDGE), reason="needs Microsoft Edge")
+def test_run_map(tmp_path, monkeypatch):
+    """A run's map.html served by the app shows the app's result view: the way back to the app, the credits of
+    its data as text (no markup, http(s) links only, ATTRIBUTION.txt), #line= of a line hidden by the filters
+    named and opened, a row selects its line (profile, hash), a favourite kept by the server, the downloads
+    beside it, another run (named like an HTML tag) compared, measuring; no CSP violations."""
+    run_id = _clip_run(tmp_path, monkeypatch)
+    other = _clip_run(tmp_path, monkeypatch, "--name", XSS_NAME, "--easting", "554066")  # lines of its own
+    row = _lines_of(tmp_path, run_id)[3]
+    folder = tmp_path / "runs" / run_id
+    assert (folder / "ATTRIBUTION.txt").exists()
+    filters = 'localStorage.setItem("findaline.filters", \'{"lenMin": 100000}\');'
+    page = _map_page(folder, "map_test", MAP_SCRIPT, before_data=CSP_STUB + filters, after_data=CREDITS_STUB)
+    line = ",".join(str(v) for v in row[:4])
+    dom = _edge_page(tmp_path, f"runs/{run_id}/{page}#line={line}", start_scheduler=True, size="1280,800")
+    r = _result_in(dom)
+    assert "timeout" not in r and r["at"] == "end", r
+    assert r["summary"].startswith(f"{r['spots']} spots") and r["back"] == ["Find-a-Line"], r
+    assert "Data: FABDEM V1-2 © University of Bristol (CC BY-NC-SA 4.0)" in r["credits"]["text"], r
+    assert "<img src=x onerror=window.XSS=1> (<b>x</b>)" in r["credits"]["text"], r
+    links = r["credits"]["links"]
+    assert "https://creativecommons.org/licenses/by-nc-sa/4.0/" in links and "ATTRIBUTION.txt" in links, r
+    assert not any(link.startswith("javascript") for link in links if link) and r["credits"]["imgs"] == 0, r
+    assert r["note"].startswith("The line of the link is hidden by the filters"), r
+    assert r["linked"] == line and r["hashKept"] == "#line=" + line, r
+    assert r["profile"].startswith("Profile: ") and r["hash"], r
+    assert r["favouritesOn"] and r["favourite"], r
+    assert sorted(r["downloads"]) == ["lines.csv 200", "lines.geojson 200"], r
+    assert len(r["others"]) == 1 and XSS_NAME in r["others"][0], r
+    assert r["otherLines"] > 0 and r["xss"] is None and r["imgs"] == 0, r
+    assert r["measured"].startswith(f"Measured: {r['expectedLength']} m"), r
     assert _violations(dom) == []
     index = (tmp_path / "runs" / "index.html").read_text(encoding="utf-8")
     assert "<style" not in index and "_viewer/index.css" in index and XSS_NAME not in index
     assert os.path.exists(tmp_path / "runs" / "_viewer" / "index.css")
+    assert other in index
 
 
-LIST_SCRIPT = """
-(function () {
-  const out = document.createElement("pre");
-  out.id = "result";
-  document.body.appendChild(out);
-  const map = window.FINDALINE_MAP, result = {};
-  const later = (then) => setTimeout(then, 300);
-  const rows = () => [...document.querySelectorAll(".fal-list-table tbody tr")];
-  const column = (k) => rows().map((tr) => +tr.children[k].textContent);
-  const sorted = (values) => values.every((v, i) => i === 0 || values[i - 1] >= v);
-  later(() => {
-    document.querySelector(".fal-list summary").click();
-    later(() => {
-      result.spots = +document.querySelector(".fal-summary b").textContent;
-      result.rows = rows().length;
-      result.more = !!document.querySelector(".fal-list-more");
-      result.lengthsSorted = sorted(column(1));
-      document.querySelectorAll(".fal-list-table th")[2].click();  // clearance
-      later(() => {
-        result.clearancesSorted = sorted(column(2));
-        result.sortValue = document.querySelector(".fal-list-sort").value;
-        result.firstLength = rows()[0].children[1].textContent;
-        rows()[0].click();
-        later(() => {
-          const popup = document.querySelector(".leaflet-popup-content");
-          result.popup = popup ? popup.textContent.match(/Length: (\\d+) m/)[1] : null;
-          result.profile = !!document.querySelector(".fal-profile-title");
-          document.querySelector(".fal-list-view").click();
-          later(() => {
-            result.inView = rows().length;
-            map.setView([map.getCenter().lat + 0.5, map.getCenter().lng], 15, {animate: false});
-            later(() => {
-              result.farAway = rows().length;
-              result.summary = document.querySelector(".fal-list summary").textContent;
-              out.textContent = JSON.stringify(result);
-            });
-          });
-        });
-      });
+# A map opened from disk: no server, so no profiles, measuring or favourites; the other runs from ../runs.js
+DISK_SCRIPT = MAP_HELPERS + """
+run({
+  loaded(next) { wait(() => rows().length && model(), () => {
+    result.spots = model().shown.spots;
+    result.back = $$(".b-pill .b-back").map((b) => b.getAttribute("aria-label"));
+    result.measure = !!button("Measure");
+    result.favouritesOn = model().favouritesOn;
+    result.canCompute = model().canCompute;
+    result.credits = credits().links;
+    next();
+  }); },
+  select(next) {
+    rows()[0].click();
+    wait(() => $(".b-results .r-dtitle"), () => {
+      result.profile = text(".b-dock .fal-profile-title");
+      result.hash = decodeURIComponent(location.hash) === "#line=" + model().lineLink(model().selected.line);
+      next();
     });
-  });
-})();
+  },
+  compare(next) {
+    button("Compare").click();
+    wait(() => $(".r-other input"), () => {
+      $(".r-other input").click();
+      wait(() => model().others.size === 1, () => { result.otherLines = [...model().others.values()][0].lines.length; next(); });
+    });
+  },
+});
 """
 
 
 @pytest.mark.skipif(not os.path.exists(EDGE), reason="needs Microsoft Edge")
-def test_list_of_lines(tmp_path, monkeypatch):
-    """The list of lines next to the map: a row per spot (the first 100), sorted by a column,
-    a row opens its line's popup and profile, "only in the map's view" follows the map."""
-    import re
+def test_run_map_from_disk(tmp_path, monkeypatch):
+    """A run's map.html opened from disk (file://): the way back is the list of runs beside it, no measuring or
+    favourites (no server), the saved profile of a line, its hash, and another run compared from its lines.js."""
+    import subprocess
     run_id = _clip_run(tmp_path, monkeypatch)
+    _clip_run(tmp_path, monkeypatch, "--easting", "554066")
     folder = tmp_path / "runs" / run_id
-    (folder / "csp_stub.js").write_text(CSP_STUB, encoding="utf-8")
-    (folder / "list_test.js").write_text(LIST_SCRIPT, encoding="utf-8")
-    page = (folder / "map.html").read_text(encoding="utf-8")
-    (folder / "list_test.html").write_text(
-        page.replace("<head>", '<head><script src="csp_stub.js"></script>')
-            .replace("</body>", '<script src="list_test.js"></script></body>'), encoding="utf-8")
-    dom = _edge_page(tmp_path, f"runs/{run_id}/list_test.html")
-    result = json.loads(re.search(r'<pre id="result">(.*?)</pre>', dom, re.S).group(1).replace("&quot;", '"'))
-    assert result["spots"] > 100 and result["rows"] == 100 and result["more"], result
-    assert result["lengthsSorted"] and result["clearancesSorted"] and result["sortValue"] == "clr", result
-    assert result["popup"] == result["firstLength"] and result["profile"], result
-    assert result["inView"] > 0 and result["farAway"] == 0, result
-    assert result["summary"] == f"Lines (0 of {result['spots']})", result
-    assert _violations(dom) == []
+    page = _map_page(folder, "disk_test", DISK_SCRIPT, before_data=INTROS_SEEN, after_data=CREDITS_STUB)
+    dom = subprocess.run(
+        [EDGE, "--headless", "--disable-gpu", f"--user-data-dir={tmp_path / 'edge'}", "--no-first-run",
+         "--window-size=1280,800", "--allow-file-access-from-files", "--virtual-time-budget=60000", "--dump-dom",
+         (folder / page).as_uri()], capture_output=True, text=True, encoding="utf-8", timeout=180).stdout
+    r = _result_in(dom)
+    assert "timeout" not in r and r["at"] == "end", r
+    assert r["spots"] > 0 and r["back"] == ["All runs"], r
+    assert not r["measure"] and not r["favouritesOn"] and not r["canCompute"], r
+    assert "ATTRIBUTION.txt" in r["credits"], r
+    assert r["profile"].startswith("Profile: ") and r["hash"], r
+    assert r["otherLines"] > 0, r
 
-
-GROUP_SCRIPT = """
-(function () {
-  const out = document.createElement("pre");
-  out.id = "result";
-  document.body.appendChild(out);
-  const map = window.FINDALINE_MAP, result = {};
-  const later = (then) => setTimeout(then, 300);
-  const rows = () => [...document.querySelectorAll(".fal-list-table tbody tr")];
-  const popup = () => document.querySelector(".leaflet-popup-content");
-  const popupLength = () => popup() ? +popup().textContent.match(/Shown line[^:]*:\\s*Length: (\\d+) m/)[1] : null;
-  const position = () => popup() ? popup().querySelector(".fal-choice b").textContent : null;
-  const spots = () => +document.querySelector(".fal-summary b").textContent;
-  later(() => {
-    result.spots = spots();
-    document.querySelector(".fal-list summary").click();
-    later(() => {
-      const row = rows().find((tr) => tr.querySelector(".fal-list-unfold") && +tr.children[4].textContent >= 3);
-      result.n = +row.children[4].textContent;
-      row.querySelector(".fal-list-unfold").click();
-      later(() => {
-        const members = rows().filter((tr) => tr.classList.contains("fal-member"));
-        result.members = members.length;
-        const other = members.find((tr) => !tr.classList.contains("fal-chosen"));
-        result.chosenLength = +other.children[1].textContent;
-        other.click();
-        later(() => {
-          result.popupLength = popupLength();
-          result.rowLength = +rows().find((tr) => tr.classList.contains("fal-unfolded")).children[1].textContent;
-          result.marked = rows().filter((tr) => tr.classList.contains("fal-chosen")).length;
-          popup().querySelector(".fal-default").click();
-          later(() => {
-            result.afterDefault = position();
-            popup().querySelector(".fal-next").click();
-            later(() => {
-              result.afterNext = position();
-              const variant = Object.values(map._layers).find((l) => l.getTooltip && l.options.weight === 1
-                && l.options.interactive !== false);
-              result.variantLength = +variant.getTooltip().getContent().match(/^(\\d+) m/)[1];
-              variant.fire("click");
-              later(() => {
-                result.afterVariant = popupLength();
-                result.spotsAfter = spots();
-                out.textContent = JSON.stringify(result);
-              });
-            });
-          });
-        });
-      });
-    });
-  });
-})();
-"""
-
-
-@pytest.mark.skipif(not os.path.exists(EDGE), reason="needs Microsoft Edge")
-def test_line_chosen_in_a_group(tmp_path, monkeypatch):
-    """Another line of a group shown instead of its representative: from the group's unfolded row in
-    the list, with ◀ ▶ and "back to" in its popup, by clicking a thin variant; the groups stay."""
-    import re
-    run_id = _clip_run(tmp_path, monkeypatch)
-    folder = tmp_path / "runs" / run_id
-    (folder / "csp_stub.js").write_text(CSP_STUB, encoding="utf-8")
-    (folder / "group_test.js").write_text(GROUP_SCRIPT, encoding="utf-8")
-    page = (folder / "map.html").read_text(encoding="utf-8")
-    (folder / "group_test.html").write_text(
-        page.replace("<head>", '<head><script src="csp_stub.js"></script>')
-            .replace("</body>", '<script src="group_test.js"></script></body>'), encoding="utf-8")
-    dom = _edge_page(tmp_path, f"runs/{run_id}/group_test.html")
-    result = json.loads(re.search(r'<pre id="result">(.*?)</pre>', dom, re.S).group(1).replace("&quot;", '"'))
-    assert result["members"] == result["n"] >= 3, result
-    assert result["popupLength"] == result["rowLength"] == result["chosenLength"] and result["marked"] == 1, result
-    assert result["afterDefault"] == "1" and result["afterNext"] == "2", result
-    assert result["afterVariant"] == result["variantLength"], result
-    assert result["spotsAfter"] == result["spots"], result
-    assert _violations(dom) == []
-
-
-LINK_SCRIPT = """
-(function () {
-  const out = document.createElement("pre");
-  out.id = "result";
-  document.body.appendChild(out);
-  const result = {};
-  const popup = () => (document.querySelector(".leaflet-popup-content") || {}).textContent || "";
-  setTimeout(() => {
-    const note = document.querySelector(".fal-list-note");
-    result.note = note && note.textContent;
-    result.popupBefore = popup();
-    note.querySelector("button").click();
-    setTimeout(() => {
-      result.popup = popup();
-      result.noteAfter = !!document.querySelector(".fal-list-note");
-      out.textContent = JSON.stringify(result);
-    }, 500);
-  }, 500);
-})();
-"""
-
-
-@pytest.mark.skipif(not os.path.exists(EDGE), reason="needs Microsoft Edge")
-def test_link_to_a_line(tmp_path, monkeypatch):
-    """map.html#line=<lat1,lon1,lat2,lon2> opens that line in its group; filters that hide it are
-    named above the list, and clearing them opens it."""
-    import re
-    run_id = _clip_run(tmp_path, monkeypatch)
-    row = _lines_of(tmp_path, run_id)[3]
-    folder = tmp_path / "runs" / run_id
-    (folder / "filter_stub.js").write_text('localStorage.setItem("findaline.filters", \'{"lenMin": 100000}\');',
-                                           encoding="utf-8")
-    (folder / "link_test.js").write_text(LINK_SCRIPT, encoding="utf-8")
-    page = (folder / "map.html").read_text(encoding="utf-8")
-    (folder / "link_test.html").write_text(
-        page.replace("<head>", '<head><script src="filter_stub.js"></script>')
-            .replace("</body>", '<script src="link_test.js"></script></body>'), encoding="utf-8")
-    dom = _edge_page(tmp_path, f"runs/{run_id}/link_test.html#line=" + ",".join(str(v) for v in row[:4]))
-    result = json.loads(re.search(r'<pre id="result">(.*?)</pre>', dom, re.S).group(1).replace("&quot;", '"'))
-    assert result["note"].startswith("The line of the link is hidden by the filters"), result
-    assert result["popupBefore"] == "" and not result["noteAfter"], result
-    assert f"Anchor 1: {row[0]:.6f}, {row[1]:.6f}" in result["popup"], result
-
-
-# Favourites in a map served by the app: the downloads of the export are caught (their Blob kept)
-FAVOURITES_SCRIPT = """
-(function () {
-  const out = document.createElement("pre");
-  out.id = "result";
-  document.body.appendChild(out);
-  const map = window.FINDALINE_MAP, run = window.FINDALINE_RUN.run.id, result = {};
-  const later = (then, ms = 400) => setTimeout(then, ms);
-  const rows = () => [...document.querySelectorAll(".fal-list-table tbody tr")];
-  const spots = () => +document.querySelector(".fal-summary b").textContent;
-  const saved = () => fetch("/api/runs/" + encodeURIComponent(run) + "/favourites").then((r) => r.json());
-  const starred = () => Object.values(map._layers).filter((l) => l.getTooltip && l.getTooltip()
-    && String(l.getTooltip().getContent()).startsWith("★ ")).length;
-  // a step that throws or waits in vain ends the test with what it saw (an empty result says nothing)
-  const fail = (error) => { out.textContent = JSON.stringify({error: String(error), result}); };
-  window.addEventListener("error", (e) => fail(e.message));
-  window.addEventListener("unhandledrejection", (e) => fail(e.reason));
-  // waits for the server's answer to a change: every try asks it once
-  const until = (count, then, tries = 30) => saved().then((body) => body.lines.length === count ? then(body)
-    : tries ? later(() => until(count, then, tries - 1), 300) : fail("favourites: " + body.lines.length));
-  let blob = null;
-  URL.createObjectURL = (b) => { blob = b; return "blob:test"; };
-  HTMLAnchorElement.prototype.click = function () { result.download = this.download; };
-  later(() => {
-    document.querySelector(".fal-list summary").click();
-    later(() => {
-      result.stars = document.querySelectorAll(".fal-list-star").length;
-      rows()[0].querySelector(".fal-list-star").click();
-      until(1, () => {
-        result.halo = Object.values(map._layers).some((l) => l.options && l.options.color === "#FFD400");
-        result.starred = starred();
-        // a line of a group that is not shown: as a favourite it becomes the line shown
-        const group = rows().find((tr) => tr.querySelector(".fal-list-unfold") && tr !== rows()[0]);
-        group.querySelector(".fal-list-unfold").click();
-        later(() => {
-          const member = rows().filter((tr) => tr.classList.contains("fal-member"))
-            .find((tr) => !tr.classList.contains("fal-chosen"));
-          result.memberLength = member.children[1].textContent;
-          member.querySelector(".fal-list-star").click();
-          until(2, () => {
-            const unfolded = () => rows().find((tr) => tr.classList.contains("fal-unfolded"));
-            result.groupLength = unfolded().children[1].textContent;
-            unfolded().click();
-            later(() => {
-              const popup = document.querySelector(".leaflet-popup-content").textContent;
-              result.popupFavourite = /your favourite/.test(popup) && popup.includes("★ favourite");
-              document.querySelector(".fal-filters summary").click();
-              document.querySelector(".fal-fav-only").click();
-              later(() => {
-                result.onlyFavourites = spots();
-                document.querySelectorAll(".fal-list-export button")[1].click();  // CSV
-                later(() => blob.text().then((csv) => {
-                  result.csv = csv.split("\\r\\n").filter((x) => x);
-                  document.querySelector(".fal-fav-only").click();
-                  later(() => {
-                    unfolded().click();  // its popup is open: clicked again, its buttons still work
-                    later(() => {
-                      document.querySelector(".leaflet-popup-content .fal-fav").click();
-                      until(1, (body) => {
-                        result.left = body.lines;
-                        // the popup is drawn again with the map's lines, maybe a frame after the answer
-                        const label = () => (document.querySelector(".leaflet-popup-content .fal-fav") || {}).textContent;
-                        const shown = (tries) => label() !== "★ favourite (remove)" || !tries ? (() => {
-                          result.unmarked = label();
-                          out.textContent = JSON.stringify(result);
-                        })() : later(() => shown(tries - 1), 200);
-                        shown(20);
-                      });
-                    });
-                  });
-                }));
-              });
-            });
-          });
-        });
-      });
-    });
-  });
-})();
-"""
 
 FAVOURITES_TAB_SCRIPT = """
 (function () {
@@ -1343,40 +1201,21 @@ FAVOURITES_TAB_SCRIPT = """
 
 
 @pytest.mark.skipif(not os.path.exists(EDGE), reason="needs Microsoft Edge")
-def test_favourites_in_the_map_and_the_app(tmp_path, monkeypatch):
-    """Favourite lines marked in a map served by the app (a star in the list and in the popup): kept by
-    the server, drawn with a halo and a star, a favourite of a group shown as its line, "only
-    favourite lines", the CSV export; the app's Favourites page (D) lists them, sorted, with a link to the
+def test_favourites_page_of_the_app(tmp_path, monkeypatch):
+    """The app's Favourites page (D) lists the favourite lines the server keeps, sorted, with a link to the
     line in the app, and removes one."""
     import re
     run_id = _clip_run(tmp_path, monkeypatch)
-    folder = tmp_path / "runs" / run_id
-    (folder / "csp_stub.js").write_text(CSP_STUB, encoding="utf-8")
-    (folder / "fav_test.js").write_text(FAVOURITES_SCRIPT, encoding="utf-8")
-    page = (folder / "map.html").read_text(encoding="utf-8")
-    (folder / "fav_test.html").write_text(
-        page.replace("<head>", '<head><script src="csp_stub.js"></script>')
-            .replace("</body>", '<script src="fav_test.js"></script></body>'), encoding="utf-8")
-    dom = _edge_page(tmp_path, f"runs/{run_id}/fav_test.html")
-    result = json.loads(re.search(r'<pre id="result">(.*?)</pre>', dom, re.S).group(1).replace("&quot;", '"'))
-    assert "error" not in result, result
-    assert result["stars"] == 100 and result["halo"] and result["starred"] == 1, result
-    assert result["groupLength"] == result["memberLength"] and result["popupFavourite"], result
-    assert result["onlyFavourites"] == 2, result
-    assert result["download"] == "favourites.csv" and len(result["csv"]) == 3, result
-    assert result["csv"][0].startswith("run_id,run_name,folder,length_m,clearance_m,"), result
-    assert result["unmarked"] == "☆ add to favourites" and len(result["left"]) == 1, result
-    assert _violations(dom) == []
-
     app = web.create_app(str(tmp_path), token=TOKEN, start_scheduler=False)
     rows = _lines_of(tmp_path, run_id)
     with TestClient(app, base_url=LOCAL) as client:
-        line = ",".join(str(v) for v in rows[-1][:4])
-        data = {"len": 999.0, "clr": 1.0, "clrN": None, "e1": 1.0, "e2": 2.0, "over": False, "water": 0.0,
-                "filled": 0.0, "hmax": None, "hmean": None, "highPct": None, "angle1": None, "angle2": None,
-                "prom1": None, "prom2": None, "drop1": None, "drop2": None}
-        assert client.post(f"/api/runs/{run_id}/favourites", json={"line": line, "favourite": True, "data": data},
-                           headers={"x-findaline-token": TOKEN}).status_code == 200
+        for k, row in enumerate((rows[0], rows[-1])):
+            data = {"len": 999.0 if k else row[8], "clr": 1.0, "clrN": None, "e1": 1.0, "e2": 2.0, "over": False,
+                    "water": 0.0, "filled": 0.0, "hmax": None, "hmean": None, "highPct": None, "angle1": None,
+                    "angle2": None, "prom1": None, "prom2": None, "drop1": None, "drop2": None}
+            line = ",".join(str(v) for v in row[:4])
+            assert client.post(f"/api/runs/{run_id}/favourites", json={"line": line, "favourite": True, "data": data},
+                               headers={"x-findaline-token": TOKEN}).status_code == 200
         page = client.get("/").text
     tab = tmp_path / "runs" / "apptest"
     tab.mkdir()
@@ -1392,59 +1231,6 @@ def test_favourites_in_the_map_and_the_app(tmp_path, monkeypatch):
     assert result["lengths"][0] == 999 and result["lengths"] == sorted(result["lengths"], reverse=True), result
     assert result["link"].replace("&amp;", "&") == f"#run={run_id}&line=" + line.replace(",", "%2C"), result
     assert result["after"] == 1 and _violations(dom) == []
-
-
-# Between data.js and the viewer: credits as a run records them, one with markup in its texts
-CREDITS_STUB = """
-window.FINDALINE_RUN.attribution = [
-  {data: "FABDEM V1-2", attribution: "FABDEM V1-2 © University of Bristol", licence: "CC BY-NC-SA 4.0",
-   url: "https://creativecommons.org/licenses/by-nc-sa/4.0/", notice: ""},
-  {data: "Bad", attribution: "<img src=x onerror=window.XSS=1>", licence: "<b>x</b>",
-   url: "javascript:window.XSS=2", notice: ""}];
-"""
-
-CREDITS_SCRIPT = """
-(function () {
-  const out = document.createElement("pre");
-  out.id = "result";
-  document.body.appendChild(out);
-  setTimeout(() => {
-    const control = document.querySelector(".leaflet-control-attribution");
-    const panel = document.querySelector(".fal-credits");
-    out.textContent = JSON.stringify({control: control.textContent, panel: panel.textContent,
-      links: [...control.querySelectorAll("a"), ...panel.querySelectorAll("a")].map((a) => a.getAttribute("href")),
-      imgs: control.querySelectorAll("img").length + panel.querySelectorAll("img").length,
-      xss: window.XSS || null});
-  }, 1000);
-})();
-"""
-
-
-@pytest.mark.skipif(not os.path.exists(EDGE), reason="needs Microsoft Edge")
-def test_map_shows_data_credits(tmp_path, monkeypatch):
-    """The map shows the credits of its data in the attribution control and the run panel,
-    as text: markup in them is not rendered and only http(s) addresses become links."""
-    import re
-    run_id = _clip_run(tmp_path, monkeypatch)
-    folder = tmp_path / "runs" / run_id
-    assert (folder / "ATTRIBUTION.txt").exists()
-    (folder / "credits_stub.js").write_text(CREDITS_STUB, encoding="utf-8")
-    (folder / "credits_test.js").write_text(CREDITS_SCRIPT, encoding="utf-8")
-    page = (folder / "map.html").read_text(encoding="utf-8")
-    (folder / "credits_test.html").write_text(
-        page.replace('<script src="data.js"></script>', '<script src="data.js"></script><script src="credits_stub.js">'
-                                                         '</script>')
-            .replace("</body>", '<script src="credits_test.js"></script></body>'), encoding="utf-8")
-    dom = _edge_page(tmp_path, f"runs/{run_id}/credits_test.html")
-    result = json.loads(re.search(r'<pre id="result">(.*?)</pre>', dom, re.S).group(1)
-                        .replace("&quot;", '"').replace("&lt;", "<").replace("&gt;", ">").replace("&amp;", "&"))
-    assert "Data: FABDEM V1-2 © University of Bristol (CC BY-NC-SA 4.0)" in result["control"], result
-    assert "<img src=x onerror=window.XSS=1> (<b>x</b>)" in result["control"], result
-    assert "FABDEM V1-2 (CC BY-NC-SA 4.0); Bad (<b>x</b>)" in result["panel"], result
-    links = result["links"]
-    assert links.count("https://creativecommons.org/licenses/by-nc-sa/4.0/") == 2 and "ATTRIBUTION.txt" in links, result
-    assert not any(link.startswith("javascript") for link in links if link), result
-    assert result["imgs"] == 0 and result["xss"] is None, result
 
 
 # Reports which interface the app page rendered (and, in the gallery, that the sheet's handle moves it)

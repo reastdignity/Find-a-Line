@@ -70,11 +70,6 @@ export async function loadRunFavourites(runId: string): Promise<RunFavourites> {
   return {lines: body.lines, in: body.in || {}, folders: body.folders || []};
 }
 
-/** The user's favourite lines of a run (lineCoords): the map's. */
-export async function loadFavourites(runId: string): Promise<string[]> {
-  return (await loadRunFavourites(runId)).lines;
-}
-
 /** A change of the user's favourites; the server's message when it refuses. */
 async function post(url: string, body: unknown, token: string, method = "POST"): Promise<any> {
   const response = await fetch(url, {

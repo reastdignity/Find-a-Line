@@ -1,5 +1,5 @@
 // The terrain profile of the selected line (or of two points measured on the map) in a dock: the
-// old map's ProfilePanel (Profile.tsx) with the profile from model.profile (saved, computed before or
+// ProfilePanel (Profile.tsx) with the profile from model.profile (saved, computed before or
 // asked from the server), a loading and an error state; the point under the cursor or the finger is
 // shown on the map (ResultMap.hoverAt).
 

@@ -1,5 +1,5 @@
 /* Design tokens of the interfaces (B, C and D). Scoped to the root class .ui, never
-   :root, so the result viewer (map.html) keeps its look (and their light form controls).
+   :root, so the pages outside it (runs/index.html) keep their look.
    The theme follows the system unless the .ui element has data-theme="light" or "dark". */
 .ui {
   --bg: #f3f5f2; --surface: #ffffff; --surface-2: #e9eee9; --ink: #17201c; --ink-2: #45524b; --muted: #6c7a73; --line: #d2dad4;

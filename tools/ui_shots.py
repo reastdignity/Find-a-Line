@@ -15,7 +15,8 @@ HTTPS with a certificate made for the run: WebKit, unlike Chromium, sends no Sec
     uv run playwright install chromium webkit
     uv run tools/ui_shots.py --out <folder> [--only d-] [--dark]
 
-The files are <page>-<device>-<theme>.png; a page whose click finds nothing on a device is left out.
+The "map" pages are a run's own map.html (from the server and by its share link). The files are
+<page>-<device>-<theme>.png; a page whose click finds nothing on a device is left out.
 Phone screenshots of the viewport only (the shells scroll inside, not the page).
 """
 
@@ -36,7 +37,7 @@ sys.path.insert(0, REPO)
 ACCOUNTS = {"FINDALINE_SESSION_SECRET": "ui-shots-" * 5, "FINDALINE_GITHUB_CLIENT_ID": "id",
             "FINDALINE_GITHUB_CLIENT_SECRET": "secret", "FINDALINE_ADMINS": "github:1"}
 
-# name -> (interface, hash, actions after loading or None: a CSS selector to click, "scroll:<selector>" to
+# name -> (interface ("map": the run's map.html, "shared": it by its share link), hash, actions after loading or None: a CSS selector to click, "scroll:<selector>" to
 # scroll that element (or the page) to its end, "low:<selector>" to click the last one scrolled to the
 # bottom of its panel (a "?" near the bottom: its bubble opens upwards), or a list of such steps[, the user:
 # "admin" (default) or "walker", an approved user with the site's limits]); "{run}" is the clip's run
@@ -68,6 +69,9 @@ PAGES = {
     "b-osm": ("b", "#osm", None),
     "c-home": ("c", "", None),
     "c-result": ("c", "#run={run}", None),
+    "map": ("map", "", None),
+    "map-line": ("map", "", ".r-rows .r-row"),  # a spot selected: its details and profile
+    "map-shared": ("shared", "", None),
 }
 
 # The "low:" step: the last matching element is scrolled to just above the bottom of the visible part of
@@ -137,7 +141,7 @@ def certificate(folder: str):
 
 def serve(data: str):
     """The public site on a free port of 127.0.0.1, with a worker; (address, session cookies by user, run,
-    stop)."""
+    the run's share token, stop)."""
     import uvicorn
 
     import accounts as ac
@@ -161,6 +165,8 @@ def serve(data: str):
     jobs = Jobs(data, public=True)
     run = clip_run(data)
     jobs.add_run(run, admin.id, 1)
+    share = "ui-shots-share-" + "x" * 30
+    jobs.set_share(run, ac.digest(share))
     jobs.add_report(climber.id, "water", "The lake in the profile is 3 m too high near the second anchor.",
                     {"run": run, "page": f"#run={run}", "ui": "d", "viewport": "390x844",
                      "user_agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X)"})
@@ -178,7 +184,7 @@ def serve(data: str):
     def stop():
         server.should_exit = True
         scheduler.stop()
-    return site, cookies, run, stop
+    return site, cookies, run, share, stop
 
 
 def main():
@@ -194,7 +200,7 @@ def main():
 
     os.makedirs(args.out, exist_ok=True)
     data = args.data_dir or tempfile.mkdtemp(prefix="ui-shots-")
-    site, cookies, run, stop = serve(data)
+    site, cookies, run, share, stop = serve(data)
     wanted = [w for w in args.only.split(",") if w]
     pages = {n: p for n, p in PAGES.items() if not wanted or any(w in n for w in wanted)}
     themes = ["light", "dark"] if args.dark else ["light"]
@@ -217,7 +223,8 @@ def main():
                                               "domain": "localhost", "path": "/", "secure": True, "httpOnly": True,
                                               "sameSite": "Lax"}])
                         page = context.new_page()  # a fresh page each: no menu or route of the one before
-                        page.goto(f"{site}/?ui={ui}{hash_.format(run=run)}")
+                        start = {"map": f"/runs/{run}/map.html", "shared": f"/s/{share}/map.html"}.get(ui, f"/?ui={ui}")
+                        page.goto(f"{site}{start}{hash_.format(run=run)}")
                         page.wait_for_timeout(2500)  # the event stream stays open: no "network idle"
                         try:  # the maps' tiles (OpenTopoMap can be slow): an empty map is no finding
                             page.wait_for_function("!document.querySelector('.leaflet-tile:not(.leaflet-tile-loaded)')",

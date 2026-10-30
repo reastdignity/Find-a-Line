@@ -1478,11 +1478,13 @@ SHARE_CHECK = """
   const out = document.createElement("pre");
   out.id = "result";
   document.body.appendChild(out);
+  const named = (label) => [...document.querySelectorAll(".r-actions button")]
+    .some((b) => b.textContent.trim() === label || b.getAttribute("aria-label") === label);
   setTimeout(() => {
     out.textContent = JSON.stringify({map: !!window.FINDALINE_MAP, runs: window.FINDALINE_RUNS === undefined,
-      app: window.FINDALINE_APP, measure: !!document.querySelector(".fal-measure"),
-      others: document.querySelectorAll(".fal-other input").length,
-      lines: Object.values(window.FINDALINE_MAP._layers).filter((l) => l.getLatLngs).length});
+      app: window.FINDALINE_APP, measure: named("Measure"), compare: named("Compare"), download: named("Download"),
+      back: [...document.querySelectorAll(".b-pill .b-back")].map((b) => b.getAttribute("aria-label")),
+      lines: window.FINDALINE_RESULT ? window.FINDALINE_RESULT.model.shown.lines : 0});
   }, 3000);
 })();
 """
@@ -1492,7 +1494,7 @@ SHARE_CHECK = """
 def test_signed_in_app_and_shared_map_in_edge(tmp_path, clip_run, account_settings, monkeypatch):
     """Headless Edge signs in through a fake GitHub (its authorize page is a route of the test app,
     tokens and the user come from FakeProviders), gets the app with its user and no CSP violation;
-    a share link opens the map without the list of runs, measuring or violations."""
+    a share link opens the map without the list of runs, measuring, comparing, a way back or violations."""
     import re
     import socket
     import threading
@@ -1567,7 +1569,8 @@ def test_signed_in_app_and_shared_map_in_edge(tmp_path, clip_run, account_settin
         dom = _edge(f"{site}/s/{token}/map.html", tmp_path / "edge-anonymous")
         result = json.loads(re.search(r'<pre id="result">(.*?)</pre>', dom, re.S).group(1).replace("&quot;", '"'))
         assert result["map"] and result["runs"] and result["app"] == {"profiles": False, "favourites": False}, result
-        assert not result["measure"] and result["others"] == 0 and result["lines"] > 0, result
+        assert not result["measure"] and not result["compare"] and result["download"], result
+        assert result["back"] == [] and result["lines"] > 0, result
         assert _violations(dom) == []
         Jobs(str(data)).set_visibility(RUN_A, "demo")  # a demo: the anonymous page and the map
         dom = _edge(f"{site}/", tmp_path / "edge-visitor")
@@ -1577,7 +1580,7 @@ def test_signed_in_app_and_shared_map_in_edge(tmp_path, clip_run, account_settin
         dom = _edge(f"{site}/runs/{RUN_A}/map.html", tmp_path / "edge-visitor")
         result = json.loads(re.search(r'<pre id="result">(.*?)</pre>', dom, re.S).group(1).replace("&quot;", '"'))
         assert result["map"] and result["app"] == {"profiles": False, "favourites": False}, result
-        assert not result["measure"], result
+        assert not result["measure"] and not result["compare"] and result["back"] == ["Find-a-Line"], result
         assert result["lines"] > 0 and _violations(dom) == []
     finally:
         server.should_exit = True

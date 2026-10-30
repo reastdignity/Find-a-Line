@@ -20,7 +20,7 @@ export interface Filters {
   water: "all" | "water" | "land";
   hideFilled: boolean;        // hide lines over gaps filled from another source
   groupMin: number | null;    // similar lines in a group (with grouping on)
-  favOnly: boolean;           // only favourite lines (applied by main.tsx, which knows them)
+  favOnly: boolean;           // only favourite lines (applied by result/model.ts, which knows them)
 }
 
 export const NO_FILTERS: Filters = {lenMin: null, lenMax: null, clrMin: null, clrNMin: null, dhMax: null,
@@ -57,6 +57,35 @@ export function active(f: Filters): number {
 }
 
 export interface Range { min: number; max: number }
+
+/** The ranges of the run's values the filters offer (null: no line has the value). */
+export interface FilterRanges {
+  len: Range | null;
+  clr: Range | null;
+  clrN: Range | null;
+  dh: Range | null;
+  elev: Range | null;
+  hmax: Range | null;
+  hmean: Range | null;
+  highPct: Range | null;
+  highAbove: number;  // m, the height of highPct
+  angle: Range | null;
+  prom: Range | null;
+  drop: Range | null;
+  group: Range | null;
+  water: boolean;   // some lines are over water
+  filled: boolean;  // some lines are over filled gaps
+  favourites: boolean;  // the user's favourite lines are known
+}
+
+/** Which lines are shown and how they are grouped. */
+export interface LinesState {
+  group: boolean;
+  distance: number;
+  by: string;
+  showClean: boolean;
+  showOver: boolean;
+}
 
 /** The range of a value over the lines (for the sliders); null without lines. */
 export function range(lines: Line[], value: (l: Line) => number | null): Range | null {
