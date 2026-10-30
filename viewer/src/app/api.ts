@@ -1,5 +1,6 @@
 import type { GeoJSON } from "geojson";
 import type { Favourite, FavouriteFolder } from "../favourites";
+import { detailMessage, errorText, type ErrorInfo } from "../i18n";
 
 // Requests to the local server (web.py). Changing requests carry the session token
 // of the page, which a foreign website cannot read or set.
@@ -46,7 +47,7 @@ export interface Usage {
 }
 
 export interface Estimate {
-  messages: [string, string][];
+  messages: ([string, string] | [string, string, ErrorInfo])[];  // [kind, text, its code (jobs._message)]
   reasons: string[];
   download_mb: number;
   work_gb: number;
@@ -64,6 +65,7 @@ export interface Job {
   title: string;
   run_id: string | null;
   error: string | null;
+  error_info?: ErrorInfo | null;  // the code of the error (jobs.sqlite error_info): its text in the page's language
   finished: string | null;
   user_id?: number | null;  // the owner (an administrator sees every job)
 }
@@ -126,9 +128,23 @@ export interface PageUser { local?: boolean; name?: string; provider?: string; s
 export const user: PageUser = JSON.parse(
   document.querySelector<HTMLMetaElement>("meta[name=findaline-user]")?.content || "{\"local\": true}");
 
-/** An error answer of the server, with its HTTP status (429: a rate, 503: no worker, ...). */
+/** An error answer of the server, with its HTTP status (429: a rate, 503: no worker, ...); a coded one
+ *  (web.py error_detail: {message, code, params}) has its text in the page's language and its code. */
 export class ApiError extends Error {
-  constructor(message: string, readonly status: number) { super(message); }
+  constructor(message: string, readonly status: number, readonly info: ErrorInfo | null = null) { super(message); }
+
+  /** The error of an answer's detail: a text, or {message, code, params} (i18n.ts detailMessage). */
+  static of(detail: unknown, status: number, fallback: string): ApiError {
+    const coded = detail as {code?: unknown; params?: Record<string, unknown>} | null;
+    const info = coded && typeof coded === "object" && typeof coded.code === "string"
+      ? {code: coded.code, params: coded.params || {}} : null;
+    return new ApiError(detailMessage(detail, fallback), status, info);
+  }
+}
+
+/** The text of a job's error: its code's in the page's language, else the stored text. */
+export function jobError(job: Pick<Job, "error" | "error_info">): string | null {
+  return job.error_info ? errorText(job.error_info, job.error || undefined) : job.error;
 }
 
 async function call<T>(method: string, url: string, body?: unknown, signal?: AbortSignal): Promise<T> {
@@ -139,11 +155,7 @@ async function call<T>(method: string, url: string, body?: unknown, signal?: Abo
   }
   const response = await fetch(url, init);
   const data = await response.json().catch(() => ({}));
-  if (!response.ok) {
-    const detail = data.detail;
-    throw new ApiError(typeof detail === "string" ? detail : JSON.stringify(detail || response.statusText),
-                       response.status);
-  }
+  if (!response.ok) throw ApiError.of(data.detail, response.status, response.statusText);
   return data as T;
 }
 

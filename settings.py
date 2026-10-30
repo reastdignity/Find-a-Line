@@ -31,6 +31,9 @@ from urllib.parse import urlsplit
 from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+import messages
+from messages import UserError
+
 SECRETS_DIR = "/run/secrets"  # Docker secrets
 # The limits of the public site (--public) unless FINDALINE_LIMIT_<NAME> says otherwise
 PUBLIC = {
@@ -184,9 +187,8 @@ class Limits(BaseSettings):
         problems = []
         for name, value in params.items():
             if value is not None and not self.allows(name, value):
-                problems.append(f"{name if not self.allows(name) else f'{name}={value}'}: not allowed on this site")
-        if problems:
-            raise ValueError("; ".join(problems))
+                problems.append(_not_allowed(self, name, value))
+        _refuse(problems)
 
     def check_params(self, p, resolution: Optional[float] = None, allowed: bool = True,
                      min_resolution: float = 1.0):
@@ -200,21 +202,45 @@ class Limits(BaseSettings):
             for name in type(p).model_fields:
                 value = getattr(p, name)
                 if name in p.model_fields_set and value is not None and not self.allows(name, value):
-                    problems.append(f"{name if not self.allows(name) else f'{name}={value}'}: not allowed on "
-                                    f"this site")
+                    problems.append(_not_allowed(self, name, value))
         resolution = resolution if resolution is not None else p.resolution
         res = max(resolution, min_resolution) if resolution is not None else min_resolution
         for name in dict.fromkeys(param for param, _ in BOUNDS.values()) | {"group_distance": None}:
             value = resolution if name == "resolution" else getattr(p, name)
             if value is None:
                 continue
-            low, high = self.bounds(name, res)
-            if low is not None and value < low:
-                problems.append(f"{name}: at least {low:g} on this site")
-            if high is not None and value > high:
-                problems.append(f"{name}: at most {high:g} on this site")
-        if problems:
-            raise ValueError("; ".join(problems))
+            problems += self.outside(name, value, res)
+        _refuse(problems)
+
+    def outside(self, name: str, value: float, resolution: float = 1.0) -> List[UserError]:
+        """The bounds of a parameter that `value` breaks (UserError "name: at least/at most X on this site",
+        codes "at_least", "at_most" with the bound and its unit)."""
+        low, high = self.bounds(name, resolution)
+        problems = []
+        if low is not None and value < low:
+            problems.append(UserError(f"{name}: at least {low:g} on this site", "at_least", field=name,
+                                      min=messages.quantity(name, low)))
+        if high is not None and value > high:
+            problems.append(UserError(f"{name}: at most {high:g} on this site", "at_most", field=name,
+                                      max=messages.quantity(name, high)))
+        return problems
+
+
+def _not_allowed(limits: "Limits", name: str, value) -> UserError:
+    """A field (or one value of it) the web may not set."""
+    if not limits.allows(name):
+        return UserError(f"{name}: not allowed on this site", "not_allowed", field=name)
+    return UserError(f"{name}={value}: not allowed on this site", "not_allowed_value", field=name,
+                     value=messages.text(f"choice.{name}.{value}") if f"choice.{name}.{value}" in
+                     messages.catalogue() else str(value))
+
+
+def _refuse(problems: List[UserError]):
+    """Raise the problems as one UserError: the command line's text names each, the web's the first
+    (its code and parameters)."""
+    if problems:
+        first = problems[0]
+        raise UserError("; ".join(map(str, problems)), first.code, **first.params)
 
 
 class PublicSettings(BaseSettings):

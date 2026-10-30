@@ -7,6 +7,7 @@
 import { dh, drop, lowerAnchor, NO_FILTERS, passes, prominence, range as valueRange, saveFilters, savedFilters,
          wallAngle, type Filters } from "../filters";
 import { groupLines, type Group } from "../grouping";
+import { detailMessage } from "../i18n";
 import { addFolder, loadRunFavourites, moveFavourite, saveFavourite, type FavouriteFolder,
          type RunFavourites } from "../favourites";
 import { FolderTree } from "../folders";
@@ -54,7 +55,7 @@ export async function fetchProfile(runId: string, line: string): Promise<Profile
   const response = await fetch("/api/profile?run=" + encodeURIComponent(runId) + "&line=" + line,
                                {headers: {"X-Findaline-Profile": "1"}});
   const body = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(typeof body.detail === "string" ? body.detail : response.statusText || "error");
+  if (!response.ok) throw new Error(detailMessage(body.detail, response.statusText || "error"));
   return body as Profile;
 }
 

@@ -41,7 +41,9 @@ from datetime import datetime, timedelta
 from typing import Any, Callable, Dict, Iterable, List, NamedTuple, Optional, Set
 
 import cache
+import messages
 import params as pm
+from messages import UserError
 from settings import Limits, PublicSettings
 
 TICK = 0.5                # seconds between looks at the queue
@@ -116,6 +118,9 @@ MIGRATIONS = [
     # deletes them
     """CREATE TABLE reports (id INTEGER PRIMARY KEY, user_id INTEGER, created TEXT, category TEXT NOT NULL,
                              text TEXT NOT NULL, context TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'open');""",
+    # 11: the code of a job's error and its parameters (JSON {"code", "params"}: the page shows the text
+    # of the message catalogue, "error.<code>"); NULL: no code (and every job of before), `error` is shown
+    """ALTER TABLE jobs ADD COLUMN error_info TEXT;""",
 ]
 FAVOURITES_MAX = 10000  # favourite lines of a user (a safeguard of the database, the same for everyone)
 FOLDERS_MAX = 1000      # folders of favourites of a user
@@ -167,14 +172,22 @@ class Redact:
         return value
 
 
-class QuotaExceeded(ValueError):
+class QuotaExceeded(UserError):
     """A quota or a safeguard refuses a job or a request (`status`: the HTTP status, 429 for a user's
-    quota, 503 for the server's safeguards). A ValueError, so code that goes on without an optional
-    lookup (a run's place name, the country of --source auto) goes on without it."""
+    quota, 503 for the server's safeguards; `code`, `params`: its web text, messages.UserError). A
+    ValueError, so code that goes on without an optional lookup (a run's place name, the country of
+    --source auto) goes on without it."""
 
-    def __init__(self, message: str, status: int = 429):
-        super().__init__(message)
+    def __init__(self, message: str, status: int = 429, code: Optional[str] = None, **params):
+        super().__init__(message, code, **params)
         self.status = status
+
+
+def _with_info(job: Dict) -> Dict:
+    """A job (or a status event) for the page: its error_info read from its JSON."""
+    if job.get("error_info"):
+        job["error_info"] = json.loads(job["error_info"])
+    return job
 
 
 DAY = 86400.0  # seconds of the daily quotas (a moving 24 hours)
@@ -238,36 +251,42 @@ class Jobs:
             if limits.free_disk_gb_min is not None:
                 free = shutil.disk_usage(self.data_dir).free / 1e9
                 if free < limits.free_disk_gb_min:
-                    raise QuotaExceeded("the server is short of disk space: no new searches for now", 503)
+                    raise QuotaExceeded("the server is short of disk space: no new searches for now", 503,
+                                        "disk_full")
             active = WAITING + ACTIVE
             if limits.queue_max is not None:
                 count = db.execute(f"SELECT COUNT(*) FROM jobs WHERE status IN {_in(active)}", active).fetchone()[0]
                 if count >= limits.queue_max:
-                    raise QuotaExceeded(f"the queue is full ({count} searches): try again later", 503)
+                    raise QuotaExceeded(f"the queue is full ({count} searches): try again later", 503, "queue_full",
+                                        n=count)
             if not limited or user_id is None:
                 return
             if limits.jobs_active_max is not None:
                 count = db.execute(f"SELECT COUNT(*) FROM jobs WHERE user_id = ? AND status IN {_in(active)}",
                                    (user_id, *active)).fetchone()[0]
                 if count >= limits.jobs_active_max:
-                    raise QuotaExceeded(f"at most {limits.jobs_active_max} of your searches may wait or run at once")
+                    raise QuotaExceeded(f"at most {limits.jobs_active_max} of your searches may wait or run at once",
+                                        code="quota_active", max=limits.jobs_active_max)
             if limits.jobs_day_max is not None:
                 since = (datetime.now() - timedelta(seconds=DAY)).isoformat(timespec="seconds")
                 count = db.execute("SELECT COUNT(*) FROM jobs WHERE user_id = ? AND created >= ?",
                                    (user_id, since)).fetchone()[0]
                 if count >= limits.jobs_day_max:
-                    raise QuotaExceeded(f"at most {limits.jobs_day_max} searches in 24 hours: try again later")
+                    raise QuotaExceeded(f"at most {limits.jobs_day_max} searches in 24 hours: try again later",
+                                        code="quota_jobs_day", max=limits.jobs_day_max)
             if limits.runs_gb_max is not None:
                 size = db.execute("SELECT COALESCE(SUM(bytes), 0) FROM runs WHERE user_id = ?",
                                   (user_id,)).fetchone()[0]
                 if size >= limits.runs_gb_max * 1e9:
                     raise QuotaExceeded(f"your runs take {size / 1e9:.1f} GB, at most {limits.runs_gb_max:g} GB: "
-                                        f"delete some in Runs")
+                                        f"delete some in Runs", code="quota_runs_gb", gb=round(size / 1e9, 1),
+                                        max=limits.runs_gb_max)
             if limits.km2_day_max is not None:
                 used = self._used(db, user_id, "km2")
                 if used >= limits.km2_day_max:
                     raise QuotaExceeded(f"your searches covered {used:.0f} km² in 24 hours, at most "
-                                        f"{limits.km2_day_max:g} km²: try again later")
+                                        f"{limits.km2_day_max:g} km²: try again later", code="quota_km2",
+                                        used=round(used), max=limits.km2_day_max)
         return check
 
     def precheck(self, check: Callable[[sqlite3.Connection], None]):
@@ -291,7 +310,8 @@ class Jobs:
             used = self._used(db, user_id, kind)
             if limit is not None and used + amount > limit:
                 refused = QuotaExceeded(f"{USAGE[kind]}: {used:.0f} of at most {limit:g} in 24 hours used, "
-                                        f"{amount:.1f} more needed: try again later")
+                                        f"{amount:.1f} more needed: try again later", code=f"quota_use_{kind}",
+                                        used=round(used), max=limit, more=round(amount, 1))
             else:
                 refused = None
                 db.execute("INSERT INTO usage (user_id, kind, at, amount) VALUES (?, ?, ?, ?)",
@@ -346,9 +366,10 @@ class Jobs:
         """The newest jobs, of one user (None: of everyone)."""
         mine = "" if user_id is None else "WHERE user_id = ? "
         with self._db() as db:
-            rows = db.execute(f"SELECT id, created, status, title, run_id, error, finished, user_id FROM jobs {mine}"
-                              "ORDER BY created DESC LIMIT 200", () if user_id is None else (user_id,)).fetchall()
-        return [dict(r) for r in rows]
+            rows = db.execute(f"SELECT id, created, status, title, run_id, error, error_info, finished, user_id "
+                              f"FROM jobs {mine}ORDER BY created DESC LIMIT 200",
+                              () if user_id is None else (user_id,)).fetchall()
+        return [_with_info(dict(r)) for r in rows]
 
     def waiting_or_running(self) -> List[Dict]:
         """The jobs not finished yet, with their requests."""
@@ -389,11 +410,20 @@ class Jobs:
 
     def set(self, job_id: str, status: str, when: Optional[Iterable[str]] = None, **fields) -> bool:
         """Set the status (and other columns) of a job; with `when` only if its status is one of
-        those (e.g. a phase that ends must not overwrite a job cancelled meanwhile). Whether it changed."""
+        those (e.g. a phase that ends must not overwrite a job cancelled meanwhile). Whether it changed.
+        An `error` is a text or an error: a coded one (messages.Coded) is stored as its web text with
+        its code and parameters in `error_info`; an error clears the code of an earlier one."""
         if status in FINISHED:
             fields["finished"] = datetime.now().isoformat(timespec="seconds")
-        if fields.get("error"):
-            fields["error"] = self.redact(fields["error"])
+        if "error" in fields:
+            error = fields["error"]
+            coded = messages.user_error(error) if isinstance(error, BaseException) else None
+            info = coded.info() if coded is not None else None
+            fields["error"] = None if error is None else self.redact(
+                coded.web_text() if coded is not None else cache.clean_error(error))
+            fields["error_info"] = self.redact(info)
+        if fields.get("error_info") is not None:
+            fields["error_info"] = json.dumps(fields["error_info"])
         names = "".join(f", {k} = ?" for k in fields)
         condition, values = "", ()
         if when is not None:
@@ -403,7 +433,7 @@ class Jobs:
             changed = db.execute(f"UPDATE jobs SET status = ?{names} WHERE id = ?{condition}",
                                  (status, *fields.values(), job_id, *values)).rowcount
         if changed:
-            self.event(job_id, "status", {"status": status, **fields})
+            self.event(job_id, "status", _with_info({"status": status, **fields}))
         return bool(changed)
 
     def event(self, job_id: str, kind: str, data):
@@ -550,7 +580,8 @@ class Jobs:
             known = db.execute("SELECT 1 FROM favourites WHERE user_id IS ? AND run_id = ? AND line = ?",
                                (user_id, run_id, line)).fetchone()
             if not known and count >= FAVOURITES_MAX:
-                raise QuotaExceeded(f"at most {FAVOURITES_MAX} favourite lines: remove some first", 409)
+                raise QuotaExceeded(f"at most {FAVOURITES_MAX} favourite lines: remove some first", 409,
+                                    "favourites_max", max=FAVOURITES_MAX)
             db.execute("INSERT INTO favourites (user_id, run_id, line, data, created, folder_id) "
                        "VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING",
                        (user_id, run_id, line, json.dumps(data), datetime.now().isoformat(timespec="seconds"),
@@ -613,7 +644,8 @@ class Jobs:
             self._own_folder(db, user_id, parent_id)
             parents = self._tree(db, user_id)
             if len(parents) >= FOLDERS_MAX:
-                raise QuotaExceeded(f"at most {FOLDERS_MAX} folders: delete some first", 409)
+                raise QuotaExceeded(f"at most {FOLDERS_MAX} folders: delete some first", 409, "folders_max",
+                                    max=FOLDERS_MAX)
             if self._depth(parents, parent_id) + 1 > FOLDER_DEPTH_MAX:
                 raise ValueError(f"folders go at most {FOLDER_DEPTH_MAX} deep")
             return db.execute("INSERT INTO favourite_folders (user_id, parent_id, name, created) VALUES (?, ?, ?, ?)",
@@ -762,7 +794,7 @@ class Jobs:
             if one_waiting and user_id is not None and db.execute(
                     "SELECT 1 FROM quick WHERE user_id = ? AND status = 'waiting' LIMIT 1", (user_id,)).fetchone():
                 raise QuotaExceeded("another estimate, profile or place lookup of yours is still waiting: try again when it "
-                                    "is answered")
+                                    "is answered", code="quick_waiting")
             return db.execute("INSERT INTO quick (kind, request, status, created, user_id, unlimited) "
                               "VALUES (?, ?, 'waiting', ?, ?, ?)",
                               (kind, json.dumps(request), time.time(), user_id, int(unlimited))).lastrowid
@@ -924,7 +956,7 @@ def check_disk(data_dir: str, limits: Optional[Limits], phase: str):
     free = shutil.disk_usage(data_dir).free / 1e9
     if free < limits.free_disk_gb_min:
         raise QuotaExceeded(f"the server is short of disk space ({free:.0f} GB free): the search stopped before "
-                            f"its {phase}; try again later", 503)
+                            f"its {phase}; try again later", 503, "disk_full_search")
 
 
 def charge_area(jobs: Jobs, user_id: Optional[int], plan, limits: Optional[Limits]):
@@ -967,7 +999,7 @@ def run_phase(data_dir: str, job_id: str, phase: str, limits: Optional[Limits] =
             jobs.event(job_id, "progress", state)
 
     def on_event(kind: str, text: str):
-        jobs.event(job_id, kind, text)
+        jobs.event(job_id, kind, text.web_text() if getattr(text, "code", None) else text)  # messages.Note
 
     progress.subscribe(on_progress)
     paths = search.Paths(data_dir, os.path.join(jobs.folder(job_id), phase))  # removed with the job when killed
@@ -1017,7 +1049,7 @@ def run_phase(data_dir: str, job_id: str, phase: str, limits: Optional[Limits] =
             jobs.set(job_id, "done", when=working, run_id=result.run["id"], error=None)
         failed = False
     except (search.SearchError, ValueError, RuntimeError, requests.RequestException) as e:  # ValueError: parameters
-        jobs.set(job_id, "failed", when=working, error=cache.clean_error(e))
+        jobs.set(job_id, "failed", when=working, error=e)  # the web text of a coded error (Jobs.set)
         failed = False
     except Exception as e:  # anything else: keep the work folder to look at (not on the public site)
         if public:  # the traceback (raised below) goes to the log, the page gets a reference
@@ -1041,21 +1073,28 @@ def quick_estimate(data_dir: str, request: Dict, limits: Optional[Limits] = None
     """The estimate of a search request (/api/estimate); a request over the limits is refused."""
     import search
     from area import Polygon, size_km2
-    messages = []
+    notes = []
     params = search_params(request)
     folder = os.path.join(data_dir, "work", "estimates", uuid.uuid4().hex)  # one per request
     try:
         paths = search.Paths(data_dir, folder)
-        plan = search.plan_search(params, paths, lambda kind, text: messages.append([kind, text]), limits=limits)
+        plan = search.plan_search(params, paths, lambda kind, text: notes.append(_message(kind, text)), limits=limits)
         result = search.estimate_search(plan)
         search.check_estimate(plan, result)
     finally:
         shutil.rmtree(folder, ignore_errors=True)
-    return {"messages": messages, "reasons": result.reasons, "download_mb": round(result.download_mb),
+    return {"messages": notes, "reasons": result.reasons, "download_mb": round(result.download_mb),
             "work_gb": round(result.work_gb, 2), "source": plan.source.name,
             "tiles": len(plan.tiles) if plan.tiles else 1, "resolution": plan.resolution,
             "km2": size_km2(plan.area.geometry) if isinstance(plan.area, Polygon) else None,
             "area": plan.area.shape_wgs84().__geo_interface__}  # drawn on the map before the start
+
+
+def _message(kind: str, text: str) -> list:
+    """A message of an estimate: [kind, text], and {"code", "params"} of a coded one (messages.Note)
+    with its web text."""
+    info = getattr(text, "info", lambda: None)()
+    return [kind, text.web_text(), info] if info else [kind, str(text)]
 
 
 def quick_profile(data_dir: str, request: Dict, limits: Optional[Limits] = None) -> Dict:
@@ -1108,9 +1147,10 @@ def run_quick(data_dir: str, worker_id: str, parent: int, limits: Optional[Limit
         try:
             jobs.quick_answer(task["id"], 200, QUICK[task["kind"]](data_dir, json.loads(task["request"]), task_limits))
         except QuotaExceeded as e:
-            jobs.quick_answer(task["id"], e.status, str(e))
+            jobs.quick_answer(task["id"], e.status, e.detail())
         except (ValueError, search.SearchError, requests.RequestException) as e:  # ValueError: parameters
-            jobs.quick_answer(task["id"], 400, cache.clean_error(e))
+            coded = messages.user_error(e)  # {"message", "code", "params"} (web.error_detail)
+            jobs.quick_answer(task["id"], 400, coded.detail() if coded is not None else cache.clean_error(e))
         except Exception as e:
             ref = f"quick-{task['id']}"
             print(f"internal error, ref {ref}:", file=sys.stderr)

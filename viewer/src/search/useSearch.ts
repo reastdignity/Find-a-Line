@@ -10,6 +10,7 @@ import { countAreas } from "../app/areas";
 import { readAreaFile } from "../app/files";
 import type { Mode, PlaceMap } from "../app/PlaceMap";
 import { buildRequest, fromRequest, valueProblem, withValue, type AreaFile, type Place } from "../app/request";
+import { t } from "../i18n";
 
 export type SearchMode = "point" | "area" | "cliffs" | "file";
 export type AreaKind = "draw" | "osm";       // the Area mode: drawn on the map, or a named OSM area
@@ -258,7 +259,7 @@ export function useSearch({place, schema, onStarted, initial, preset: preset0}: 
       if (problem) found[key] = problem;
     }
     const low = Number(value("min_length")), high = Number(value("max_length"));
-    if (!(low > 0 && low < high)) found.min_length = "more than 0 and less than the longest line";
+    if (!(low > 0 && low < high)) found.min_length = t("error.length_range");
     return found;
   }, [values, byName]);
 
@@ -282,7 +283,7 @@ export function useSearch({place, schema, onStarted, initial, preset: preset0}: 
     if (typeof built === "string") return built;
     const wrong = Object.entries(problems);
     if (wrong.length) {
-      return "Check the settings: " + wrong.map(([k, p]) => `${byName[k]?.label ?? k}: ${p}`).join("; ") + ".";
+      return [t("error.check_settings"), ...wrong.map(([, p]) => p)].join(" ");
     }
     return built;
   }, [mode, areaKind, coastKind, point, radius, buffer, osmName, within, name, values, drawnAreas, file, problems]);

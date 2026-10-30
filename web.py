@@ -65,7 +65,10 @@ QUICK_POLL = 0.1    # seconds between looks for the answer of an estimate or a p
 QUICK_SLACK = 30
 QUICK_WAIT_MAX = 600
 QUICK_WAIT_LOCAL = 3600
-NO_WORKER = "the worker is not running (findaline.py worker, or findaline.py web without --no-worker)"
+# The worker does not run: the public site's page names no commands, the local app's says how to start it
+NO_WORKER = messages.UserError("the worker is not running (findaline.py worker, or findaline.py web without "
+                               "--no-worker)", "no_worker_local")
+NO_WORKER_PUBLIC = messages.UserError.web("no_worker")
 APP_DIST = os.path.join(os.path.dirname(os.path.abspath(__file__)), "viewer", "dist")
 LOCAL_HOSTS = ["127.0.0.1", "localhost"]  # tests use them too (TestClient's base_url)
 GRACEFUL_SECONDS = 5    # open event streams are closed this long after a stop
@@ -142,15 +145,12 @@ def presets(limits: Optional[Limits] = None) -> List[Dict]:
         problems = []
         for name, value in (values or {}).items():
             if limits and not limits.allows(name):
-                problems.append(f"{name}: not allowed on this site")
-                continue
-            low, high = limits.bounds(name, src.MIN_RESOLUTION) if limits else (None, None)
-            if low is not None and value < low:
-                problems.append(f"{name}: at least {low:g} on this site")
-            if high is not None and value > high:
-                problems.append(f"{name}: at most {high:g} on this site")
+                problems.append(messages.UserError.web("not_allowed", field=name))
+            elif limits:
+                problems += limits.outside(name, value, src.MIN_RESOLUTION)
         answer.append({"id": preset, "label": messages.text(f"preset.{preset}"), "values": values,
-                       "available": not problems, "reason": "; ".join(problems) or None})
+                       "available": not problems,
+                       "reason": " ".join(p.web_text() for p in problems) or None})
     return answer
 
 
@@ -164,27 +164,28 @@ def checked_request(request: Dict, limits: Optional[Limits] = None, hidden_sourc
     """check_request, and the validated parameters: the bounds of `limits` are checked on the values
     pydantic read (a number spelled "5_e3" is 5000 there), a value it cannot read is refused."""
     import sources as src
+    E = messages.UserError
     params = request.get("params")
     if not isinstance(params, dict):
-        raise ValueError("params missing")
+        raise E("params missing", "invalid_request")
     if limits:
         limits.check_request(params)
     fields = {f["name"]: f for f in schema(limits, hidden_sources)}
     unknown = set(params) - set(fields)
     if unknown:
-        raise ValueError(f"not allowed: {', '.join(sorted(unknown))}")
+        raise E(f"not allowed: {', '.join(sorted(unknown))}", "unknown_fields", names=", ".join(sorted(unknown)))
     for name, value in params.items():  # e.g. no local files as the source
         choices = fields[name]["choices"]
         if choices and value is not None and value not in choices:
-            raise ValueError(f"{name}: one of {', '.join(map(str, choices))}")
+            raise E(f"{name}: one of {', '.join(map(str, choices))}", "not_a_choice", field=name)
     area = params.get("area")
     if area is not None and area not in ("coast", "cliffs") and not str(area).startswith("osm:"):
-        raise ValueError("area: coast, cliffs, osm:<name> or a drawn/uploaded geometry")
+        raise E("area: coast, cliffs, osm:<name> or a drawn/uploaded geometry", "bad_area")
     geometry = request.get("geometry")
     if geometry is not None and (not isinstance(geometry, dict) or "type" not in geometry):
-        raise ValueError("geometry: GeoJSON expected")
+        raise E("geometry: GeoJSON expected", "geometry_not_geojson")
     if geometry is not None and area is not None:
-        raise ValueError("either area or geometry")
+        raise E("either area or geometry", "area_and_geometry")
     request = {"params": params, "geometry": geometry}
     p = search_params(request)  # ValueError (pydantic's) for a value it cannot read
     if limits:
@@ -192,7 +193,16 @@ def checked_request(request: Dict, limits: Optional[Limits] = None, hidden_sourc
     return request, p
 
 
-def profile_problem(folder: str, points: List[float], admin: bool = False) -> Optional[str]:
+def error_detail(error: BaseException):
+    """The detail of an error answer: {"message": the web text, "code", "params"} of a coded error
+    (messages.UserError, also inside pydantic's ValidationError: never its dump), else its text."""
+    coded = messages.user_error(error)
+    if coded is not None:
+        return coded.detail()
+    return str(error)
+
+
+def profile_problem(folder: str, points: List[float], admin: bool = False) -> Optional[messages.UserError]:
     """Why a profile of a run may not be computed on the public site (None: it may): both points in
     the box of the run's area grown by its --max-length, and at most --max-length apart (1% and
     2 m of slack for the projection). A run from a source of ADMIN_SOURCES (a demo run any user may
@@ -206,21 +216,24 @@ def profile_problem(folder: str, points: List[float], admin: bool = False) -> Op
         source = meta.get("source", {}).get("id")
     except (OSError, ValueError, KeyError, TypeError, AttributeError):
         box = None
+    E = messages.UserError
     if box is None:
-        return "this run has no profiles"
+        return E("this run has no profiles", "no_profiles")
     if source in ADMIN_SOURCES and not admin:
-        return f"profiles of runs from {source} are computed for administrators only"
+        return E(f"profiles of runs from {source} are computed for administrators only", "profile_admin_only",
+                 source=source)
     lat1, lon1, lat2, lon2 = points
     west, south, east, north = box
     dlat = max_length / 111320
     dlon = dlat / max(math.cos(math.radians((south + north) / 2)), 0.01)
     if not all(south - dlat <= lat <= north + dlat and west - dlon <= lon <= east + dlon
                for lat, lon in ((lat1, lon1), (lat2, lon2))):
-        return "the points must lie in the run's area (with a margin of its --max-length)"
+        return E("the points must lie in the run's area (with a margin of its --max-length)", "profile_outside")
     mean = math.radians((lat1 + lat2) / 2)
     length = 6371008.8 * math.hypot(math.radians(lat2 - lat1), math.radians(lon2 - lon1) * math.cos(mean))
     if length > max_length * 1.01 + 2:
-        return f"the points are {length:.0f} m apart, at most {max_length:g} m (the run's --max-length)"
+        return E(f"the points are {length:.0f} m apart, at most {max_length:g} m (the run's --max-length)",
+                 "profile_too_long", m=round(length), max=max_length)
     return None
 
 
@@ -738,6 +751,8 @@ def create_app(data_dir: str, token: Optional[str] = None, port: int = PORT, sta
         """The limits of a user's requests, searches, quotas and rates (None: without limits)."""
         return None if unlimited(user) else limits
 
+    no_worker = (NO_WORKER_PUBLIC if public else NO_WORKER).detail()
+
     def hidden_sources(user: ac.User) -> tuple:
         return ADMIN_SOURCES if public and not user.admin else ()
 
@@ -754,7 +769,8 @@ def create_app(data_dir: str, token: Optional[str] = None, port: int = PORT, sta
         limits library, in the memory of this process)."""
         if user.limited and kind in rates and not all([rate_limiter.hit(r, kind, str(user.id)) for r in rates[kind]]):
             refused(user, f"{kind} rate", f"{kind} rate", 429)
-            raise HTTPException(429, f"too many {RATE_NAMES[kind]}: try again in a minute")
+            raise HTTPException(429, messages.UserError(f"too many {RATE_NAMES[kind]}: try again in a minute",
+                                                        f"rate_{kind}").detail())
 
     def admitted(user: ac.User):
         """The quotas and safeguards of a new job, before its request is validated (a drawn geometry
@@ -763,7 +779,7 @@ def create_app(data_dir: str, token: Optional[str] = None, port: int = PORT, sta
             jobs.precheck(jobs.admission(user.id, limits, user.limited))
         except QuotaExceeded as e:
             refused(user, "quota", str(e), e.status)
-            raise HTTPException(e.status, str(e))
+            raise HTTPException(e.status, error_detail(e))
 
     def queue(request: Dict, title: str, user: ac.User, again: Optional[str] = None) -> str:
         """Add a job after the quotas and safeguards (Jobs.admission, in the insert's transaction)."""
@@ -772,7 +788,7 @@ def create_app(data_dir: str, token: Optional[str] = None, port: int = PORT, sta
                               unlimited=unlimited(user))
         except QuotaExceeded as e:
             refused(user, "quota", str(e), e.status)
-            raise HTTPException(e.status, str(e))
+            raise HTTPException(e.status, error_detail(e))
         record("job_add", user, job_id, {"title": title, **({"again": again} if again else {})})
         return job_id
 
@@ -796,7 +812,7 @@ def create_app(data_dir: str, token: Optional[str] = None, port: int = PORT, sta
         try:
             return checked_request(body, user_limits(user), hidden_sources(user))
         except ValueError as e:
-            raise HTTPException(400, str(e))
+            raise HTTPException(400, error_detail(e))
 
     async def quick(kind: str, request: Dict, user: ac.User, client: Request):
         """The answer of the worker's quick lane (jobs.QUICK) to a task: added to the table `quick`
@@ -805,11 +821,11 @@ def create_app(data_dir: str, token: Optional[str] = None, port: int = PORT, sta
         time limit for each task ahead and this one (QUICK_WAIT_MAX at most), or when the client
         goes away; the task is deleted then, unless the lane works on it already."""
         if not await run_in_threadpool(jobs.worker_alive):
-            raise HTTPException(503, NO_WORKER)
+            raise HTTPException(503, no_worker)
         try:
             task = await run_in_threadpool(jobs.quick_add, kind, request, user.id, unlimited(user), public is not None)
         except QuotaExceeded as e:
-            raise HTTPException(e.status, str(e))
+            raise HTTPException(e.status, error_detail(e))
         gone = None
         try:
             if limits.quick_seconds:
@@ -826,11 +842,13 @@ def create_app(data_dir: str, token: Optional[str] = None, port: int = PORT, sta
                 if gone.done():
                     raise HTTPException(503, "the client went away")  # nobody reads it
                 if time.monotonic() - started > wait:
-                    raise HTTPException(504, f"no answer within {wait:g} s: the worker is busy, try again later")
+                    raise HTTPException(504, messages.UserError(
+                        f"no answer within {wait:g} s: the worker is busy, try again later", "busy",
+                        seconds=round(wait, 1)).detail())
                 if time.monotonic() - looked > 5:
                     looked = time.monotonic()
                     if not await run_in_threadpool(jobs.worker_alive):
-                        raise HTTPException(503, NO_WORKER)
+                        raise HTTPException(503, no_worker)
         except BaseException:  # also a cancelled request (the server stops): nobody waits for the task
             jobs.quick_forget(task)
             raise
@@ -853,7 +871,8 @@ def create_app(data_dir: str, token: Optional[str] = None, port: int = PORT, sta
         worker's network, the shared rate and the user's quota of uncached requests)."""
         q = body.get("q") if isinstance(body, dict) else None
         if not isinstance(q, str) or not q.strip() or len(q) > PLACE_CHARS_MAX:
-            raise HTTPException(400, f"a place name of 1 to {PLACE_CHARS_MAX} characters")
+            raise HTTPException(400, messages.UserError(f"a place name of 1 to {PLACE_CHARS_MAX} characters",
+                                                        "place_name", n=PLACE_CHARS_MAX).detail())
         await run_in_threadpool(within_rate, "place", user)
         return await quick("place", {"q": q.strip()}, user, client)
 
@@ -877,6 +896,7 @@ def create_app(data_dir: str, token: Optional[str] = None, port: int = PORT, sta
     def get_job(job: Dict = Depends(own_job)):
         """A job with its request (parameters and drawn or uploaded area), for "edit"."""
         return {**{k: job[k] for k in ("id", "created", "status", "title", "run_id", "error")},
+                "error_info": json.loads(job["error_info"]) if job.get("error_info") else None,
                 "request": json.loads(job["request"])}
 
     @app.post("/api/jobs/{job_id}/again")
@@ -1036,14 +1056,14 @@ def create_app(data_dir: str, token: Optional[str] = None, port: int = PORT, sta
             line, data = checked_favourite(body)
             folder = checked_folder(body.get("folder"))
         except ValueError as e:
-            raise HTTPException(400, str(e))
+            raise HTTPException(400, error_detail(e))
         try:
             jobs.set_favourite(user.id, run, line, data, folder)
         except KeyError:
             raise HTTPException(404, "no such folder")
         except QuotaExceeded as e:
             refused(user, "favourites", str(e), e.status)
-            raise HTTPException(e.status, str(e))
+            raise HTTPException(e.status, error_detail(e))
         record("favourite", user, run, {"line": line, "favourite": data is not None,
                                         **({"folder": folder} if data is not None and folder else {})})
         return {"ok": True}
@@ -1055,7 +1075,7 @@ def create_app(data_dir: str, token: Optional[str] = None, port: int = PORT, sta
             line = checked_line(body.get("line") if isinstance(body, dict) else None)
             folder = checked_folder(body.get("folder"))
         except ValueError as e:
-            raise HTTPException(400, str(e))
+            raise HTTPException(400, error_detail(e))
         try:
             jobs.move_favourite(user.id, run, line, folder)
         except KeyError:
@@ -1074,9 +1094,9 @@ def create_app(data_dir: str, token: Optional[str] = None, port: int = PORT, sta
             raise HTTPException(404, "no such folder")
         except QuotaExceeded as e:  # a ValueError too
             refused(user, "folders", str(e), e.status)
-            raise HTTPException(e.status, str(e))
+            raise HTTPException(e.status, error_detail(e))
         except ValueError as e:
-            raise HTTPException(400, str(e))
+            raise HTTPException(400, error_detail(e))
         record("favourite_folder", user, str(folder), {"do": "add", "parent": parent})
         return {"id": folder}
 
@@ -1092,7 +1112,7 @@ def create_app(data_dir: str, token: Optional[str] = None, port: int = PORT, sta
         except KeyError:
             raise HTTPException(404, "no such folder")
         except ValueError as e:
-            raise HTTPException(400, str(e))
+            raise HTTPException(400, error_detail(e))
         record("favourite_folder", user, str(folder), {"do": "change", **({"rename": True} if name else {}),
                                                        **({"parent": parent} if "parent" in body else {})})
         return {"ok": True}
@@ -1116,7 +1136,7 @@ def create_app(data_dir: str, token: Optional[str] = None, port: int = PORT, sta
         try:
             category, text, context = checked_report(body)
         except ValueError as e:
-            raise HTTPException(400, str(e))
+            raise HTTPException(400, error_detail(e))
         if context.get("run") and not may_open(user, context["run"]):
             context.pop("run")
             context.pop("line", None)
@@ -1291,7 +1311,7 @@ def create_app(data_dir: str, token: Optional[str] = None, port: int = PORT, sta
         if public:
             problem = await run_in_threadpool(profile_problem, os.path.join(runs_dir, run), points, user.admin)
             if problem:
-                raise HTTPException(400, problem)
+                raise HTTPException(400, problem.detail())
         await run_in_threadpool(within_rate, "profile", user)
         return await quick("profile", {"run": run, "line": points}, user, request)  # one at a time in the quick lane
 
@@ -1433,8 +1453,8 @@ def privacy_page(contact: str, keep_events_days: Optional[float]) -> str:
          f"Signing in uses a second, signed cookie for at most {ac.OAUTH_SECONDS // 60} minutes, and leaves a third "
          f"one ({WELCOME_COOKIE}, no data) for at most {WELCOME_SECONDS // 60} minutes, which only tells the page to "
          f"show its notice once."),
-        ("Searches", f"What you search (the place, the drawn or loaded area, the options), its title and status, "
-         f"and its messages and progress. Why: to run the search and show it to you. The messages are deleted "
+        ("Searches", f"What you search (the place, the drawn or loaded area, the options), its title and status "
+         f"(with the reason when it failed), and its messages and progress. Why: to run the search and show it to you. The messages are deleted "
          f"{events} after the search ended; the search itself stays in your queue."),
         ("Runs", "The results of your searches (lines, maps, parameters, the place's name from OpenStreetMap) and "
          "their size. Kept until you delete them in Runs. A share link is stored as a SHA-256 hash only; it can be "

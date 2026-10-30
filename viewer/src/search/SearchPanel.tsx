@@ -8,7 +8,7 @@ import { useState } from "preact/hooks";
 import type { Field as SchemaField, Preset, Schema, SearchRequest, Usage, UsageItem } from "../app/api";
 import { parseValue, withValue } from "../app/request";
 import type { PlaceMap } from "../app/PlaceMap";
-import { label, t } from "../i18n";
+import { errorText, label, t } from "../i18n";
 import { Button, Field, Progress, Range, RangePair, Segmented, StatusChip, type Option } from "../ui/components";
 import { Icon } from "../ui/icons";
 import { PlaceBox } from "./PlaceBox";
@@ -237,7 +237,7 @@ function Setting({s, field}: {s: SearchState; field: SchemaField}) {
                                       setTimeout(() => document.getElementById(id)?.focus());
                                     }}>
              reset</button> : undefined}
-           help={problem && <span class="s-problem">{problem}.</span>}>
+           help={problem && <span class="s-problem">{problem}</span>}>
       <ParamInput id={id} field={field} value={s.values[field.name]} invalid={!!problem}
                   onChange={(v) => s.setValue(field.name, v)} />
     </Field>
@@ -301,7 +301,8 @@ export function EstimateBar({search: s, usage, layout = "box", label}:
     {estimate.tiles > 1 && <div class="s-stat"><b>{estimate.tiles}</b><span>tiles</span></div>}
   </>;
   const warnings = estimate ? [...estimate.reasons,
-    ...estimate.messages.filter(([kind]) => kind === "warning").map(([, text]) => text)] : [];
+    ...estimate.messages.filter(([kind]) => kind === "warning")
+      .map(([, text, info]) => info ? errorText(info, text) : text)] : [];
   const statusLine = <div class={cx("s-est-line", `s-${state}`)} role="status">
     <Icon name={state === "ok" ? "check" : state === "idle" ? (status === "incomplete" ? "info" : "clock") : "warn"} />
     <span class="u-grow">{line}</span>

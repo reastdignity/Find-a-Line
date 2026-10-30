@@ -235,7 +235,7 @@ def test_search_follows_into_results(tmp_path, monkeypatch):
     r = _result_of(dom)
     assert "timeout" not in r, r
     assert r["rail"][:3] == ["Search", "My searches", "Favourites"] and "OSM" in r["rail"], r
-    assert r["preset"] == "Typical highline" and r["estimateFirst"].startswith("Click the map"), r
+    assert r["preset"] == "Typical highline" and r["estimateFirst"].startswith("Select the centre of the search"), r
     f = r["following"]
     assert f["job"] and f["card"] == f["job"] and f["status"] == "Waiting" and not f["findLines"], r
     assert f["searchVisible"], r
@@ -253,7 +253,7 @@ def test_search_follows_into_results(tmp_path, monkeypatch):
     assert "?ui=b&theme=light#run=" in r["copied"] and "&line=" in r["copied"], r
     assert r["favs"] == 1 and r["favHash"] == "#favourites" and r["favOpened"], r
     assert r["back"] == "#favourites" and r["forward"] and r["pillBack"] == "#favourites", r
-    assert r["newSearch"][0].startswith("Click the map") and r["newSearch"][1] == "Typical highline", r
+    assert r["newSearch"][0].startswith("Select the centre of the search") and r["newSearch"][1] == "Typical highline", r
     assert r["edited"][1] == "Typical highline" and r["edited"][2], r  # the job's values, a new start
     assert _violations(dom) == []
 

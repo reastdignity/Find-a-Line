@@ -422,3 +422,21 @@ console.log(JSON.stringify({json.dumps(cases)}.map(([key, params]) =>
     assert found == python
     assert python[:3] == ["1 line in Gozo", "3 lines in Gozo", "no lines"] and python[5] == "Spot {{n}}"
     assert python[4] == "The area is 51.25 km², limit 50 km²." and python[6] == "Spot <b>"  # Preact escapes
+
+
+def test_error_texts_match_python(tmp_path):
+    """The page renders a coded error as the server writes its web text (i18n.ts errorText and
+    detailMessage, the text of app/api.ts ApiError): the field's label, plural forms, the server's
+    message for a code it does not know, and a plain text as it is."""
+    import messages
+    details = [messages.UserError.web("positive", field="radius").detail(),
+               messages.UserError.web("at_most", field="max_length", max="2000 m").detail(),
+               messages.Note("x", "coast_pieces_left_out", count=1, near=200, far=400, lat=1, lon=2).info(),
+               {"message": "A newer server's text", "code": "no_such_code", "params": {}},
+               "a plain text", None]
+    found = run_ts(tmp_path, "i18n", f"""
+console.log(JSON.stringify({json.dumps(details)}.map((d) => m.detailMessage(d, "fallback"))));""")
+    assert found == ["Search radius must be more than 0.", "Longest line: at most 2000 m on this site.",
+                     messages.Note("x", "coast_pieces_left_out", count=1, near=200, far=400, lat=1, lon=2).web_text(),
+                     "A newer server's text", "a plain text", "fallback"]
+    assert found[2].startswith("1 part of the coast is 200–400 m")

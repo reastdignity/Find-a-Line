@@ -5,7 +5,7 @@
 // (useJobs, jobProgress). ?variant=b|c picks the variant, ?theme=light|dark the theme.
 
 import { useEffect, useRef, useState } from "preact/hooks";
-import { api, type Schema } from "../app/api";
+import { api, jobError, type Schema } from "../app/api";
 import { PlaceMap } from "../app/PlaceMap";
 import { jobProgress, useJobs, type JobsState, type JobView } from "../app/useJobs";
 import { storedTheme } from "../ui/choice";
@@ -20,7 +20,7 @@ function JobCard({job}: {job: JobView}) {
   return <div class="s-job" data-job={job.id} data-status={job.status}>
     <div class="s-job-head"><StatusChip status={p.state}>{p.label}</StatusChip><b>{job.title}</b></div>
     {!p.finished && <Progress value={p.fraction} label={p.step || undefined} />}
-    {job.error && <div class="s-job-error">{job.error}</div>}
+    {job.error && <div class="s-job-error">{jobError(job)}</div>}
   </div>;
 }
 

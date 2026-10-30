@@ -18,6 +18,7 @@ from rasterio.features import rasterize
 from shapely.geometry import Point, mapping
 
 from grid import Grid
+from messages import Note, UserError
 
 Bounds = Tuple[float, float, float, float]  # left, bottom, right, top
 DRAWN = "drawn area"     # what runs record as the --area of a geometry drawn or uploaded in the web app
@@ -129,9 +130,9 @@ def box_bounds(text: str) -> Bounds:
     try:
         south, west, north, east = (float(v) for v in text.split(","))
     except ValueError:
-        raise ValueError(f"{text!r}: expected osm:<name> or S,W,N,E")
+        raise UserError(f"{text!r}: expected osm:<name> or S,W,N,E", "box_text")
     if not (-90 <= south < north <= 90 and -180 <= west < east <= 180):  # NaN fails too
-        raise ValueError(f"{text!r}: S,W,N,E with -90 <= S < N <= 90 and -180 <= W < E <= 180")
+        raise UserError(f"{text!r}: S,W,N,E with -90 <= S < N <= 90 and -180 <= W < E <= 180", "box_range")
     return south, west, north, east
 
 
@@ -144,14 +145,16 @@ def region(text: str, cache_dir: str, max_km2: Optional[float] = None):
         found = osm.search(text[4:].strip(), cache_dir)
         geometry = found and shape(found["geojson"])
         if not geometry or geometry.geom_type not in ("Polygon", "MultiPolygon"):
-            raise ValueError(f"{text}: no area of that name in OpenStreetMap")
+            raise UserError(f"{text}: no area of that name in OpenStreetMap", "osm_not_found", name=text[4:].strip())
     else:
         south, west, north, east = box_bounds(text)
         geometry = box(west, south, east, north)
     if max_km2 is not None:
         km2 = size_km2(box(*geometry.bounds))
         if km2 > max_km2:
-            raise ValueError(f"{text}: its bounding box covers {km2:.0f} km², at most {max_km2:g} km² on this site")
+            raise UserError(f"{text}: its bounding box covers {km2:.0f} km², at most {max_km2:g} km² on this site",
+                            "region_too_large", name=text[4:].strip() if text.startswith("osm:") else text,
+                            km2=round(km2), max=max_km2)
     return geometry
 
 
@@ -159,14 +162,14 @@ def _buffered(geometries, metres: float, within=None):
     """Union of the geometries grown by `metres`, clipped to `within` (all WGS84)."""
     from shapely.ops import unary_union
     if not geometries:
-        raise ValueError("nothing found to build the area from")
+        raise UserError("nothing found to build the area from", "area_nothing")
     union = unary_union(geometries)
     crs = _metric(within if within is not None else union)
     grown = project(union, "EPSG:4326", crs).buffer(metres)
     if within is not None:
         grown = grown.intersection(project(within, "EPSG:4326", crs))
     if grown.is_empty:
-        raise ValueError("the area is empty")
+        raise UserError("the area is empty", "area_empty")
     return project(grown, crs, "EPSG:4326")
 
 
@@ -207,16 +210,19 @@ def _near(theme: str, limit, reach: float, buffer: float, cache_dir: str):
         if not rest.is_empty:
             beyond.append(rest)
     if not near:
-        raise ValueError(f"no {theme} within {reach:g} m of the area")
+        raise UserError(f"no {theme} within {reach:g} m of the area",
+                        "no_coast_near" if theme == "coastline" else "no_cliffs_near", reach=reach)
     grown = unary_union(near).buffer(buffer)
     notes = []
     if beyond:
         pieces = list(getattr(unary_union(beyond), "geoms", [unary_union(beyond)]))
         where = project(pieces[0].representative_point(), crs, "EPSG:4326")
         name = "coastline" if theme == "coastline" else "cliffs and crags"
-        notes.append(f"{len(pieces)} piece(s) of {name} lie {reach:g}-{2 * reach:g} m from the area and are left out "
-                     f"(e.g. at {where.y:.5f}, {where.x:.5f}): a longer --max-length or a box as --within "
-                     f"takes them in")
+        notes.append(Note(f"{len(pieces)} piece(s) of {name} lie {reach:g}-{2 * reach:g} m from the area and are "
+                          f"left out (e.g. at {where.y:.5f}, {where.x:.5f}): a longer --max-length or a box as "
+                          f"--within takes them in", "coast_pieces_left_out" if theme == "coastline" else
+                          "cliff_pieces_left_out", count=len(pieces), near=reach, far=2 * reach,
+                          lat=round(where.y, 5), lon=round(where.x, 5)))
     return project(grown, crs, "EPSG:4326"), notes
 
 
@@ -229,7 +235,7 @@ def from_shapes(shapes: list, buffer: float, limit=None, label: str = "the area"
     parts = areas + ([_buffered(others, buffer)] if others else [])
     geometry = unary_union(parts) if parts else None
     if geometry is None or geometry.is_empty:
-        raise ValueError(f"{label}: no geometries")
+        raise UserError(f"{label}: no geometries", "area_no_shapes")
     if limit is not None:
         geometry = geometry.intersection(limit)
     return geometry
@@ -245,7 +251,7 @@ def check_geometry(value) -> None:
         item, depth = stack.pop()
         nodes += 1
         if depth > MAX_DEPTH or nodes > MAX_NODES:
-            raise ValueError("the geometry is nested too deeply or too large")
+            raise UserError("the geometry is nested too deeply or too large", "geometry_too_large")
         if isinstance(item, dict):
             stack.extend((v, depth + 1) for v in item.values())
         elif isinstance(item, list):
@@ -254,7 +260,8 @@ def check_geometry(value) -> None:
             else:
                 stack.extend((v, depth + 1) for v in item)
     if positions > MAX_VERTICES:
-        raise ValueError(f"the geometry has {positions} vertices, at most {MAX_VERTICES} are allowed")
+        raise UserError(f"the geometry has {positions} vertices, at most {MAX_VERTICES} are allowed",
+                        "geometry_vertices", n=positions, max=MAX_VERTICES)
     import geojson_pydantic as gj
     from geojson_pydantic.geometries import Geometry
     from pydantic import TypeAdapter, ValidationError
@@ -264,17 +271,20 @@ def check_geometry(value) -> None:
         TypeAdapter(model).validate_python(value)
     except ValidationError as e:
         error = e.errors()[0]
-        raise ValueError(f"the geometry is not GeoJSON: {'.'.join(map(str, error['loc']))}: {error['msg']}") from None
+        where = '.'.join(map(str, error['loc']))
+        raise UserError(f"the geometry is not GeoJSON: {where}: {error['msg']}", "geometry_not_geojson") from None
     shapes = geometry_shapes(value)
     if not shapes:
-        raise ValueError("the geometry is empty")
+        raise UserError("the geometry is empty", "geometry_empty")
     coords = np.vstack([shapely.get_coordinates(g) for g in shapes])
     if not (np.isfinite(coords).all() and (np.abs(coords[:, 0]) <= 180).all() and (np.abs(coords[:, 1]) <= 90).all()):
-        raise ValueError("the geometry needs finite coordinates: longitude -180 to 180, latitude -90 to 90")
+        raise UserError("the geometry needs finite coordinates: longitude -180 to 180, latitude -90 to 90",
+                        "geometry_coordinates")
     from shapely.validation import explain_validity
     for g in shapes:
         if not g.is_valid:
-            raise ValueError(f"the geometry is not a valid shape: {explain_validity(g)}")
+            raise UserError(f"the geometry is not a valid shape: {explain_validity(g)}", "geometry_invalid",
+                            reason=explain_validity(g))
 
 
 def geometry_shapes(value) -> list:
@@ -306,7 +316,7 @@ def from_geometry(value, buffer: float, within: str, cache_dir: str,
     limit = region(within, cache_dir, max_region_km2) if within else None
     geometry = from_shapes(geometry_shapes(value), buffer, limit, DRAWN)
     if geometry.is_empty:
-        raise ValueError(f"{DRAWN}: the area is empty")
+        raise UserError(f"{DRAWN}: the area is empty", "area_empty")
     area = Polygon(geometry)
     area.spec = {"area": DRAWN, "buffer": buffer, "within": within}
     area.notes = []
@@ -332,7 +342,7 @@ def from_spec(spec: str, buffer: float, within: str, cache_dir: str, reach: floa
     notes = []
     if spec in ("coast", "cliffs"):
         if limit is None:
-            raise ValueError(f"--area {spec} needs --within (osm:<name> or S,W,N,E)")
+            raise UserError(f"--area {spec} needs --within (osm:<name> or S,W,N,E)", "within_missing")
         theme = "coastline" if spec == "coast" else "cliff"
         if within.startswith("osm:"):
             geometry, notes = _near(theme, limit, reach, buffer, cache_dir)
@@ -346,9 +356,9 @@ def from_spec(spec: str, buffer: float, within: str, cache_dir: str, reach: floa
     elif os.path.exists(spec):
         geometry = from_shapes(_read_file(spec), buffer, limit, spec)
     else:
-        raise ValueError(f"--area {spec!r}: expected coast, cliffs, osm:<name> or an existing file")
+        raise UserError(f"--area {spec!r}: expected coast, cliffs, osm:<name> or an existing file", "bad_area")
     if geometry.is_empty:
-        raise ValueError(f"--area {spec}: the area is empty")
+        raise UserError(f"--area {spec}: the area is empty", "area_empty")
     area = Polygon(geometry)
     area.spec = {"area": spec, "buffer": buffer, "within": within}
     area.notes = notes

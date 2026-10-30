@@ -954,7 +954,9 @@ def test_tiers_and_quotas(tmp_path, settings, account_settings, providers, monke
     assert not downloads & set(fields_of(a)) and downloads <= set(fields_of(unlimited)), fields_of(a).keys()
     for name, value in {"source": "geoportal", "water": "off", "ortho": "never", "fill_gaps": "off"}.items():
         refused = people["b"].post("/api/jobs", json={"params": {**point, name: value}})  # not a's rate
-        assert refused.status_code == 400 and "not allowed on this site" in refused.text, (name, refused.text)
+        detail = refused.json()["detail"]
+        assert refused.status_code == 400 and detail["code"] == "not_allowed", (name, refused.text)
+        assert detail["params"] == {"field": name} and "cannot be changed on this site" in detail["message"]
     assert a.post("/api/jobs", json={"params": {**point, "threads": 2}}).status_code == 400
     assert a.post("/api/jobs", json={"params": {**point, "max_length": 5000}}).status_code == 400
     assert unlimited.post("/api/jobs", json={"params": {**point, "source": "nasadem"}}).status_code == 400
@@ -986,7 +988,7 @@ def test_tiers_and_quotas(tmp_path, settings, account_settings, providers, monke
     for job in jobs.all(a.user_id):
         a.delete(f"/api/jobs/{job['id']}")
     day = a.post("/api/jobs", json=request)
-    assert day.status_code == 429 and "4 searches in 24 hours" in day.text
+    assert day.status_code == 429 and day.json()["detail"]["params"] == {"max": 4}
     assert unlimited.delete(f"/api/jobs/{big.json()['id']}").status_code == 200
     assert unlimited.post(f"/api/jobs/{big.json()['id']}/again").status_code == 200
 
@@ -994,7 +996,7 @@ def test_tiers_and_quotas(tmp_path, settings, account_settings, providers, monke
     b = people["b"]
     jobs.add_run("big-run", b.user_id, int(6e9))
     refused = b.post("/api/jobs", json=request)
-    assert refused.status_code == 429 and "delete some in Runs" in refused.text
+    assert refused.status_code == 429 and refused.json()["detail"]["code"] == "quota_runs_gb"
     jobs.delete_run("big-run", str(tmp_path / "runs"))
     jobs.use(b.user_id, "km2", 250, limits.km2_day_max)
     refused = b.post("/api/jobs", json=request)
@@ -1152,7 +1154,7 @@ def test_favourites(run_people, tmp_path, monkeypatch):
 
     monkeypatch.setattr(jb, "FAVOURITES_MAX", 1)
     refused = mark(a, RUN_A, OTHER_LINE)
-    assert refused.status_code == 409 and "at most 1 favourite" in refused.text
+    assert refused.status_code == 409 and refused.json()["detail"]["code"] == "favourites_max"
     assert mark(a, RUN_A, LINE).status_code == 200  # marked already: no new row
     log = audit.Audit(str(tmp_path)).entries()
     assert {"line": LINE, "favourite": True} in [e["detail"] for e in log if e["action"] == "favourite"
@@ -1222,7 +1224,8 @@ def test_favourite_folders(run_people, tmp_path, monkeypatch):
 
     monkeypatch.setattr(jb, "FOLDERS_MAX", 1)
     refused = add(a, "One more")
-    assert refused.status_code == 409 and "at most 1 folders" in refused.text
+    assert refused.status_code == 409 and refused.json()["detail"] == {
+        "message": "Folders: at most 1. Delete some first.", "code": "folders_max", "params": {"max": 1}}
     log = [e for e in audit.Audit(str(tmp_path)).entries(ids["a"]) if e["action"] == "favourite_folder"]
     assert [e["detail"]["do"] for e in log].count("add") == 3 + jb.FOLDER_DEPTH_MAX - 1
     assert {"do": "delete", "folders": jb.FOLDER_DEPTH_MAX + 1, "favourites": 1} in [e["detail"] for e in log]
@@ -1708,8 +1711,45 @@ def test_jobs_database_gets_reports(tmp_path):
     report = jobs.add_report(3, "results", "none found", {"page": "#home"})
     assert [(r["id"], r["status"], r["context"]) for r in jobs.reports()] == [(report, "open", {"page": "#home"})]
     db = sqlite3.connect(tmp_path / "jobs.sqlite")
-    assert db.execute("PRAGMA user_version").fetchone()[0] == len(jb.MIGRATIONS) == 10
+    assert db.execute("PRAGMA user_version").fetchone()[0] == len(jb.MIGRATIONS) >= 10
     db.close()
+
+
+def test_jobs_database_gets_error_codes(tmp_path):
+    """jobs.sqlite of version 10 gets the code of a job's error (error_info): NULL for the jobs of
+    before, which keep their text; a coded error is stored as its web text with its code and
+    parameters (the public site's without server paths), a text without a code, none for a job done."""
+    import sqlite3
+
+    import cache
+    import jobs as jb
+    import search
+    db = sqlite3.connect(tmp_path / "jobs.sqlite")
+    cache.migrate(db, jb.MIGRATIONS[:10])
+    db.execute("INSERT INTO jobs (id, created, status, title, error) VALUES ('old', '', 'failed', 'Old', 'it broke')")
+    db.commit()
+    db.close()
+    jobs = jb.Jobs(str(tmp_path), public=True)
+    db = sqlite3.connect(tmp_path / "jobs.sqlite")
+    assert db.execute("PRAGMA user_version").fetchone()[0] == len(jb.MIGRATIONS) == 11
+    db.close()
+    assert [(j["id"], j["error"], j["error_info"]) for j in jobs.all()] == [("old", "it broke", None)]
+    job = jobs.add({"params": {}, "geometry": None}, "New")
+    error = search.SearchError("Not enough steep terrain. Try a lower --slope-threshold", "no_steep_terrain")
+    assert jobs.set(job, "failed", error=error)
+    stored = jobs.get(job)
+    assert stored["error"] == messages.text("error.no_steep_terrain") and "--" not in stored["error"]
+    assert next(j for j in jobs.all() if j["id"] == job)["error_info"] == {"code": "no_steep_terrain", "params": {}}
+    status = jobs.job_events(job)["events"][-1]["data"]
+    assert status["error_info"] == {"code": "no_steep_terrain", "params": {}}, status
+    folder = str(tmp_path / "cache" / "x.tif")
+    jobs.set(job, "failed", error=search.SearchError(f"Download failed: {folder}", "download_failed", reason=folder))
+    info = next(j for j in jobs.all() if j["id"] == job)["error_info"]
+    assert info["code"] == "download_failed" and str(tmp_path) not in json.dumps(info), info
+    jobs.set(job, "failed", error=ValueError("a text"))
+    assert (jobs.get(job)["error"], jobs.get(job)["error_info"]) == ("a text", None)
+    jobs.set(job, "done", error=None)
+    assert (jobs.get(job)["error"], jobs.get(job)["error_info"]) == (None, None)
 
 
 def test_local_headers(tmp_path):
@@ -1738,7 +1778,7 @@ def test_public_time_limits_and_one_waiting_estimate(tmp_path, settings, account
     with pytest.raises(QuotaExceeded):
         jobs.quick_add("estimate", {}, people["a"].user_id, one_waiting=True)
     answer = people["a"].post("/api/estimate", json={"params": POINT})
-    assert answer.status_code == 429 and "still waiting" in answer.text
+    assert answer.status_code == 429 and answer.json()["detail"]["code"] == "quick_waiting"
     jobs.quick_add("estimate", {}, None, one_waiting=True)  # the local app: no such rule
     jobs.quick_add("estimate", {}, people["b"].user_id, one_waiting=True)
     for client in people.values():
@@ -1778,10 +1818,10 @@ def test_new_jobs_rate_and_quota_before_validation(tmp_path, settings, account_s
     validated = []
     monkeypatch.setattr(web, "search_params", lambda request: validated.append(request) or jb.search_params(request))
     answer = a.post("/api/jobs", json={"params": {}, "geometry": FAR_APART})
-    assert answer.status_code == 429 and "at most 1 of your searches" in answer.text and validated == []
+    assert answer.status_code == 429 and answer.json()["detail"]["code"] == "quota_active" and validated == []
     assert [a.post("/api/jobs", json={"params": POINT}).status_code for _ in range(2)] == [429, 429]
     answer = a.post("/api/jobs", json={"params": POINT})
-    assert answer.status_code == 429 and "too many searches started" in answer.text
+    assert answer.status_code == 429 and answer.json()["detail"]["code"] == "rate_job"
     assert b.post("/api/jobs", json={"params": POINT}).status_code == 200  # their own rate
     assert {people["unlimited"].post("/api/jobs", json={"params": POINT}).status_code for _ in range(4)} == {200}
     for client in people.values():
@@ -2100,7 +2140,8 @@ def test_disk_and_download_quota_in_the_worker(tmp_path, monkeypatch):
     assert phase(job, "download", Limits())["status"] == "ready"
     monkeypatch.setattr(jb.shutil, "disk_usage", lambda path: Disk())
     result = phase(job, "compute", short)
-    assert result["status"] == "failed" and "before its computing" in result["error"]
+    assert result["status"] == "failed" and result["error"] == messages.text("error.disk_full_search")
+    assert json.loads(result["error_info"]) == {"code": "disk_full_search", "params": {}}
     monkeypatch.setattr(jb.shutil, "disk_usage", real)
 
     monkeypatch.setattr(search, "estimate_search", lambda plan: search.Estimate(download_mb=600, work_gb=0))
@@ -2108,7 +2149,7 @@ def test_disk_and_download_quota_in_the_worker(tmp_path, monkeypatch):
     first, second = jobs.add(clip, "first", user_id=8), jobs.add(clip, "second", user_id=8)
     assert phase(first, "download", quota)["status"] == "ready"
     result = phase(second, "download", quota)
-    assert result["status"] == "failed" and "MB of downloads" in result["error"], result
+    assert result["status"] == "failed" and "MB of data: you used 600 of 1000 MB" in result["error"], result
     assert phase(jobs.add(clip, "another user", user_id=9), "download", quota)["status"] == "ready"
 
     broken = jobs.add({"geometry": None}, "broken", user_id=8)  # no params: an unexpected KeyError
@@ -2196,11 +2237,15 @@ def test_request_limits_on_validated_values(tmp_path, settings, account_settings
     a = _clients(app, tmp_path, account_settings, ("a",))["a"]
     for path in ("/api/jobs", "/api/estimate"):
         answer = a.post(path, json={"params": {**POINT, "max_length": spelling}})
-        assert answer.status_code == 400 and "max_length: at most 2000" in answer.text, (path, answer.text)
+        assert answer.status_code == 400 and answer.json()["detail"] == {
+            "message": "Longest line: at most 2000 m on this site.", "code": "at_most",
+            "params": {"field": "max_length", "max": "2000 m"}}, (path, answer.text)
         answer = a.post(path, json={"params": {**POINT, "resolution": "1_e0", "slope_threshold": 1}})
-        assert answer.status_code == 400 and "slope_threshold: at least 30" in answer.text, (path, answer.text)
-        answer = a.post(path, json={"params": {**POINT, "max_length": "5,000"}})
-        assert answer.status_code == 400 and "max_length" in answer.text
+        assert answer.status_code == 400 and answer.json()["detail"]["message"] ==             "Anchor steepness: at least 30° on this site.", (path, answer.text)
+        answer = a.post(path, json={"params": {**POINT, "max_length": "5,000"}})  # pydantic cannot read it
+        assert answer.status_code == 400 and answer.json()["detail"] == {
+            "message": "Longest line: enter a number.", "code": "not_a_number",
+            "params": {"field": "max_length"}}, answer.text
     assert app.state.jobs.all() == []
     a.close()
 
@@ -2239,7 +2284,7 @@ def test_worker_checks_the_request_limits(tmp_path, monkeypatch):
     jobs.claim("queued", "downloading", "w1")
     _phase_in_this_process(monkeypatch)
     jb.run_phase(str(tmp_path), job, "download", limits, True)
-    assert jobs.get(job)["status"] == "failed" and "drop_radius: at most 1000" in jobs.get(job)["error"]
+    assert jobs.get(job)["status"] == "failed" and "Drop: measured within: at most 1000 m" in jobs.get(job)["error"]
 
 
 DATA = os.path.join(REPO, "tests", "data")

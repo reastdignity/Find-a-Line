@@ -508,7 +508,7 @@ def test_labels_topics_and_presets():
     assert offered["custom"]["values"] is None
     tight = {p["id"]: p for p in web.presets(Limits(max_length_max=200))}
     assert tight["typical"]["available"] and not tight["long"]["available"]
-    assert tight["long"]["reason"] == "max_length: at most 200 on this site"
+    assert tight["long"]["reason"] == "Longest line: at most 200 m on this site."
     fields = {f["name"]: f for f in web.schema()}
     assert offered["short"]["label"] == "Short & low" and fields["nmpt"]["choice_labels"]["off"] == "Do not check"
     assert fields["max_anchor_diff_m"]["label"] == "Anchor height difference"
@@ -533,3 +533,93 @@ def test_viewer_keys_in_catalogue():
     assert "ui.try" in used
     missing = [k for k in used if not {k, f"{k}_one", f"{k}_other"} & set(texts)]
     assert not missing, missing
+
+
+def _error_codes() -> dict:
+    """The codes of the coded errors and notes of the server's modules (messages.UserError, Note,
+    ServiceError, search.SearchError, jobs.QuotaExceeded): {code: "file:line"}, read from the source."""
+    import ast
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    kinds = {"rate_": ["estimate", "profile", "place", "report", "job"],  # web.RATE_NAMES
+             "quota_use_": ["km2", "nominatim", "download_mb"]}           # jobs.USAGE
+    position = {"UserError": 1, "SearchError": 1, "Note": 1, "ServiceError": 1, "QuotaExceeded": 2}
+
+    def literals(node) -> list:
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            return [node.value]
+        if isinstance(node, ast.IfExp):
+            return literals(node.body) + literals(node.orelse)
+        if isinstance(node, ast.JoinedStr) and isinstance(node.values[0], ast.Constant):
+            return [node.values[0].value + kind for kind in kinds[node.values[0].value]]
+        return []
+
+    found = {}
+    for name in sorted(os.listdir(root)):
+        if not name.endswith(".py"):
+            continue
+        with open(os.path.join(root, name), encoding="utf-8") as f:
+            tree = ast.parse(f.read())
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            func = node.func
+            called = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", None)
+            web = called == "web" and isinstance(func, ast.Attribute)
+            of = called == "of" and isinstance(func, ast.Attribute)  # SearchError.of(error, text, code)
+            if web or of:
+                called = func.value.attr if isinstance(func.value, ast.Attribute) else getattr(func.value, "id", "")
+            if called == "E":  # web.py's short name of messages.UserError
+                called = "UserError"
+            if called not in position:
+                continue
+            code = next((k.value for k in node.keywords if k.arg == "code"), None)
+            index = 0 if web else 2 if of else position[called]
+            if code is None and len(node.args) > index:
+                code = node.args[index]
+            for value in literals(code) if code is not None else []:
+                found[value] = f"{name}:{node.lineno}"
+    import messages
+    for value in set(messages._PYDANTIC.values()) | {"invalid_request"}:
+        found[value] = "messages.py"
+    return found
+
+
+def test_error_codes_in_catalogue():
+    """Every code of a coded error or note has its text in the message catalogue ("error.<code>", or
+    its plural forms), and no text of the web names a command-line option or a field's snake_case name."""
+    import messages
+    import params as pm
+    texts = messages.catalogue()
+    codes = _error_codes()
+    assert {"lat_lon_range", "at_most", "too_many_lines", "quota_use_km2", "coast_pieces_left_out", "rate_job",
+            "no_worker", "opentopo_key", "not_a_number", "download_failed", "no_source"} <= set(codes), sorted(codes)
+    missing = [f"{c} ({w})" for c, w in codes.items()
+               if not {f"error.{c}", f"error.{c}_one", f"error.{c}_other"} & set(texts)]
+    assert not missing, missing
+    names = [n for n in list(pm.SearchParams.model_fields) + list(pm.CliOptions.model_fields) if "_" in n]
+    for key, value in texts.items():
+        if key.startswith("error."):
+            assert "--" not in value and not [n for n in names if n in value], (key, value)
+
+
+def test_coded_errors():
+    """A coded error keeps the command line's text as str() and gives the web its own, with the field's
+    label; pydantic's errors are unwrapped: a validator's coded error, or a code of their type."""
+    import messages
+    import params as pm
+    from pydantic import ValidationError
+    with pytest.raises(ValidationError) as error:
+        pm.SearchParams(lat=50, lon=19, radius=0)
+    coded = messages.user_error(error.value)
+    assert str(coded) == "--radius must be positive" and coded.code == "positive"
+    assert coded.detail() == {"message": "Search radius must be more than 0.", "code": "positive",
+                              "params": {"field": "radius"}}
+    with pytest.raises(ValidationError) as error:
+        pm.SearchParams(lat=50, lon=19, threads="many")
+    assert messages.user_error(error.value).detail() == {
+        "message": "Threads: enter a whole number.", "code": "not_whole_number", "params": {"field": "threads"}}
+    assert messages.user_error(ValueError("plain")) is None
+    note = messages.Note("1 piece(s) ... --max-length", "coast_pieces_left_out", count=3, near=200, far=400,
+                         lat=1.5, lon=2.5)
+    assert str(note).endswith("--max-length") and note.web_text().startswith("3 parts of the coast are 200–400 m")
+    assert messages.quantity("slope_threshold", 45.0) == "45°" and messages.quantity("ortho_detail", 5) == "5"

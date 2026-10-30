@@ -4,6 +4,7 @@
 import type { FeatureCollection } from "geojson";
 import type { Field, SearchRequest } from "./api";
 import type { Mode } from "./PlaceMap";
+import { quantity, t } from "../i18n";
 
 /** Fields set by the "Where" part of the form, not in the parameter groups. */
 export const PLACE_FIELDS = new Set(["lat", "lon", "northing", "easting", "area", "buffer", "within", "radius", "name"]);
@@ -58,22 +59,22 @@ export function buildRequest(place: Place, values: Record<string, unknown>, draw
   if (place.name.trim()) params.name = place.name.trim();
   let geometry = null;
   if (place.mode === "point") {
-    if (!place.point) return "Click the map to set the centre of the search.";
+    if (!place.point) return t("error.no_centre");
     Object.assign(params, {lat: place.point[0], lon: place.point[1], radius: place.radius});
   } else if (place.mode === "draw") {
     geometry = drawn;
-    if (!geometry) return "Draw a polygon or a rectangle with the tools on the left of the map.";
+    if (!geometry) return t("error.need_drawing");
     params.buffer = place.buffer;
   } else if (place.mode === "file") {
-    if (!file) return "Choose a GeoJSON, KML or GPX file.";
+    if (!file) return t("error.need_file");
     geometry = file.areas;
     params.buffer = place.buffer;
   } else {
     if (place.preset === "osm") {
-      if (!place.osmName.trim()) return "Give the name of an OpenStreetMap area.";
+      if (!place.osmName.trim()) return t("error.need_osm_name");
       params.area = "osm:" + place.osmName.trim();
     } else {
-      if (!place.within.trim()) return "Coast and cliffs need a limit: an OSM name or the map view.";
+      if (!place.within.trim()) return t("error.within_missing");
       params.area = place.preset;
     }
     params.buffer = place.buffer;
@@ -96,12 +97,14 @@ export function withValue(values: Record<string, unknown>, field: Field, value: 
   return next;
 }
 
-/** What is wrong with a value under the field's bounds (the site's limits), or "". */
+/** What is wrong with a value under the field's bounds (the site's limits), or "": the texts of the
+ *  server's errors (error.not_a_number, error.at_least, ...), with the field's label. */
 export function valueProblem(field: Field, value: unknown): string {
   if (value === null || value === undefined || typeof value !== "number") return "";
-  if (Number.isNaN(value)) return "a number";
-  if (field.type === "integer" && !Number.isInteger(value)) return "a whole number";
-  if (field.min !== null && value < field.min) return `at least ${field.min}`;
-  if (field.max !== null && value > field.max) return `at most ${field.max}`;
+  const label = field.label || field.name;
+  if (Number.isNaN(value)) return t("error.not_a_number", {label});
+  if (field.type === "integer" && !Number.isInteger(value)) return t("error.not_whole_number", {label});
+  if (field.min !== null && value < field.min) return t("error.at_least", {label, min: quantity(field.name, field.min)});
+  if (field.max !== null && value > field.max) return t("error.at_most", {label, max: quantity(field.name, field.max)});
   return "";
 }

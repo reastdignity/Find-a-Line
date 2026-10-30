@@ -9,7 +9,8 @@ import { LinkField, Popover } from "../../result/view";
 import { forgetRun } from "../../result/load";
 import { canReport, openReport } from "../../report";
 import { UsageMeters, type UsageState } from "../../search";
-import { api, type RunListed } from "../api";
+import { api, jobError, user, type RunListed } from "../api";
+import { errorText } from "../../i18n";
 import { beingSaved, jobProgress, type JobsState, type JobView } from "../useJobs";
 import { editHash, go, runHash } from "./route";
 import { Thumb, THUMB_CREDIT, type ThumbSource } from "./Thumb";
@@ -67,7 +68,7 @@ function stateOf(card: Card): CardState {
     const p = jobProgress(job);
     if (p.state === "failed") {
       return {status: "failed", chip: job.status === "cancelled" ? "cancelled" : "failed", unfinished: false,
-              meta: job.error || (job.status === "cancelled" ? "Cancelled" : "Failed"), fraction: null, step: ""};
+              meta: jobError(job) || (job.status === "cancelled" ? "Cancelled" : "Failed"), fraction: null, step: ""};
     }
     const pct = p.fraction === null ? "" : ` · ${Math.round(p.fraction * 100)}%`;
     return {status: p.state === "running" ? "running" : "waiting", unfinished: true,
@@ -218,9 +219,8 @@ export function Home({jobs, runs, usage, highlight, wide}: HomeProps) {
 
   return <div class="c-home">
     <div class="c-home-main">
-      {!jobs.worker && <p class="c-error c-no-worker" role="alert">The worker is not running: searches wait in the
-        queue until it starts (<code>findaline.py worker</code>, or <code>findaline.py web</code> without
-        --no-worker).</p>}
+      {!jobs.worker && <p class="c-error c-no-worker" role="alert">
+        {errorText({code: user.local ? "no_worker_local" : "no_worker"})}</p>}
       {jobs.error && <p class="c-error">{jobs.error}</p>}
       {runs.error && <p class="c-error">{runs.error}</p>}
       <div class="c-starts">

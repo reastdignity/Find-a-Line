@@ -12,6 +12,7 @@ import pytest
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DATA = os.path.join(REPO, "tests", "data")
 sys.path.insert(0, REPO)
+import messages  # noqa: E402
 from jobs import Jobs, Scheduler  # noqa: E402
 from settings import Limits  # noqa: E402
 import web  # noqa: E402
@@ -431,7 +432,7 @@ def test_quick_lane(tmp_path, monkeypatch):
     hanging = {"params": {"area": "coast", "within": "osm:Nowhere at all"}}  # Nominatim never answers
     with TestClient(web.create_app(str(tmp_path), token=TOKEN, start_scheduler=False), base_url=LOCAL) as client:
         response = client.post("/api/estimate", json=hanging, headers=headers)
-        assert response.status_code == 503 and "worker is not running" in response.text
+        assert response.status_code == 503 and response.json()["detail"]["code"] == "no_worker_local"
     with _black_hole() as proxy:
         for key in ("HTTP_PROXY", "HTTPS_PROXY"):
             monkeypatch.setenv(key, proxy)  # the processes of the worker inherit it
@@ -448,7 +449,8 @@ def test_quick_lane(tmp_path, monkeypatch):
                 assert response.status_code == 504 and "time limit" in response.text, response.text
                 assert time.time() - started < 25  # the requests would wait 30 s for Nominatim
                 response = client.post("/api/estimate", json={"params": {"lat": 95, "lon": 19.7}}, headers=headers)
-                assert response.status_code == 400 and "lat" in response.text, response.text
+                assert response.status_code == 400 and response.json()["detail"] == {
+                    "message": messages.text("error.lat_lon_range"), "code": "lat_lon_range", "params": {}},                     response.text
                 assert scheduler.quick.pid != first
         finally:
             scheduler.stop()
@@ -1845,7 +1847,7 @@ def test_search_panel(tmp_path):
     dom = _edge_page(tmp_path, page + "?ui=kit-search&theme=light")
     r = _result_of(dom)
     assert "timeout" not in r, r
-    assert r["initial"]["estimate"].startswith("Click the map") and r["initial"]["preset"] == "Custom", r
+    assert r["initial"]["estimate"].startswith("Select the centre of the search") and r["initial"]["preset"] == "Custom", r
     point = r["point"]
     assert "50.15595, 19.75627" in point["centre"] and point["radius"] == "150 m", point
     assert point["calls"] == 1, point  # debounced: the click and the radius are one estimate
@@ -1968,7 +1970,7 @@ def test_search_panel_modes(tmp_path):
     assert r["area"]["areas"].startswith("2 separate areas (3 shapes") and r["area"]["features"] == 3, r
     assert r["area"]["buffer"] == 100, r
     assert r["osm"] == {"params": {"buffer": 100, "area": "osm:Gozo"}, "geometry": None}, r
-    assert r["cliffs"]["line"].startswith("Coast and cliffs need a limit") and not r["cliffs"]["tools"], r
+    assert r["cliffs"]["line"] == messages.text("error.within_missing") and not r["cliffs"]["tools"], r
     within = r["within"]
     assert within["area"] == "cliffs" and len(within["within"].split(",")) == 4, within  # S,W,N,E of the view
     assert "crag.kml: 2 shapes" in r["file"]["help"], r

@@ -55,6 +55,7 @@ from rasterio.windows import Window, from_bounds
 import cache
 import osm
 from grid import Grid, nad83_utm_crs, utm_crs
+from messages import ServiceError
 from progress import progress
 
 DOWNLOAD_THREADS = 4
@@ -625,8 +626,8 @@ class OpenTopographyTiles(DegreeTiles):
 
     def _url(self, lat: int, lon: int) -> str:
         if not self.api_key:
-            raise RuntimeError("an OpenTopography API key is needed: set OPENTOPOGRAPHY_API_KEY "
-                               "or use --opentopo-key (free at portal.opentopography.org)")
+            raise ServiceError("an OpenTopography API key is needed: set OPENTOPOGRAPHY_API_KEY "
+                               "or use --opentopo-key (free at portal.opentopography.org)", "opentopo_key")
         return (f"{self.API}?demtype={self.demtype}&south={lat}&north={lat + 1}&west={lon}"
                 f"&east={lon + 1}&outputFormat=GTiff&API_Key={self.api_key}")
 

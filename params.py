@@ -20,6 +20,7 @@ from pydantic_core import PydanticUndefined
 
 import settings
 import sources as src
+from messages import UserError
 
 GROUPS = {
     "centre": "where to search: a circle around --point (possibly several times), --lat/--lon or "
@@ -185,75 +186,84 @@ class SearchParams(BaseModel):
 
     @model_validator(mode="after")
     def check(self):
+        # UserError: the command line's text (option names) and the web page's (messages.py, "error.<code>")
         wgs84 = self.lat is not None or self.lon is not None
         pl1992 = self.northing is not None or self.easting is not None
         if self.area is not None and self.geometry is not None:
-            raise ValueError("give either --area or a drawn geometry, not both")
+            raise UserError("give either --area or a drawn geometry, not both", "area_and_geometry")
         if self.area is not None or self.geometry is not None:
             if wgs84 or pl1992:
-                raise ValueError("give either --area or a search centre, not both")
+                raise UserError("give either --area or a search centre, not both", "area_and_centre")
         elif wgs84 == pl1992:
-            raise ValueError("give the search centre as either --lat/--lon or --northing/--easting")
+            raise UserError("give the search centre as either --lat/--lon or --northing/--easting", "no_centre")
         if wgs84 and (self.lat is None or self.lon is None):
-            raise ValueError("both --lat and --lon are required")
+            raise UserError("both --lat and --lon are required", "lat_lon_both")
         if wgs84 and not (-90 <= self.lat <= 90 and -180 <= self.lon <= 180):
-            raise ValueError("--lat is -90 to 90 and --lon -180 to 180 degrees")
+            raise UserError("--lat is -90 to 90 and --lon -180 to 180 degrees", "lat_lon_range")
         if pl1992 and (self.northing is None or self.easting is None):
-            raise ValueError("both --northing and --easting are required")
+            raise UserError("both --northing and --easting are required", "northing_easting_both")
         if self.source not in SOURCE_CHOICES:
-            raise ValueError(f"unknown --source {self.source}")
+            raise UserError(f"unknown --source {self.source}", "unknown_source", source=self.source)
         if self.resolution is not None and self.resolution < src.MIN_RESOLUTION:
-            raise ValueError(f"--resolution must be at least {src.MIN_RESOLUTION:g} m")
-        for path in (self.elevation_file, self.surface_file):
+            raise UserError(f"--resolution must be at least {src.MIN_RESOLUTION:g} m", "resolution_min",
+                            min=src.MIN_RESOLUTION)
+        for path in (self.elevation_file, self.surface_file):  # command line only (cli_only fields)
             if path and not os.path.exists(path):
                 raise ValueError(f"file not found: {path}")
         if self.surface_file and not self.elevation_file:
             raise ValueError("--surface-file needs --elevation-file")
         if not 0 < self.min_length < self.max_length:
-            raise ValueError("--min-length must be positive and smaller than --max-length")
+            raise UserError("--min-length must be positive and smaller than --max-length", "length_range")
         if self.radius <= 0:
-            raise ValueError("--radius must be positive")
+            raise UserError("--radius must be positive", "positive", field="radius")
         if self.buffer <= 0:
-            raise ValueError("--buffer must be positive")
+            raise UserError("--buffer must be positive", "positive", field="buffer")
         if self.high_above < 0:
-            raise ValueError("--high-above cannot be negative")
+            raise UserError("--high-above cannot be negative", "not_negative", field="high_above")
         if self.min_high_share is not None and not 0 <= self.min_high_share <= 100:
-            raise ValueError("--min-high-share is a share of the length: 0 to 100")
+            raise UserError("--min-high-share is a share of the length: 0 to 100", "high_share_range")
         if self.max_wall_angle is not None and not 0 <= self.max_wall_angle <= 180:
-            raise ValueError("--max-wall-angle is 0 to 180 degrees")
-        if self.prominence_span <= 0 or self.drop_radius <= 0:
-            raise ValueError("--prominence-span and --drop-radius must be positive")
+            raise UserError("--max-wall-angle is 0 to 180 degrees", "wall_angle_range")
+        for name in ("prominence_span", "drop_radius"):
+            if getattr(self, name) <= 0:
+                raise UserError("--prominence-span and --drop-radius must be positive", "positive", field=name)
         if self.tile_size is not None and self.tile_size < 100:
-            raise ValueError("--tile-size must be at least 100 m")
-        for option, text in (("--area", self.area), ("--within", self.within)):
-            if text is not None and any(unicodedata.category(c) == "Cc" for c in text):
-                raise ValueError(f"{option}: no control characters")
+            raise UserError("--tile-size must be at least 100 m", "tile_size_min", min=100)
+        for name, value in (("area", self.area), ("within", self.within)):
+            if value is not None and any(unicodedata.category(c) == "Cc" for c in value):
+                raise UserError(f"--{name}: no control characters", "control_characters", field=name)
         if (self.within and len(self.within) > MAX_AREA_TEXT) or (
                 self.area and self.area.startswith("osm:") and len(self.area) > MAX_AREA_TEXT):
-            raise ValueError(f"--area osm:<name> and --within: at most {MAX_AREA_TEXT} characters")
+            raise UserError(f"--area osm:<name> and --within: at most {MAX_AREA_TEXT} characters", "area_text_long",
+                            n=MAX_AREA_TEXT)
         if self.within and self.area is None and self.geometry is None:
-            raise ValueError("--within limits --area; give --area too")
+            raise UserError("--within limits --area; give --area too", "within_needs_area")
         if self.within and not self.within.startswith("osm:"):
             from area import box_bounds
             box_bounds(self.within)  # a box S,W,N,E in range
         if not 0 < self.slope_threshold <= 90:
-            raise ValueError("--slope-threshold is more than 0 and at most 90 degrees")
+            raise UserError("--slope-threshold is more than 0 and at most 90 degrees", "slope_range")
         if self.ortho_detail is not None and self.ortho_detail < 0:
-            raise ValueError("--ortho-detail cannot be negative")
+            raise UserError("--ortho-detail cannot be negative", "not_negative", field="ortho_detail")
         if self.name is not None and (len(self.name) > MAX_NAME
                                       or any(unicodedata.category(c) == "Cc" for c in self.name)):
-            raise ValueError(f"--name: at most {MAX_NAME} characters, no control characters")
+            raise UserError(f"--name: at most {MAX_NAME} characters, no control characters", "name_long", n=MAX_NAME)
         if self.shore_buffer < 0:
-            raise ValueError("--shore-buffer cannot be negative")
+            raise UserError("--shore-buffer cannot be negative", "not_negative", field="shore_buffer")
         if self.group_distance is not None and self.group_distance <= 0:
-            raise ValueError("--group-distance must be positive (use --all-lines to list every line)")
+            raise UserError("--group-distance must be positive (use --all-lines to list every line)", "positive",
+                            field="group_distance")
         if self.slope_file and not os.path.exists(self.slope_file):
             raise ValueError(f"slope file not found: {self.slope_file}")
-        if min(self.max_anchor_diff, self.max_anchor_diff_m) < 0:
-            raise ValueError("--max-anchor-diff and --max-anchor-diff-m cannot be negative")
-        if min(self.pretension, self.stretch) <= 0 or min(self.webbing_weight, self.athlete_mass,
-                                                          self.fall_zone) < 0:
-            raise ValueError("rigging values must be positive")
+        for name in ("max_anchor_diff", "max_anchor_diff_m"):
+            if getattr(self, name) < 0:
+                raise UserError("--max-anchor-diff and --max-anchor-diff-m cannot be negative", "not_negative",
+                                field=name)
+        for name in ("pretension", "stretch", "webbing_weight", "athlete_mass", "fall_zone"):
+            value = getattr(self, name)
+            if value < 0 or (value == 0 and name in ("pretension", "stretch")):
+                raise UserError("rigging values must be positive", "positive" if value <= 0 and name in (
+                    "pretension", "stretch") else "not_negative", field=name)
         return self
 
 

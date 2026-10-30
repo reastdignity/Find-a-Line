@@ -3,6 +3,7 @@
 // app lists all of them in their folders (nested, as a browser's bookmarks; folders.ts). Both export
 // them as GeoJSON or CSV.
 
+import { detailText } from "./errors";
 import { lineCoords } from "./keys";
 import type { Line } from "./types";
 
@@ -80,7 +81,7 @@ async function post(url: string, body: unknown, token: string, method = "POST"):
     method, headers: {"Content-Type": "application/json", "X-Findaline-Token": token},
     body: body === undefined ? undefined : JSON.stringify(body)});
   const answer = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(typeof answer.detail === "string" ? answer.detail : response.statusText);
+  if (!response.ok) throw new Error(detailText(answer.detail, response.statusText));
   return answer;
 }
 

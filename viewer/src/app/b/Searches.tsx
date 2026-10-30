@@ -5,7 +5,8 @@
 
 import type { ComponentChildren } from "preact";
 import { useEffect, useRef, useState } from "preact/hooks";
-import { api, user, type RunListed, type Usage } from "../api";
+import { api, jobError, user, type RunListed, type Usage } from "../api";
+import { errorText } from "../../i18n";
 import { beingSaved, FINISHED, jobProgress, type JobsState, type JobView } from "../useJobs";
 import { Button, Progress, StatusChip } from "../../ui/components";
 import { Icon } from "../../ui/icons";
@@ -56,7 +57,7 @@ export function JobCard({job, run, onShow, onEdit, onCancel, actions}:
       <Progress value={p.fraction} label={<span class="u-small">{p.label}</span>} />
     </>}
     {job.status === "done" && run && <span class="u-small b-counts">{runCounts(run)}</span>}
-    {job.error && <p class="b-card-error">{job.error}</p>}
+    {job.error && <p class="b-card-error">{jobError(job)}</p>}
     <div class="b-card-acts">
       {job.status === "done" && job.run_id && onShow &&
         <Button kind="primary" icon="next" onClick={() => onShow(job.run_id!)}>Show results</Button>}
@@ -127,8 +128,7 @@ export function Searches({jobs, runs, sharing, usage, onShow, onEdit, onDeleted}
   const cancel = (id: string) => api.cancel(id).catch(() => {});
   return <div class="b-searches">
     <UsageMeters usage={usage} compact />
-    {!jobs.worker && <p class="b-no-worker" role="alert">The worker is not running: searches wait in the queue
-      until it starts (<code>findaline.py worker</code>, or <code>findaline.py web</code> without --no-worker).</p>}
+    {!jobs.worker && <p class="b-no-worker" role="alert">{errorText({code: user.local ? "no_worker_local" : "no_worker"})}</p>}
     {jobs.error && <p class="b-card-error">{jobs.error}</p>}
     {active.map((j) => <JobCard key={j.id} job={j} onCancel={cancel} />)}
     {failed.map((j) => <JobCard key={j.id} job={j} onEdit={onEdit} />)}

@@ -13,6 +13,7 @@ import { dh, drop, lowerAnchor, NO_FILTERS, passes, prominence, range as valueRa
          wallAngle, type Filters } from "./filters";
 
 const finite = (v: number) => isFinite(v) ? v : null;
+import { detailText } from "./errors";
 import { groupLines, type Group } from "./grouping";
 import { baseLayers } from "./layers";
 import { exportFavourites, loadFavourites, saveFavourite, type Exported } from "./favourites";
@@ -186,7 +187,7 @@ function start(data: RunData) {
           {headers: {"X-Findaline-Profile": "1"}})
       .then((response) => response.json().then((body) => ({ok: response.ok, body})))
       .then(({ok, body}) => {
-        if (!ok) throw new Error(body.detail || "error");
+        if (!ok) throw new Error(detailText(body.detail));
         computed.set(key, body);
         l.prof = body;
         if (note) note.innerHTML = "<i>Profile computed again from the cached data.</i>";
@@ -232,7 +233,7 @@ function start(data: RunData) {
             {headers: {"X-Findaline-Profile": "1"}})
         .then((response) => response.json().then((body) => ({ok: response.ok, body})))
         .then(({ok, body}) => {
-          if (!ok) throw new Error(body.detail || "error");
+          if (!ok) throw new Error(detailText(body.detail));
           const p = body as Profile, n = p.d.length - 1;
           if (p.z[0] === null || p.z[n] === null) throw new Error("no terrain data at a point");
           measuredLine = {lat1: a.lat, lon1: a.lng, lat2: b.lat, lon2: b.lng, x1: 0, y1: 0, x2: 0, y2: 0,

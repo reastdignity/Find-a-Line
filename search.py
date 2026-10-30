@@ -53,6 +53,7 @@ import grid as gd
 import helpers as sh
 import linesearch as ls
 import mapping as mp
+import messages
 import orthophoto as ortho
 import osm
 import runs as rn
@@ -81,8 +82,23 @@ OnEvent = Callable[[str, str], None]
 Confirm = Callable[[str, str], bool]
 
 
-class SearchError(Exception):
-    """The search cannot go on; the message is meant for the user."""
+class SearchError(messages.Coded, Exception):
+    """The search cannot go on; the message is meant for the user: str() the command line's (option
+    names), with a code the web page's text from the catalogue (messages.Coded: "error.<code>")."""
+
+    def __init__(self, text: str, code: Optional[str] = None, **params):
+        super().__init__(text)
+        self.code, self.params = code, params
+
+    @classmethod
+    def of(cls, error: BaseException, text: Optional[str] = None, code: Optional[str] = None,
+           **params) -> "SearchError":
+        """A SearchError from another error: its code and parameters if it has them (a UserError of
+        params.py, area.py, settings.py), else `code` and `params`; the text `text` or the error's."""
+        inner = messages.user_error(error)
+        if inner is not None and inner.code:
+            code, params = inner.code, inner.params
+        return cls(text if text is not None else cache.clean_error(error), code, **params)
 
 
 @dataclass
@@ -187,10 +203,12 @@ def plan_search(params: SearchParams, paths: Paths, on_event: Optional[OnEvent] 
                 area = ar.from_spec(params.area, params.buffer, params.within, paths.cache, params.max_length,
                                     region_km2)
         except (ValueError, requests.RequestException) as e:
-            raise SearchError(f"Area: {cache.clean_error(e)}")
+            raise SearchError.of(e, f"Area: {cache.clean_error(e)}", "area_failed", reason=cache.clean_error(e))
         if limits and limits.area_km2_max and ar.size_km2(area.geometry) > limits.area_km2_max:
-            raise SearchError(f"The area covers {ar.size_km2(area.geometry):.1f} km², at most "
-                              f"{limits.area_km2_max:g} km² on this site: draw a smaller one, or a smaller --buffer")
+            km2 = ar.size_km2(area.geometry)
+            raise SearchError(f"The area covers {km2:.1f} km², at most "
+                              f"{limits.area_km2_max:g} km² on this site: draw a smaller one, or a smaller --buffer",
+                              "area_too_large", km2=round(km2, 1), max=limits.area_km2_max)
         center_lat, center_lon = area.center
     else:
         if params.lat is not None:
@@ -201,14 +219,14 @@ def plan_search(params: SearchParams, paths: Paths, on_event: Optional[OnEvent] 
         km2 = math.pi * params.radius ** 2 / 1e6
         if limits and limits.area_km2_max and km2 > limits.area_km2_max:
             raise SearchError(f"The circle covers {km2:.1f} km², at most {limits.area_km2_max:g} km² on this site: "
-                              f"a smaller --radius")
+                              f"a smaller --radius", "circle_too_large", km2=round(km2, 1), max=limits.area_km2_max)
     _check_box(limits, *_area_box(area))  # before the source is chosen (its country) and any data
 
     try:
         source, reason = src.choose_source(params.source, center_lat, center_lon, paths.cache,
                                            params.elevation_file, params.surface_file)
     except ValueError as e:
-        raise SearchError(cache.clean_error(e))
+        raise SearchError.of(e, code="no_source", reason=cache.clean_error(e))
     src.OpenTopographyTiles.api_key = params.opentopo_key
     nmpt = params.nmpt_mode
     if nmpt and source.nmpt is None:
@@ -219,7 +237,8 @@ def plan_search(params: SearchParams, paths: Paths, on_event: Optional[OnEvent] 
     group_distance = params.group_distance or max(20.0, 2 * resolution)
     native = source.nmt.native_res
     if isinstance(source.nmt, src.WcsTiles) and source.nmt.fetch_res is None and resolution < native:
-        raise SearchError(f"--resolution cannot be finer than the {source.name} data ({native:g} m)")
+        raise SearchError(f"--resolution cannot be finer than the {source.name} data ({native:g} m)",
+                          "resolution_finer_than_data", source=source.name, native=native)
 
     crs = source.working_crs(center_lat, center_lon)
     x, y = ar._to(crs)(center_lon, center_lat)
@@ -241,7 +260,8 @@ def plan_search(params: SearchParams, paths: Paths, on_event: Optional[OnEvent] 
     elif max_px and grid.width * grid.height > max_px:
         raise SearchError(f"The grid would have {grid.width * grid.height / 1e6:.0f} million pixels, at most "
                           f"{limits.grid_mpx_max:g} million on this site: a smaller --radius or a coarser "
-                          f"--resolution")
+                          f"--resolution", "circle_grid_too_large", mpx=round(grid.width * grid.height / 1e6),
+                          max=limits.grid_mpx_max)
     rigging = sg.Rigging(params.pretension, params.stretch, params.webbing_weight,
                          params.athlete_mass, params.fall_zone)
     layers = [source.nmt] + ([source.nmpt] if nmpt else [])
@@ -286,7 +306,7 @@ def _check_params(limits: Optional[Limits], params: SearchParams, resolution: Op
         try:
             limits.check_params(params, resolution, allowed=False, min_resolution=src.MIN_RESOLUTION)
         except ValueError as e:
-            raise SearchError(str(e))
+            raise SearchError.of(e, str(e))
 
 
 def _area_box(area: ar.Area) -> Tuple[float, float, float, float]:
@@ -310,7 +330,8 @@ def _check_box(limits: Optional[Limits], west: float, south: float, east: float,
     if max(width, height) > limits.bbox_km_max:
         raise SearchError(f"The search spans {width:.0f} × {height:.0f} km (its bounding box), at most "
                           f"{limits.bbox_km_max:g} km on a side on this site: a smaller area, or areas far apart "
-                          f"as separate searches")
+                          f"as separate searches", "box_too_large", width=round(width), height=round(height),
+                          max=limits.bbox_km_max)
 
 
 def _check_tiles(grid: gd.Grid, params: SearchParams, res: float, core: float, limits: Limits):
@@ -325,10 +346,11 @@ def _check_tiles(grid: gd.Grid, params: SearchParams, res: float, core: float, l
     if limits.grid_mpx_max and pixels > limits.grid_mpx_max * 1e6:
         raise SearchError(f"A {'grid' if count == 1 else 'tile'} would have {pixels / 1e6:.0f} million pixels with "
                           f"its overlap, at most {limits.grid_mpx_max:g} million on this site: a shorter "
-                          f"--max-length, a smaller --prominence-span or a coarser --resolution")
+                          f"--max-length, a smaller --prominence-span or a coarser --resolution", "grid_too_large",
+                          mpx=round(pixels / 1e6), max=limits.grid_mpx_max)
     if limits.tiles_max and count > limits.tiles_max:
         raise SearchError(f"The area spans {count} tiles of {core:g} m, at most {limits.tiles_max} on this site: "
-                          f"a smaller area or a coarser --resolution")
+                          f"a smaller area or a coarser --resolution", "too_many_tiles", n=count, max=limits.tiles_max)
 
 
 def check_estimate(plan: Plan, estimate: Estimate):
@@ -336,7 +358,8 @@ def check_estimate(plan: Plan, estimate: Estimate):
     limits = plan.limits
     if limits and limits.download_mb_max and estimate.download_mb > limits.download_mb_max:
         raise SearchError(f"About {estimate.download_mb:.0f} MB to download, at most {limits.download_mb_max:g} MB "
-                          f"on this site: a smaller area or a coarser --resolution (or --nmpt off)")
+                          f"on this site: a smaller area or a coarser --resolution (or --nmpt off)",
+                          "download_too_large", mb=round(estimate.download_mb), max=limits.download_mb_max)
 
 
 def _area_text(params: SearchParams) -> str:
@@ -510,7 +533,7 @@ def download_data(plan: Plan):
             except requests.RequestException:
                 pass  # the search falls back to the Copernicus mask with a warning
     except RuntimeError as e:
-        raise SearchError(f"Download failed: {e}")
+        raise SearchError.of(e, f"Download failed: {e}", "download_failed", reason=cache.clean_error(e))
 
 
 def prepare_data(plan: Plan) -> Data:
@@ -555,16 +578,17 @@ def prepare_data(plan: Plan) -> Data:
             water_path = src.fill_water(elevation_path, surface_path, grid, wbm, sea_zone,
                                         os.path.join(work, "water.npy"))
     except RuntimeError as e:
-        raise SearchError(f"Download failed: {e}")
+        raise SearchError.of(e, f"Download failed: {e}", "download_failed", reason=cache.clean_error(e))
     elevation = np.load(elevation_path, mmap_mode="r")
     surface = np.load(surface_path, mmap_mode="r") if surface_path else None
     if surface is not None:
         land = plan.area.mask(grid) & ~np.isnan(elevation)
         no_surface = (np.isnan(surface) & land).sum() / max(land.sum(), 1)
         if no_surface > 0.01:
-            emit("warning", f"no surface model (trees, buildings) for {no_surface:.0%} of the search area.\n"
-                            "Lines there are checked against the bare terrain only: trees and buildings under\n"
-                            "them are not marked.")
+            emit("warning", messages.Note(f"no surface model (trees, buildings) for {no_surface:.0%} of the search "
+                                          "area.\nLines there are checked against the bare terrain only: trees and "
+                                          "buildings under\nthem are not marked.", "no_surface",
+                                          percent=round(100 * no_surface)))
     slope = None
     if p.slope_file:
         slope_path = src.load_slope_file(p.slope_file, grid, os.path.join(work, "slope.npy"))
@@ -604,11 +628,13 @@ def _lines(plan: Plan, data: Data, core: Optional[tuple] = None) -> Tuple[List[D
     emit("info", f"Found {len(anchors)} potential anchors to evaluate")
     if plan.limits and plan.limits.anchors_max and len(anchors) > plan.limits.anchors_max:
         raise SearchError(f"{len(anchors)} anchors, at most {plan.limits.anchors_max} on this site: a higher "
-                          f"--slope-threshold, a coarser --resolution or a smaller area")
+                          f"--slope-threshold, a coarser --resolution or a smaller area", "too_many_anchors",
+                          n=len(anchors), max=plan.limits.anchors_max)
     if len(anchors) < 2:
         if core is not None:  # a tile of a large area: nothing here
             return [], []
-        raise SearchError("Not enough steep terrain. Try a lower --slope-threshold or a larger --radius.")
+        raise SearchError("Not enough steep terrain. Try a lower --slope-threshold or a larger --radius.",
+                          "no_steep_terrain")
 
     # How far each anchor stands out (terrain.py); the limits for both anchors leave anchors out
     progress.compute.start("anchor prominence and drop", 2, unit="step")
@@ -630,7 +656,7 @@ def _lines(plan: Plan, data: Data, core: Optional[tuple] = None) -> Tuple[List[D
         if core is not None:
             return [], []
         raise SearchError("No anchors stand out enough. Try a lower --min-prominence, --min-prominence-both "
-                          "or --min-drop.")
+                          "or --min-drop.", "no_prominent_anchors")
 
     # Step 3: Compare each promising anchor to every other anchor
     _step(plan, 3, "evaluating anchor pairs")
@@ -651,7 +677,7 @@ def _lines(plan: Plan, data: Data, core: Optional[tuple] = None) -> Tuple[List[D
                                       np.column_stack([prom, drop]), strong)
     _check_lines(plan, len(valid_lines))
     if not valid_lines and core is None:
-        raise SearchError("No lines found matching elevation requirements.")
+        raise SearchError("No lines found matching elevation requirements.", "no_lines")
 
     # Step 4: coordinates, water and gaps, groups, profiles
     _step(plan, 4, "coordinates, groups and profiles")
@@ -690,7 +716,8 @@ def _check_lines(plan: Plan, count: int):
     """Refuse more lines than plan.limits allows (before their profiles, groups and files)."""
     if plan.limits and plan.limits.lines_max and count > plan.limits.lines_max:
         raise SearchError(f"{count} lines, at most {plan.limits.lines_max} on this site: a higher --min-prominence "
-                          f"(or --min-height, --min-drop), a coarser --resolution or a smaller area")
+                          f"(or --min-height, --min-drop), a coarser --resolution or a smaller area", "too_many_lines",
+                          n=count, max=plan.limits.lines_max)
 
 
 def _run_name(plan: Plan) -> str:
@@ -818,7 +845,7 @@ def search_lines(plan: Plan) -> Tuple[Lines, Optional[Dict]]:
         results += _load_tile(path)
         _check_lines(plan, len(results))
     if not results:
-        raise SearchError("No lines found matching elevation requirements.")
+        raise SearchError("No lines found matching elevation requirements.", "no_lines")
     progress.set_step(f"Step 4/{STEPS}: groups of all tiles")
     groups = mp.group_lines(results, plan.group_distance, plan.params.group_by)
     # A line shown for a group is the best of its tile's group too, except near the edge of a
@@ -1009,14 +1036,15 @@ def profile_of_line(meta: Dict, paths: Paths, anchor1: Tuple[float, float], anch
     length = math.hypot(x2 - x1, y2 - y1)
     if length > MAX_MEASURED_PX * p["resolution"]:
         raise SearchError(f"the points are {length / 1000:.1f} km apart; at the {p['resolution']:g} m resolution "
-                          f"of this run profiles reach {MAX_MEASURED_PX * p['resolution'] / 1000:g} km")
+                          f"of this run profiles reach {MAX_MEASURED_PX * p['resolution'] / 1000:g} km",
+                          "profile_too_far", km=round(length / 1000, 1), max=MAX_MEASURED_PX * p["resolution"] / 1000)
     if length < 2 * p["resolution"]:
-        raise SearchError("the points are too close")
+        raise SearchError("the points are too close", "profile_too_close")
     lat, lon = (anchor1[0] + anchor2[0]) / 2, (anchor1[1] + anchor2[1]) / 2
     values.update(lat=lat, lon=lon, radius=length / 2 + 10 * p["resolution"] + 20)
     plan = plan_search(SearchParams(**values), paths, lambda kind, text: None, with_margin=False)
     if plan.crs != meta["center"]["crs"]:
-        raise SearchError(f"the run used {meta['center']['crs']}, a search here would use {plan.crs}")
+        raise SearchError(f"the run used {meta['center']['crs']}, a search here would use {plan.crs}", "profile_crs")
     data = prepare_data(plan)
     grid, res = plan.grid, plan.resolution
     pixel = lambda x, y: (int(round((grid.top - y) / res - 0.5)), int(round((x - grid.left) / res - 0.5)))

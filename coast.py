@@ -33,6 +33,7 @@ import cache
 import osm
 from area import project
 from grid import Grid
+from messages import Note
 from progress import progress
 
 WORLD_URL = "https://osmdata.openstreetmap.de/download/water-polygons-split-4326.zip"
@@ -168,11 +169,11 @@ def sea_mask(grid: Grid, cache_dir: str, mode: str, copernicus_sea: np.ndarray,
         try:
             lines = _osm_coastline(grid, cache_dir, update)
         except (requests.RequestException, ValueError) as e:
-            warning = (f"OpenStreetMap coastline could not be downloaded from Overpass ({cache.clean_error(e)}). "
-                       "Using the Copernicus water body mask instead: its shoreline is only accurate "
-                       "to about 70 m (90% of the coast), so lines near the shore may be missed or "
-                       "land next to the sea may be taken for water. Run again later, or use "
-                       "--coastline world.")
+            warning = Note(f"OpenStreetMap coastline could not be downloaded from Overpass ({cache.clean_error(e)}). "
+                           "Using the Copernicus water body mask instead: its shoreline is only accurate "
+                           "to about 70 m (90% of the coast), so lines near the shore may be missed or "
+                           "land next to the sea may be taken for water. Run again later, or use "
+                           "--coastline world.", "coast_fallback")
             return copernicus_sea, "Copernicus water body mask (fallback)", warning
         if not lines:  # no coast near the area: the mask is right away from the shore
             return copernicus_sea, "no coastline nearby (OpenStreetMap)", None
