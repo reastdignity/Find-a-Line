@@ -3,10 +3,12 @@
 // click or a tap toggles it (phones have no hover); Esc and a click outside close it. The mouse may
 // move from the button onto the bubble (to read or select its text): leaving either closes it after
 // CLOSE_MS unless the pointer enters one of them again. The bubble is a popover in the top layer, so
-// no scrolling panel cuts it off; it sits under the button, or over it when it would not fit in the
-// visible part below (`visibleBottom`: the visual viewport, the scrolling panels around the button,
-// a bar that stays at their bottom, data-hint-floor) and there is room above; it stays inside the
-// window (positioned through the CSSOM, which the CSP allows). Styles in ui.css (u-hint*).
+// no scrolling panel cuts it off; it never covers its own field (the label's .u-field, whose control
+// is under the label): it sits over the button, or under the whole field when there is no room above
+// and the field's bottom leaves room in the visible part below (`visibleBottom`: the visual viewport,
+// the scrolling panels around the button, a bar that stays at their bottom, data-hint-floor); it
+// stays inside the window (positioned through the CSSOM, which the CSP allows). Styles in ui.css
+// (u-hint*).
 
 import type { ComponentChildren } from "preact";
 import { useEffect, useLayoutEffect, useRef, useState } from "preact/hooks";
@@ -74,10 +76,12 @@ export function Hint({label, children}: {label: string; children: ComponentChild
       const width = document.documentElement.clientWidth;
       const w = tip.offsetWidth, h = tip.offsetHeight;
       const left = Math.max(MARGIN, Math.min(at.left, width - MARGIN - w));
-      const below = at.bottom + GAP, above = at.top - GAP - h;
+      const field = (root.current?.closest(".u-field") ?? button.current!).getBoundingClientRect();
+      const below = Math.max(at.bottom, field.bottom) + GAP, above = at.top - GAP - h;
       const ceiling = (window.visualViewport?.offsetTop ?? 0) + GAP;
-      // below unless it would run past the visible part there and fits above
-      const top = below + h > visibleBottom(button.current!, at) - GAP && above >= ceiling ? above : below;
+      const floor = visibleBottom(button.current!, at) - GAP;
+      // above the label; under the field when it does not fit above, or where there is more room
+      const top = above >= ceiling || (below + h > floor && above - ceiling > floor - below - h) ? above : below;
       tip.style.left = `${Math.round(left)}px`;
       tip.style.top = `${Math.round(top)}px`;
     };

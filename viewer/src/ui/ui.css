@@ -102,15 +102,20 @@
 .ui .u-input:focus-visible { border-color: var(--accent); }
 @media (pointer: coarse) { .ui .u-input { min-height: 44px; font-size: 16px; } }
 
-/* Range: a native input; the filled part is a gradient set through --u-fill (CSSOM) */
-.ui .u-range { -webkit-appearance: none; appearance: none; width: 100%; height: 22px; margin: 0; background: transparent; cursor: pointer; --u-fill: 50%; }
+/* Range: a native input; the filled part is a gradient set through --u-fill (CSSOM). Only the thumb
+   takes the pointer (a click on the track moves nothing), as with two thumbs; the keys work as usual */
+.ui .u-range { -webkit-appearance: none; appearance: none; width: 100%; height: 22px; margin: 0; background: transparent;
+  pointer-events: none; --u-fill: 50%; }
 .ui .u-range::-webkit-slider-runnable-track { height: 4px; border-radius: 2px;
   background: linear-gradient(var(--accent), var(--accent)) 0 / var(--u-fill) 100% no-repeat, var(--surface-2); }
 .ui .u-range::-moz-range-track { height: 4px; border-radius: 2px; background: var(--surface-2); }
 .ui .u-range::-moz-range-progress { height: 4px; border-radius: 2px; background: var(--accent); }
 .ui .u-range::-webkit-slider-thumb { -webkit-appearance: none; appearance: none; width: 18px; height: 18px; margin-top: -7px;
-  border-radius: 50%; background: var(--surface); border: 2px solid var(--accent); }
-.ui .u-range::-moz-range-thumb { width: 14px; height: 14px; border-radius: 50%; background: var(--surface); border: 2px solid var(--accent); }
+  border-radius: 50%; background: var(--surface); border: 2px solid var(--accent); pointer-events: auto; cursor: grab; }
+.ui .u-range::-moz-range-thumb { width: 14px; height: 14px; border-radius: 50%; background: var(--surface); border: 2px solid var(--accent);
+  pointer-events: auto; cursor: grab; }
+.ui .u-range:active::-webkit-slider-thumb { cursor: grabbing; }
+.ui .u-range:active::-moz-range-thumb { cursor: grabbing; }
 .ui .u-range:focus-visible { box-shadow: none; }
 .ui .u-range:focus-visible::-webkit-slider-thumb { box-shadow: var(--focus); }
 .ui .u-range:focus-visible::-moz-range-thumb { box-shadow: var(--focus); }
@@ -119,16 +124,14 @@
   .ui .u-range::-webkit-slider-thumb { width: 26px; height: 26px; margin-top: -11px; }
   .ui .u-range::-moz-range-thumb { width: 22px; height: 22px; }
 }
-/* Two thumbs: two native inputs over one track; only their thumbs take the pointer */
+/* Two thumbs: two native inputs over one track (only the thumbs take the pointer, as above) */
 .ui .u-range2 { position: relative; height: 22px; }
 .ui .u-range2::before { content: ""; position: absolute; left: 0; right: 0; top: 9px; height: 4px; border-radius: 2px; background: var(--surface-2); }
 .ui .u-range2 > i { position: absolute; top: 9px; height: 4px; border-radius: 2px; background: var(--accent); }
-.ui .u-range2 .u-range { position: absolute; inset: 0; pointer-events: none; }
+.ui .u-range2 .u-range { position: absolute; inset: 0; }
 .ui .u-range2 .u-range::-webkit-slider-runnable-track { background: none; }
 .ui .u-range2 .u-range::-moz-range-track { background: none; }
 .ui .u-range2 .u-range::-moz-range-progress { background: none; }
-.ui .u-range2 .u-range::-webkit-slider-thumb { pointer-events: auto; }
-.ui .u-range2 .u-range::-moz-range-thumb { pointer-events: auto; }
 @media (pointer: coarse) { .ui .u-range2 { height: 44px; } .ui .u-range2::before, .ui .u-range2 > i { top: 20px; } }
 
 /* Status, progress, stats */
