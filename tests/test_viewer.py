@@ -32,7 +32,7 @@ def run_ts(tmp_path, module: str, script: str):
                    cwd=VIEWER, check=True)
     path = tmp_path / f"{module}-test.cjs"
     path.write_text(f"const m = require({json.dumps(str(bundle))});\n{script}", encoding="utf-8")
-    result = subprocess.run(["node", str(path)], capture_output=True, text=True, check=True)
+    result = subprocess.run(["node", str(path)], capture_output=True, text=True, encoding="utf-8", check=True)
     return json.loads(result.stdout)
 
 
@@ -401,3 +401,24 @@ def test_result_map_in_edge(tmp_path, clip_data):
     assert out["measured"] is True and out["escaped"] is True and out["moves"] == 1
     assert out["after"] == 0
     assert test_web._violations(dom) == []
+
+
+def test_messages_match_python(tmp_path):
+    """messages.py formats the catalogue as the page's i18next does: interpolation (numbers, values not
+    given stay as {{name}}, spaces in the braces) and plural forms (_zero, _one, _other), the key for an unknown one."""
+    import messages
+    samples = {"lines_one": "{{count}} line in {{place}}", "lines_other": "{{count}} lines in {{place}}",
+               "lines_zero": "no lines", "area": "The area is {{ km2 }} km², limit {{max}} km².",
+               "plain": "Spot {{n}}"}
+    cases = [("lines", {"count": 1, "place": "Gozo"}), ("lines", {"count": 3, "place": "Gozo"}),
+             ("lines", {"count": 0}), ("lines", {"count": 1.5, "place": "x"}), ("area", {"km2": 51.25, "max": 50.0}),
+             ("plain", {}), ("plain", {"n": "<b>"}), ("unknown.key", {"n": 1}), ("ui.try", {"ui": "D"})]
+    found = run_ts(tmp_path, "i18n", f"""
+const own = m.translator({json.dumps(samples)});
+console.log(JSON.stringify({json.dumps(cases)}.map(([key, params]) =>
+  key.startsWith("ui.") ? m.t(key, params) : own(key, params))));""")
+    python = [messages.text(key, **params) if key.startswith("ui.") else messages.render(samples, key, **params)
+              for key, params in cases]
+    assert found == python
+    assert python[:3] == ["1 line in Gozo", "3 lines in Gozo", "no lines"] and python[5] == "Spot {{n}}"
+    assert python[4] == "The area is 51.25 km², limit 50 km²." and python[6] == "Spot <b>"  # Preact escapes

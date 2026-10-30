@@ -1790,11 +1790,11 @@ wait(() => window.FINDALINE_PLACE && $(".s-panel"), () => {
   map.fire("click", {latlng: {lat: 50.1559508, lng: 19.7562722}});
   setTimeout(() => setRange($(".s-where input[type=range]"), 150), 100);
   wait(() => text(".s-est-line").startsWith("Ready"), () => {
-    say("point", {centre: text(".s-point"), radius: fieldValue("Radius"), calls: ESTIMATES.length,
+    say("point", {centre: text(".s-point"), radius: fieldValue("Search radius"), calls: ESTIMATES.length,
                   stats: text(".s-est-row"), body: ESTIMATES[ESTIMATES.length - 1]});
     button("Typical highline").click();
     setTimeout(() => {
-      say("preset", {length: fieldValue("Line length"), diff: fieldValue("Height difference of the anchors"),
+      say("preset", {length: fieldValue("Line length"), diff: fieldValue("Anchor height difference"),
                      on: text(".s-preset.u-on")});
       wait(() => ESTIMATES.length === 2 && text(".s-est-line").startsWith("Ready"), () => {
         say("again", {source: text(".s-est-row"), body: ESTIMATES[1].params});
@@ -1920,7 +1920,7 @@ wait(() => window.FINDALINE_PLACE && $(".s-panel"), () => {
   const place = window.FINDALINE_PLACE;
   button("Area").click();
   setTimeout(() => {
-    say("draw", {tools: !!$(".leaflet-pm-toolbar"), buffer: fieldValue("Buffer")});
+    say("draw", {tools: !!$(".leaflet-pm-toolbar"), buffer: fieldValue("Band width")});
     place.loadDrawn(shapes);
     wait(() => text(".s-areas") && status().startsWith("Ready"), () => {
       say("area", {areas: text(".s-areas"), features: last().geometry.features.length, buffer: last().params.buffer});

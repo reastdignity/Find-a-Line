@@ -17,6 +17,7 @@ import { DESKTOP, IconButton, Rail, Screen, Segmented, Sheet, Toast, useMedia, t
 import { canReport, openReport } from "../../report";
 import { Icon, Logo } from "../../ui/icons";
 import { storedTheme, storeTheme, uiHref } from "../../ui/choice";
+import { t } from "../../i18n";
 import { useUsage } from "../../search/useSearch";
 import { forgetRun } from "../../result/load";
 import { FavouritesB } from "./FavouritesB";
@@ -48,8 +49,8 @@ function Account({theme, onTheme}: {theme: Theme; onTheme(theme: Theme): void}) 
     <div class="b-account-links">
       {canReport() && <button type="button" class="b-report" onClick={() => openReport()}>Report a problem</button>}
       {!user.local && <><a href="/privacy" target="_blank">Privacy</a><a href="/about" target="_blank">About and data licences</a></>}
-      <a href={uiHref("c")}>Try interface C</a>
-      <a href={uiHref("d")}>Try interface D</a>
+      <a href={uiHref("c")}>{t("ui.try", {ui: "C"})}</a>
+      <a href={uiHref("d")}>{t("ui.try", {ui: "D"})}</a>
     </div>
     {!user.local && <button type="button" class="u-btn u-ghost b-signout"
                             onClick={() => api.logout().finally(() => { location.href = "/"; })}>Sign out</button>}

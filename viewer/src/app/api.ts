@@ -17,7 +17,7 @@ export interface Field {
   label: string;       // a short human label (params.LABELS)
   unit: string;        // "m", "%", "°", ... or ""
   topic: string | null;  // the topic of the new form (params.TOPICS)
-  choice_labels: Record<string, string> | null;  // names of the choices (the sources)
+  choice_labels: Record<string, string> | null;  // labels of the choices (the sources: their names)
 }
 
 /** A preset of the kind of lines (params.PRESETS, web.presets). */

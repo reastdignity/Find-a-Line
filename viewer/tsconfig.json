@@ -9,7 +9,8 @@
     "noEmit": true,
     "lib": ["ES2020", "DOM", "DOM.Iterable"],
     "types": [],
-    "skipLibCheck": true
+    "skipLibCheck": true,
+    "resolveJsonModule": true
   },
   "include": ["src", "test"]
 }

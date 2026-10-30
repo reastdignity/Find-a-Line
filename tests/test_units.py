@@ -472,19 +472,31 @@ def test_replacing(tmp_path):
 
 
 def test_labels_topics_and_presets():
-    """Every field of SearchParams has a label and a unit (params.LABELS); every field the web may
-    set belongs to one topic of the form (params.TOPICS); each preset sets only fields of
-    PRESET_FIELDS and validates as SearchParams; a preset outside a user's bounds is unavailable."""
+    """Every field the web may set has a label, a unit and a hint in the message catalogue
+    (locales/en.json), and every choice of a choice field a label; every such field belongs to one
+    topic of the form (params.TOPICS), every topic and preset has a title; each preset sets only
+    fields of PRESET_FIELDS and validates as SearchParams; a preset outside a user's bounds is
+    unavailable."""
+    import messages
     import web
     from settings import Limits
+    texts = messages.catalogue()
     web_fields = [f["name"] for f in web.schema()]
-    assert set(pm.LABELS) == {n for n, i in pm.SearchParams.model_fields.items()
-                              if not {"cli_only", "web_only"} & set(i.json_schema_extra or {})}
-    assert all(label and not label.endswith(".") for label, _ in pm.LABELS.values())
-    topics = [n for _, names in pm.TOPICS.values() for n in names]
+    assert set(web_fields) == {n for n, i in pm.SearchParams.model_fields.items()
+                               if not {"cli_only", "web_only"} & set(i.json_schema_extra or {})}
+    for name in web_fields:
+        assert texts[f"field.{name}.label"] and not texts[f"field.{name}.label"].endswith("."), name
+        assert f"field.{name}.unit" in texts and texts[f"field.{name}.help"].endswith("."), name
+    for field in web.schema():
+        for choice in field["choices"] or []:
+            assert field["name"] == "source" or f"choice.{field['name']}.{choice}" in texts, (field["name"], choice)
+    named = {k.split(".")[1] for k in texts if k.startswith("field.")}
+    assert named == set(web_fields), named ^ set(web_fields)  # no texts of fields that are gone
+    topics = [n for names in pm.TOPICS.values() for n in names]
     assert sorted(topics) == sorted(web_fields), set(topics) ^ set(web_fields)
-    for preset, (label, values) in pm.PRESETS.items():
-        assert label and (values is None or set(values) <= set(pm.PRESET_FIELDS)), preset
+    assert all(f"topic.{t}" in texts for t in pm.TOPICS) and all(f"preset.{p}" in texts for p in pm.PRESETS)
+    for preset, values in pm.PRESETS.items():
+        assert (values is None or set(values) <= set(pm.PRESET_FIELDS)), preset
         full = pm.preset_values(preset)
         if full is not None:
             assert set(full) == set(pm.PRESET_FIELDS)
@@ -498,6 +510,26 @@ def test_labels_topics_and_presets():
     assert tight["typical"]["available"] and not tight["long"]["available"]
     assert tight["long"]["reason"] == "max_length: at most 200 on this site"
     fields = {f["name"]: f for f in web.schema()}
-    assert fields["max_anchor_diff_m"]["label"] == "Height difference of the anchors"
+    assert offered["short"]["label"] == "Short & low" and fields["nmpt"]["choice_labels"]["off"] == "Do not check"
+    assert fields["max_anchor_diff_m"]["label"] == "Anchor height difference"
     assert fields["max_anchor_diff_m"]["unit"] == "m" and fields["max_anchor_diff_m"]["topic"] == "lines"
     assert fields["source"]["choice_labels"]["auto"] == "Automatic"
+
+
+def test_viewer_keys_in_catalogue():
+    """Every key the page asks for by its literal (t("...") or t('...') in viewer/src) is in the message
+    catalogue, in its plain or a plural form."""
+    import re
+
+    import messages
+    texts = messages.catalogue()
+    root = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "viewer", "src")
+    used = set()
+    for folder, _, files in os.walk(root):
+        for file in files:
+            if file.endswith((".ts", ".tsx")):
+                with open(os.path.join(folder, file), encoding="utf-8") as f:
+                    used |= set(re.findall(r"""\bt\(\s*["']([^"'`]+)["']""", f.read()))
+    assert "ui.try" in used
+    missing = [k for k in used if not {k, f"{k}_one", f"{k}_other"} & set(texts)]
+    assert not missing, missing

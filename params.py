@@ -257,70 +257,40 @@ class SearchParams(BaseModel):
         return self
 
 
-# --- What the web form shows (web.schema): a short label and the unit of each field, the fields by
-# topic with readable titles (the form's "More settings"), and presets of the key fields ---
+# --- What the web form shows (web.schema): the fields by topic (the form's "More settings") and presets
+# of the key fields. Their labels, units, hints and titles are in the message catalogue
+# (locales/en.json: field.<name>.label|unit|help, topic.<id>, preset.<id>; messages.py) ---
 
-LABELS = {  # field -> (label, unit); every field the web may set has one (tests/test_units.py)
-    "lat": ("Latitude", "°"), "lon": ("Longitude", "°"), "northing": ("Northing (PL-1992)", "m"),
-    "easting": ("Easting (PL-1992)", "m"), "area": ("Area", ""), "buffer": ("Buffer", "m"),
-    "within": ("Within", ""), "radius": ("Radius", "m"),
-    "source": ("Elevation data", ""), "water": ("Water", ""), "coastline": ("Where the sea is", ""),
-    "shore_buffer": ("Shore buffer", "m"), "fill_gaps": ("Fill gaps in the data", ""),
-    "update": ("Check cached data first", ""), "resolution": ("Resolution", "m"),
-    "min_length": ("Shortest line", "m"), "max_length": ("Longest line", "m"),
-    "max_anchor_diff": ("Height difference of the anchors, share of the length", "%"),
-    "max_anchor_diff_m": ("Height difference of the anchors", "m"),
-    "slope_threshold": ("Steepness of an anchor", "°"), "nmpt": ("Trees and buildings", ""),
-    "high_above": ("High from", "m"), "min_height": ("Highest point of the webbing, at least", "m"),
-    "min_mean_height": ("Mean height of the webbing, at least", "m"),
-    "min_high_share": ("Share of the line high up, at least", "%"),
-    "max_wall_angle": ("Angle to the wall, at most", "°"),
-    "min_prominence": ("Prominence of one anchor, at least", "m"),
-    "min_prominence_both": ("Prominence of both anchors, at least", "m"),
-    "prominence_span": ("Width of the anchor's own rock", "m"),
-    "min_drop": ("Drop below both anchors, at least", "m"), "drop_radius": ("Drop measured within", "m"),
-    "threads": ("Threads", ""), "tile_size": ("Tile size", "m"),
-    "model": ("Clearance model", ""), "pretension": ("Pretension", "kN"), "stretch": ("Webbing stretch at 10 kN", "%"),
-    "webbing_weight": ("Webbing weight", "g/m"), "athlete_mass": ("Athlete mass", "kg"),
-    "fall_zone": ("Fall zone", "m"),
-    "group_distance": ("Group similar lines within", "m"), "group_by": ("Line shown for each group", ""),
-    "name": ("Name of the run", ""), "no_html": ("No interactive map", ""),
-    "ortho": ("Orthophoto for offline use", ""), "ortho_detail": ("Detailed orthophoto around the best groups", ""),
-}
-
-# topic -> (title, fields in the form's order); "where" is the place part of the form, not "More settings"
+# topic -> fields in the form's order; "where" is the place part of the form, not "More settings"
 TOPICS = {
-    "where": ("Where", ["lat", "lon", "northing", "easting", "radius", "area", "buffer", "within", "name"]),
-    "height": ("Height above the terrain", ["nmpt", "high_above", "min_height", "min_mean_height",
-                                            "min_high_share"]),
-    "anchors": ("Anchors", ["slope_threshold", "min_prominence", "min_prominence_both", "prominence_span",
-                            "min_drop", "drop_radius"]),
-    "lines": ("Lines", ["min_length", "max_length", "max_anchor_diff_m", "max_anchor_diff", "max_wall_angle"]),
-    "data": ("Elevation data", ["source", "resolution", "water", "coastline", "shore_buffer", "fill_gaps",
-                                "update"]),
-    "rigging": ("Clearance model", ["model", "pretension", "stretch", "webbing_weight", "athlete_mass",
-                                    "fall_zone"]),
-    "output": ("Results and map", ["group_distance", "group_by", "no_html", "ortho", "ortho_detail"]),
-    "computing": ("Computing", ["threads", "tile_size"]),
+    "where": ["lat", "lon", "northing", "easting", "radius", "area", "buffer", "within", "name"],
+    "height": ["nmpt", "high_above", "min_height", "min_mean_height", "min_high_share"],
+    "anchors": ["slope_threshold", "min_prominence", "min_prominence_both", "prominence_span", "min_drop",
+                "drop_radius"],
+    "lines": ["min_length", "max_length", "max_anchor_diff_m", "max_anchor_diff", "max_wall_angle"],
+    "data": ["source", "resolution", "water", "coastline", "shore_buffer", "fill_gaps", "update"],
+    "rigging": ["model", "pretension", "stretch", "webbing_weight", "athlete_mass", "fall_zone"],
+    "output": ["group_distance", "group_by", "no_html", "ortho", "ortho_detail"],
+    "computing": ["threads", "tile_size"],
 }
-TOPIC_OF = {name: topic for topic, (_, names) in TOPICS.items() for name in names}
+TOPIC_OF = {name: topic for topic, names in TOPICS.items() for name in names}
 
 # The fields a preset sets: one it leaves out gets its default
 PRESET_FIELDS = ("min_length", "max_length", "max_anchor_diff_m")
-# Presets of the kind of lines (the form's chips or cards): id -> (label, values); "custom" sets nothing
+# Presets of the kind of lines (the form's chips or cards): id -> values; "custom" sets nothing
 # (the values stay as they are: the defaults, or those of the search being edited)
 PRESETS = {
-    "typical": ("Typical highline", {"min_length": 30, "max_length": 150, "max_anchor_diff_m": 10}),
-    "long": ("Long lines", {"min_length": 100, "max_length": 400}),
-    "short": ("Short & low", {"min_length": 15, "max_length": 60}),
-    "custom": ("Custom", None),
+    "typical": {"min_length": 30, "max_length": 150, "max_anchor_diff_m": 10},
+    "long": {"min_length": 100, "max_length": 400},
+    "short": {"min_length": 15, "max_length": 60},
+    "custom": None,
 }
 
 
 def preset_values(preset: str) -> Optional[dict]:
     """The values of a preset for every field of PRESET_FIELDS (defaults for those it leaves out);
     None for "custom"."""
-    values = PRESETS[preset][1]
+    values = PRESETS[preset]
     if values is None:
         return None
     return {name: values.get(name, SearchParams.model_fields[name].default) for name in PRESET_FIELDS}

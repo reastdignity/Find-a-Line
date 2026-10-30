@@ -50,6 +50,7 @@ from starlette.staticfiles import StaticFiles
 
 import accounts as ac
 import cache
+import messages
 from audit import KEEP_DAYS as AUDIT_DAYS, Audit
 import params as pm
 from jobs import TICK, Jobs, QuotaExceeded, Scheduler, search_params
@@ -89,6 +90,7 @@ SECURITY_HEADERS = {
 
 def schema(limits: Optional[Limits] = None, hidden_sources=()) -> List[Dict]:
     """The fields of SearchParams the page may set (cli_only and web_only fields are left out),
+    with their label, unit, hint (help) and the labels of their choices from the message catalogue,
     with the bounds of `limits` (min/max; fields and choices they do not allow are left out) and
     without the sources of `hidden_sources` (ADMIN_SOURCES for all but administrators)."""
     import typing
@@ -113,14 +115,15 @@ def schema(limits: Optional[Limits] = None, hidden_sources=()) -> List[Dict]:
             choices = [c for c in choices if limits.allows(name, c)]
         default = None if info.default_factory else info.default
         low, high = limits.bounds(name, src.MIN_RESOLUTION) if limits else (None, None)
-        text = info.description
+        text = messages.text(f"field.{name}.help")
         if name == "group_distance" and low is not None:
             text += f" (on this site at least {limits.group_distance_min_res:g} × the resolution)"
         elif low is not None or high is not None:
             said = ([] if low is None else [f"at least {low:g}"]) + ([] if high is None else [f"at most {high:g}"])
             text += f" (on this site {' and '.join(said)})"
-        label, unit = pm.LABELS.get(name, (name.replace("_", " "), ""))
-        names = {c: ("Automatic" if c == "auto" else src.SOURCES[c].name) for c in choices or []}             if name == "source" else None
+        label, unit = messages.text(f"field.{name}.label"), messages.text(f"field.{name}.unit")
+        names = {c: src.SOURCES[c].name if name == "source" and c != "auto" else messages.text(f"choice.{name}.{c}")
+                 for c in choices or []} or None
         fields.append({"name": name, "type": kind, "choices": choices, "default": default,
                        "help": text, "group": extra.get("group"), "min": low, "max": high,
                        "optional": not info.is_required() and default is None,
@@ -135,7 +138,7 @@ def presets(limits: Optional[Limits] = None) -> List[Dict]:
     unavailable (with the reason): clamping it would give another kind of lines under the same name."""
     import sources as src
     answer = []
-    for preset, (label, _) in pm.PRESETS.items():
+    for preset in pm.PRESETS:
         values = pm.preset_values(preset)
         problems = []
         for name, value in (values or {}).items():
@@ -147,8 +150,8 @@ def presets(limits: Optional[Limits] = None) -> List[Dict]:
                 problems.append(f"{name}: at least {low:g} on this site")
             if high is not None and value > high:
                 problems.append(f"{name}: at most {high:g} on this site")
-        answer.append({"id": preset, "label": label, "values": values, "available": not problems,
-                       "reason": "; ".join(problems) or None})
+        answer.append({"id": preset, "label": messages.text(f"preset.{preset}"), "values": values,
+                       "available": not problems, "reason": "; ".join(problems) or None})
     return answer
 
 
@@ -777,7 +780,7 @@ def create_app(data_dir: str, token: Optional[str] = None, port: int = PORT, sta
     @app.get("/api/schema")
     def get_schema(user: ac.User = Depends(current_user)):
         return {"fields": schema(user_limits(user), hidden_sources(user)),
-                "topics": {topic: title for topic, (title, _) in pm.TOPICS.items()},
+                "topics": {topic: messages.text(f"topic.{topic}") for topic in pm.TOPICS},
                 "presets": presets(user_limits(user))}
 
     @app.get("/api/usage")

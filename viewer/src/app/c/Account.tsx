@@ -11,6 +11,7 @@ import { storeTheme, uiHref, type UiChoice } from "../../ui/choice";
 import { Popover } from "../../result/view";
 import { api, user } from "../api";
 import { canReport, openReport } from "../../report";
+import { t } from "../../i18n";
 import { PlaceMap } from "../PlaceMap";
 import type { Job } from "../api";
 import { AdminC } from "./AdminC";
@@ -39,7 +40,7 @@ export function AccountBody({theme, setTheme, onPick, tries = TRIES_C}:
         <Icon name="warn" />Report a problem</button>}
       {!user.local && <a class="c-menu-item" href="/privacy" target="_blank"><Icon name="info" />Privacy</a>}
       {!user.local && <a class="c-menu-item" href="/about" target="_blank"><Icon name="info" />About and data licences</a>}
-      {tries.map((ui) => <a key={ui} class="c-menu-item" href={uiHref(ui)}><Icon name="next" />Try interface {ui.toUpperCase()}</a>)}
+      {tries.map((ui) => <a key={ui} class="c-menu-item" href={uiHref(ui)}><Icon name="next" />{t("ui.try", {ui: ui.toUpperCase()})}</a>)}
     </nav>
     <div class="c-account-theme"><span class="u-small">Theme</span>
       <Segmented label="Theme" options={THEMES} value={theme} onChange={(t) => { storeTheme(t); setTheme(t); }} /></div>
