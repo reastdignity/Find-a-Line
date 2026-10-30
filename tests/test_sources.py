@@ -415,3 +415,228 @@ def test_orthophoto_falls_back_to_the_base_tiles(tmp_path, monkeypatch):
     # without a base the tile is kept as the WMS sent it
     plain = src.OrthoService("Fake", "https://high/wms", "top", "fake/ortho/live", "test")
     assert orthophoto.tile_content(plain, *tiles["none"]) == _image("JPEG", (200, 40, 40), slice(0, 0))
+
+
+# The USA (USGS 3DEP): blocks of big remote files, here local files at a coarse resolution
+
+def _usgs_file(path, crs, left, top, res, band, nodata=-999999.0):
+    """A tiled GeoTIFF like a 3DEP file (nodata -999999); NaN in band becomes nodata."""
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with rio.open(path, "w", driver="GTiff", width=band.shape[1], height=band.shape[0], count=1, dtype="float32",
+                  crs=crs, nodata=nodata, transform=from_origin(left, top, res, res), tiled=True,
+                  blockxsize=16, blockysize=16) as dst:
+        dst.write(np.where(np.isnan(band), nodata, band).astype(np.float32), 1)
+
+
+class FakeTnm:
+    """The TNM Access API: the products of a dataset, in pages of two (the box is ignored:
+    every product is near)."""
+
+    def __init__(self):
+        self.products, self.asked, self.offline = [], [], False
+
+    def add(self, path, crs, extent, published="2024-01-01"):
+        """A product whose file is at path; extent (in crs) gives its box."""
+        west, south, east, north = src.transform_bounds(crs, "EPSG:4326", *extent)
+        self.products.append({"downloadURL": path, "publicationDate": published,
+                              "boundingBox": {"minX": west, "minY": south, "maxX": east, "maxY": north}})
+
+    def get(self, url, params=None, **kwargs):
+        if self.offline:
+            raise src.requests.ConnectionError("offline")
+        offset = params["offset"]
+        self.asked.append((params["datasets"], offset))
+        response = FakeResponse()
+        response.json = lambda: {"total": len(self.products), "items": self.products[offset:offset + 2]}
+        return response
+
+
+RES = 50.0  # metres: a 10 km tile of the 1 m DEM is 200 + 12 pixels here
+
+
+def _tile_1m(tnm, folder, project, value, zone=13, x=47, y=443, columns=slice(None), name=None, crs=None,
+             published="2024-01-01"):
+    """A 10 km tile of the 1 m DEM (6 pixels of overlap around) with data in the given columns."""
+    band = np.full((212, 212), np.nan, np.float32)
+    band[:, columns] = value
+    name = name or f"USGS_1M_{zone}_x{x}y{y}_{project}.tif"
+    path = (folder / "Projects" / project / "TIFF" / name).as_posix()
+    _usgs_file(path, crs or f"EPSG:{26900 + zone}", x * 10000 - 6 * RES, y * 10000 + 6 * RES, RES, band)
+    tnm.add(path, f"EPSG:{26900 + zone}", (x * 10000, (y - 1) * 10000, (x + 1) * 10000, y * 10000), published)
+    return path
+
+
+def test_usgs_1m_blocks(tmp_path, monkeypatch, capsys):
+    """The 1 m DEM: blocks composed newest project first (a newer project covering part of a
+    tile, older ones filling the rest and read only while needed), files listed but missing or
+    in another CRS skipped, old names without a zone, a new project read in by an update with
+    the older blocks deleted, the cached blocks when the index cannot be reached."""
+    import cache
+    import grid as gd
+    import osm
+    tnm, files = FakeTnm(), tmp_path / "files"
+    monkeypatch.setattr(src.requests, "get", tnm.get)
+    monkeypatch.setattr(src, "_sleep", lambda attempt: None)
+    _tile_1m(tnm, files, "CO_West_2020_B20", 1020, columns=slice(0, 106))     # the western half (E < 475 000)
+    _tile_1m(tnm, files, "CO_Full_2013", 1013)
+    _tile_1m(tnm, files, "CO_Older_2010", 1010, name="USGS_one_meter_x47y443_CO_Older_2010.tif")  # no zone
+    tnm.add((files / "Projects" / "CO_Gone_2024" / "TIFF" / "USGS_1M_13_x47y443_CO_Gone_2024.tif").as_posix(),
+            "EPSG:26913", (470000, 4420000, 480000, 4430000))                 # listed, but not there
+    _tile_1m(tnm, files, "CO_Wrong_2023", 1023, crs="EPSG:26912")              # not in its zone's CRS
+    make = lambda: src.Usgs1mBlocks("Test 1 m", "Test DEM", "test1m", "usa/test1m", native_res=RES,  # noqa: E731
+                                    block_m=1000, bytes_per_tile=1e4)
+    layer, cache_dir = make(), str(tmp_path / "cache")
+    grid = gd.make_grid((474100, 4424100, 475900, 4425900), RES, "EPSG:26913")
+
+    assert layer.estimate(grid, cache_dir, None) == (4, 4, 0.04)                # 2 x 2 blocks of 1 km
+    assert tnm.asked == [("Test DEM", 0), ("Test DEM", 2), ("Test DEM", 4)]   # three pages of the index
+    block = layer.tiles(grid)[0]
+    assert (block.crs, block.year) == ("EPSG:26913", 2024)
+    assert [n for n, _, _ in block.files] == ["USGS_1M_13_x47y443_CO_Gone_2024", "USGS_1M_13_x47y443_CO_Wrong_2023",
+                                              "USGS_1M_13_x47y443_CO_West_2020_B20",
+                                              "USGS_1M_13_x47y443_CO_Full_2013", "USGS_one_meter_x47y443_CO_Older_2010"]
+    layer.download(grid, cache_dir, None, "test")
+    assert "CO_Wrong_2023 is in EPSG:26912, not EPSG:26913; not used" in capsys.readouterr().out
+    mosaic = src.build_mosaic(layer.files(grid, cache_dir), grid, str(tmp_path / "m.npy"), "test")
+    assert np.isnan(mosaic).sum() == 0
+    assert (mosaic[:, :18] == 1020).all() and (mosaic[:, 18:] == 1013).all()  # the 2020 half, then 2013
+    used = layer.used(grid, cache_dir)
+    assert used["source_files"] == ["USGS_1M_13_x47y443_CO_Full_2013", "USGS_1M_13_x47y443_CO_West_2020_B20"]
+    assert used["survey_years"] == [2013, 2020]                                # 2010 was never needed
+    folder = tmp_path / "cache" / "usa" / "test1m" / "epsg26913" / "47_442"
+    names = sorted(os.listdir(folder))
+    assert len(names) == 4 and all(re.fullmatch(r"2024_47[45]_442[45]_[0-9a-f]{8}\.tif", n) for n in names)
+
+    # A new project over the tile: an update reads the blocks again and deletes the old ones
+    _tile_1m(tnm, files, "CO_New_2025", 1025, published="2026-01-01")
+    west, south, east, north = src.transform_bounds("EPSG:26913", "EPSG:4326", *grid.bounds)
+    results = [layer.update_index_tile(cache_dir, lat, lon) for lat, lon in osm.tiles(west, south, east, north)]
+    assert sum(r[0] for r in results) == 4 and sum(r[2] for r in results) == 4
+    assert len(os.listdir(folder)) == 4 and all(n.startswith("2025_") for n in os.listdir(folder))
+    mosaic = src.build_mosaic(make().files(grid, cache_dir), grid, str(tmp_path / "m2.npy"), "test")
+    assert (mosaic == 1025).all()
+
+    # Offline and without the index answers: the cached blocks
+    tnm.offline = True
+    cache.forget(cache_dir, [str(p) for p in (tmp_path / "cache" / "usa" / "sheet-index").rglob("*.json")])
+    offline = make()
+    assert offline.estimate(grid, cache_dir, None) == (4, 0, 0.0)
+    mosaic = src.build_mosaic(offline.files(grid, cache_dir), grid, str(tmp_path / "m3.npy"), "test")
+    assert (mosaic == 1025).all()
+    assert offline.has_data_near(37.0, -105.0, cache_dir) is None
+
+
+def test_usgs_1m_zone_of_old_names():
+    """A tile named without its zone gets the zone in which its extent lands on its box."""
+    extent = [470000, 4420000, 480000, 4430000]
+    west, south, east, north = src.transform_bounds("EPSG:26913", "EPSG:4326", *extent)
+    assert src._utm_zone_of({"minX": west, "minY": south, "maxX": east, "maxY": north}, extent) == 13
+    # near the edge of a zone the tile of the next zone is told apart by its box
+    extent = [760000, 4420000, 770000, 4430000]
+    west, south, east, north = src.transform_bounds("EPSG:26912", "EPSG:4326", *extent)
+    assert int(((west + east) / 2 + 180) // 6) + 1 == 13 and \
+        src._utm_zone_of({"minX": west, "minY": south, "maxX": east, "maxY": north}, extent) == 12
+    assert src._survey_year("https://x/1m/Projects/UT_WestEast_B22/TIFF/a.tif", "2024-10-30") == 2022
+    assert src._survey_year("https://x/1m/Projects/CA_YosemiteNP_2019_D19/TIFF/a.tif", "2021") == 2019
+    assert src._survey_year("https://x/1m/Projects/Some_Project/TIFF/a.tif", "2021-06-30") == 2021
+
+
+ALBERS_GRS80 = "+proj=aea +lat_0=50 +lon_0=-154 +lat_1=55 +lat_2=65 +x_0=0 +y_0=0 +ellps=GRS80 +units=m +no_defs"
+
+
+def test_ifsar_blocks(tmp_path, monkeypatch):
+    """Alaska's IfSAR: cells of varying extent in Alaska Albers named by their ellipsoid only
+    (as USGS's files are), composed into blocks on a fixed grid of EPSG:3338."""
+    import grid as gd
+    tnm, files = FakeTnm(), tmp_path / "files"
+    monkeypatch.setattr(src.requests, "get", tnm.get)
+    for name, left, value in (("a", 1100000, 300), ("b", 1107500, 400)):  # meet inside a 5 km block
+        path = (files / "Projects" / "AK_IFSAR_2012" / f"Cell_{name}_2012" / "TIFF" / f"USGS_AK5M_{name}.tif")
+        _usgs_file(path.as_posix(), rio.crs.CRS.from_proj4(ALBERS_GRS80), left, 1200000, RES,
+                   np.full((100, 150), value, np.float32))
+        path = path.as_posix()
+        tnm.add(path, "EPSG:3338", (left, 1195000, left + 7500, 1200000))
+    layer = src.IfsarBlocks("Test IfSAR", "Test IfSAR DEM", "testifsar", "usa/testifsar", native_res=RES,
+                            block_m=5000, bytes_per_tile=1e4)
+    cache_dir = str(tmp_path / "cache")
+    grid = gd.make_grid((1101000, 1196000, 1114000, 1199000), RES, "EPSG:3338")
+    assert layer.estimate(grid, cache_dir, None)[:2] == (3, 3)
+    assert [(b.i, b.j) for b in layer.tiles(grid)] == [(220, 239), (221, 239), (222, 239)]
+    layer.download(grid, cache_dir, None, "test")
+    mosaic = src.build_mosaic(layer.files(grid, cache_dir), grid, str(tmp_path / "m.npy"), "test")
+    assert np.isnan(mosaic).sum() == 0
+    columns = (1107500 - grid.left) / RES
+    assert (mosaic[:, :int(columns)] == 300).all() and (mosaic[:, int(columns):] == 400).all()
+    assert src._same_crs(rio.crs.CRS.from_proj4(ALBERS_GRS80), "EPSG:3338")
+    assert not src._same_crs("EPSG:26912", "EPSG:26913")
+
+
+def test_degree_blocks(tmp_path):
+    """The 1/3″ DEM: blocks of 0.1° read from 1° files at fixed URLs (6 pixels of overlap
+    around), exactly on their pixels; a tile the service does not have is missing."""
+    import cache
+    import grid as gd
+    px = 100  # per degree (3DEP: 10 800)
+    band = np.add.outer(np.arange(112) * 10.0, np.arange(112)).astype(np.float32)  # telling every pixel apart
+    _usgs_file(str(tmp_path / "files" / "n38w120.tif"), "EPSG:4269", -120 - 6 / px, 38 + 6 / px, 1 / px, band)
+    layer = src.DegreeBlocks("Test 1/3", "usa/test13/live", lambda name: str(tmp_path / "files" / f"{name}.tif"),
+                             "EPSG:4269", px_per_degree=px, native_res=1000)
+    cache_dir = str(tmp_path / "cache")
+    x, y = src.rio.warp.transform("EPSG:4326", "EPSG:26911", [-119.55], [37.95])
+    grid = gd.make_grid((x[0] - 2000, y[0] - 2000, x[0] + 2000, y[0] + 9000), 100, "EPSG:26911")
+    tiles = layer.tiles(grid)
+    assert (-1196, 379) in tiles and (-1196, 380) in tiles                     # 38.0° N is in the next file
+    layer.download(grid, cache_dir, None, "test")
+    path = layer.tile_path(cache_dir, (-1196, 379))
+    with rio.open(path) as block:                                              # 37.9-38.0° N, 119.6-119.5° W
+        assert block.crs.to_epsg() == 4269 and block.shape == (10, 10)
+        assert (block.read(1) == band[6:16, 46:56]).all()
+    assert cache.state(cache_dir, layer.tile_path(cache_dir, (-1196, 380))) == "missing"   # no n39w120
+    relative = cache.relative(cache_dir, path)
+    assert layer.tile_of(relative) == (-1196, 379) and layer.tile_of(relative.replace("n38", "n39")) is None
+    assert layer.bounds_wgs84((-1196, 379)) == pytest.approx((-119.6, 37.9, -119.5, 38.0))
+    assert layer.ttl_days == cache.TTL_DAYS["live"]
+
+
+def test_usa_chosen_by_country_and_data(tmp_path, monkeypatch):
+    """--source auto: the USA (also Puerto Rico) takes the 1 m DEM; Alaska too where it has
+    1 m data near the centre, else its IfSAR; the working CRS is NAD83 / UTM."""
+    import grid as gd
+    codes = {}
+    monkeypatch.setattr(src, "country_code", lambda lat, lon, cache_dir: codes[(lat, lon)])
+    codes.update({(37.73, -119.64): "us", (18.2, -66.5): "pr", (58.3, -134.4): "us", (61.2, -149.9): "us"})
+    near = {(58.3, -134.4): False, (61.2, -149.9): True}
+    monkeypatch.setattr(src.USGS_1M, "has_data_near", lambda lat, lon, cache_dir: near[(lat, lon)])
+    assert src.choose_source("auto", 37.73, -119.64, str(tmp_path))[0].id == "usa"
+    assert src.choose_source("auto", 18.2, -66.5, str(tmp_path))[0].id == "usa"
+    source, reason = src.choose_source("auto", 58.3, -134.4, str(tmp_path))
+    assert source.id == "alaska_ifsar" and "no terrain data near it" in reason and source.default_resolution == 5
+    assert src.choose_source("auto", 61.2, -149.9, str(tmp_path))[0].id == "alaska"
+    assert src.SOURCES["alaska"].fallbacks == ["alaska_ifsar", "usgs10m"]
+    assert src.SOURCES["usa"].working_crs(37.73, -119.64) == "EPSG:26911"
+    assert src.SOURCES["europe"].working_crs(37.73, -119.64) == "EPSG:32611"
+    assert gd.nad83_utm_crs(58.3, -134.4) == "EPSG:26908" and gd.nad83_utm_crs(13.4, 144.8) == "EPSG:32655"
+
+
+def test_gaps_filled_in_turn(tmp_path):
+    """A chain of fallbacks: the second fills only what the first left, the mask holds both."""
+    import grid as gd
+    grid = gd.make_grid((500000, 300000, 500100, 300100), 10, "EPSG:2180")
+    elevation = np.full((grid.height, grid.width), 100.0, np.float32)
+    elevation[:, :4] = np.nan                                                  # a gap of 4 columns
+    path = str(tmp_path / "nmt.npy")
+    np.save(path, elevation)
+    sources = []
+    for name, value, columns in (("first", 110.0, slice(0, 2)), ("second", 120.0, slice(None))):
+        band = np.full((grid.height, grid.width), np.nan, np.float32)
+        band[:, columns] = value
+        band[:, 4:] = 100.0                                                    # where both meet the data
+        file = str(tmp_path / f"{name}.tif")
+        _usgs_file(file, "EPSG:2180", grid.left, grid.top, 10, band)
+        sources.append(src.Source(id=name, name=name, description=name, nmt=src.FileLayer(name, file)))
+    out, counts = src.fill_gaps_chain(path, None, grid, sources, str(tmp_path / "cache"), str(tmp_path / "filled.npy"))
+    filled = np.load(out)
+    assert [(s.id, n) for s, n in counts] == [("first", 2 * grid.height), ("second", 2 * grid.height)]
+    assert filled[:, :4].all() and not filled[:, 4:].any()
+    result = np.load(path)
+    assert (result[:, :2] == 110).all() and (result[:, 2:4] == 120).all()

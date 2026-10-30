@@ -14,6 +14,9 @@ Kinds of layers:
   (tiles of a STAC collection, swisstopo).
 - GridTiles: our own tiles on a fixed grid (Slovakia, made by tools/sk_tiles.py), from
   a local mirror (FINDALINE_MIRROR) or, once uploaded, from Hugging Face.
+- TnmBlocks: blocks of the big files of The National Map (USGS 3DEP, the USA), found
+  through its API and read by HTTP range requests, composed newest survey first; and
+  DegreeBlocks: blocks of 1° files at a fixed URL (3DEP's 1/3″ DEM).
 - DegreeTiles: 1°×1° GeoTIFF tiles in WGS84 (Copernicus DEM, FABDEM) and
   OpenTopography's global DEM API (NASADEM).
 - FileLayer: a local raster file (GeoTIFF, ASC...), e.g. NASADEM from OpenTopography.
@@ -38,7 +41,7 @@ import time
 import zipfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import asdict, dataclass, field
-from typing import Callable, Dict, List, NamedTuple, Optional, Tuple
+from typing import Callable, Dict, List, NamedTuple, Optional, Sequence, Tuple
 
 import numpy as np
 import rasterio as rio
@@ -47,11 +50,11 @@ from affine import Affine
 from rasterio.io import MemoryFile
 from rasterio.transform import from_origin
 from rasterio.warp import Resampling, reproject, transform_bounds
-from rasterio.windows import from_bounds
+from rasterio.windows import Window, from_bounds
 
 import cache
 import osm
-from grid import Grid, utm_crs
+from grid import Grid, nad83_utm_crs, utm_crs
 from progress import progress
 
 DOWNLOAD_THREADS = 4
@@ -90,7 +93,7 @@ def _part(path: str) -> str:
     return f"{path}.{os.getpid()}-{threading.get_ident()}.part"
 
 
-def _write_tile(path: str, band: np.ndarray, crs: str, transform):
+def _write_tile(path: str, band: np.ndarray, crs: str, transform, tags: Optional[Dict[str, str]] = None):
     """Save a float32 tile as a compressed GeoTIFF (atomically)."""
     os.makedirs(os.path.dirname(path), exist_ok=True)
     tmp = _part(path)
@@ -98,6 +101,8 @@ def _write_tile(path: str, band: np.ndarray, crs: str, transform):
                   dtype="float32", crs=crs, transform=transform, nodata=np.nan,
                   compress="deflate", predictor=3, tiled=True) as dst:
         dst.write(band.astype(np.float32), 1)
+        if tags:
+            dst.update_tags(**tags)
     os.replace(tmp, path)
 
 
@@ -180,6 +185,12 @@ NASADEM_CREDIT = Credit("NASADEM", "NASADEM: NASA JPL (2020), NASA LP DAAC, via 
                         "NASA open data (no restrictions)",
                         "https://doi.org/10.5067/MEaSUREs/NASADEM/NASADEM_HGT.001",
                         notice="Data accessed through OpenTopography (opentopography.org).")
+# All 3DEP products are public domain; USGS asks for a credit (copyrights-and-credits page)
+USGS_TERMS = ("public domain (USGS)",
+              "https://www.usgs.gov/information-policies-and-instructions/copyrights-and-credits")
+USGS_1M_CREDIT = Credit("3DEP 1 m DEM (USGS)", "USGS 3D Elevation Program (3DEP)", *USGS_TERMS)
+USGS_IFSAR_CREDIT = Credit("3DEP Alaska IfSAR 5 m DTM (USGS)", "USGS 3D Elevation Program (3DEP)", *USGS_TERMS)
+USGS_13_CREDIT = Credit("3DEP 1/3 arc-second DEM (USGS)", "USGS 3D Elevation Program (3DEP)", *USGS_TERMS)
 OSM_CREDIT = Credit("OpenStreetMap", "© OpenStreetMap contributors", "ODbL 1.0",
                     "https://www.openstreetmap.org/copyright")
 
@@ -245,6 +256,10 @@ class Layer:
     def tile_of(self, path: str):
         """The tile of a cached file (path relative to the cache, with /), or None if it
         is not one of this layer's tiles. Used by update.py for data that can change."""
+        return None
+
+    def has_data_near(self, lat: float, lon: float, cache_dir: str) -> Optional[bool]:
+        """Whether the layer has data near a point, when its index can tell (None: unknown)."""
         return None
 
     def _download_and_record(self, tile, cache_dir: str) -> int:
@@ -991,6 +1006,454 @@ class StacTiles(IndexedTiles):
         return Fetched.of(response, tile.url)
 
 
+def _remote(url: str) -> str:
+    """What rasterio opens for a file of an index: /vsicurl/ (HTTP range requests) for a URL,
+    a local path as it is (tests)."""
+    return f"/vsicurl/{url}" if re.match(r"https?://", url) else url
+
+
+def _gdal_http() -> rio.Env:
+    """GDAL's settings for reading windows of remote files: our User-Agent, no directory
+    listing, retries of failed requests, neighbouring blocks in one request."""
+    return rio.Env(GDAL_HTTP_USERAGENT=cache.http_headers()["User-Agent"],
+                   GDAL_DISABLE_READDIR_ON_OPEN="EMPTY_DIR", CPL_VSIL_CURL_ALLOWED_EXTENSIONS=".tif",
+                   GDAL_HTTP_MAX_RETRY=str(RETRIES), GDAL_HTTP_RETRY_DELAY="2", GDAL_HTTP_TIMEOUT="120",
+                   GDAL_HTTP_MULTIRANGE="YES", GDAL_HTTP_MERGE_CONSECUTIVE_RANGES="YES")
+
+
+def _same_crs(a, b) -> bool:
+    """Whether two CRSs are the same; also when one names only the ellipsoid of the other's
+    datum (Alaska's IfSAR files: Alaska Albers on "GRS80, datum not specified")."""
+    a, b = rio.crs.CRS.from_user_input(a), rio.crs.CRS.from_user_input(b)
+    if a == b or (a.to_epsg() is not None and a.to_epsg() == b.to_epsg()):
+        return True
+    ellipsoid = {"NAD83": "GRS80", "WGS84": "WGS84"}
+
+    def plain(crs) -> Dict:
+        d = {k: v for k, v in crs.to_dict().items() if k not in ("no_defs", "type", "towgs84")}
+        if "datum" in d:
+            d["ellps"] = ellipsoid.get(d.pop("datum"), "?")
+        return d
+    pa, pb = plain(a), plain(b)
+    return pa.keys() == pb.keys() and all(
+        math.isclose(v, pb[k]) if isinstance(v, (int, float)) and isinstance(pb[k], (int, float)) else v == pb[k]
+        for k, v in pa.items())
+
+
+def _read_window(src, transform: Affine, shape: Tuple[int, int]) -> np.ndarray:
+    """The values of an open raster on the pixels of transform and shape (in its CRS), NaN
+    where it has none: read as they are when the pixels coincide (the usual case: the
+    blocks are on the files' own pixels), resampled bilinearly otherwise."""
+    t = src.transform
+    out = np.full(shape, np.nan, dtype=np.float32)
+    col, row = (transform.c - t.c) / t.a, (transform.f - t.f) / t.e
+    if math.isclose(t.a, transform.a, rel_tol=1e-6) and math.isclose(t.e, transform.e, rel_tol=1e-6) \
+            and abs(col - round(col)) < 0.01 and abs(row - round(row)) < 0.01:
+        r0, c0 = round(row), round(col)
+        r1, c1 = max(r0, 0), max(c0, 0)
+        r2, c2 = min(r0 + shape[0], src.height), min(c0 + shape[1], src.width)
+        if r1 < r2 and c1 < c2:
+            part = src.read(1, window=Window(c1, r1, c2 - c1, r2 - r1), masked=True)
+            out[r1 - r0:r2 - r0, c1 - c0:c2 - c0] = _clean(part.astype(np.float32).filled(np.nan))
+        return out
+    left, top = transform.c, transform.f
+    right, bottom = left + shape[1] * transform.a, top + shape[0] * transform.e
+    c1 = max(math.floor((left - t.c) / t.a) - 2, 0)
+    c2 = min(math.ceil((right - t.c) / t.a) + 2, src.width)
+    r1 = max(math.floor((top - t.f) / t.e) - 2, 0)
+    r2 = min(math.ceil((bottom - t.f) / t.e) + 2, src.height)
+    if r1 < r2 and c1 < c2:
+        window = Window(c1, r1, c2 - c1, r2 - r1)
+        band = _clean(src.read(1, window=window, masked=True).astype(np.float32).filled(np.nan))
+        reproject(band, out, src_transform=src.window_transform(window), src_crs=src.crs,
+                  dst_transform=transform, dst_crs=src.crs, src_nodata=np.nan, dst_nodata=np.nan,
+                  resampling=Resampling.bilinear)
+    return out
+
+
+def _read_block(files: Sequence[Tuple[str, str, int]], crs: str, transform: Affine, shape: Tuple[int, int],
+                path: str, what: str) -> Fetched:
+    """Compose a block from windows of remote files (name, url, survey year), newest first:
+    each file fills only the pixels still without data, and the next one is read only while
+    some remain. Saved to path with the names and years of the files used (tags "sources",
+    "years"); no file when none of them has data there."""
+    block = np.full(shape, np.nan, dtype=np.float32)
+    used, years = [], []
+    with _gdal_http():
+        for name, url, year in files:
+            try:
+                with rio.open(_remote(url)) as src:
+                    if src.crs is not None and not _same_crs(src.crs, crs):
+                        print(f"{what}: {name} is in {src.crs.to_string()}, not {crs}; not used")
+                        continue
+                    values = _read_window(src, transform, shape)
+            except rio.errors.RasterioIOError as e:
+                if re.search(r"\b404\b|No such file", str(e)):
+                    continue  # listed, but not (or no longer) there
+                raise RuntimeError(f"Could not read {what} {name}: {cache.clean_error(e)}")
+            new = np.isnan(block) & np.isfinite(values)
+            if new.any():
+                block[new] = values[new]
+                used.append(name)
+                years.append(str(year))
+            if not np.isnan(block).any():
+                break
+    url = files[0][1] if files else None
+    if not used:
+        return Fetched(0, url)
+    _write_tile(path, block, crs, transform, tags={"sources": ",".join(used), "years": ",".join(years)})
+    return Fetched(os.path.getsize(path), url)
+
+
+TNM_API = "https://tnmaccess.nationalmap.gov/api/v1/products"
+
+
+def _survey_year(url: str, published: str) -> int:
+    """The year of a 3DEP project from its folders (e.g. CA_YosemiteNP_2019_D19 or
+    AK_IFSAR_2010/AK_IFSAR-Cell23_2010): a year in the name, else the fiscal year of a work
+    unit suffix (UT_WestEast_B22), else the year of publication."""
+    folders = url.split("/Projects/", 1)[-1].rsplit("/", 2)[0] if "/Projects/" in url else ""
+    years = re.findall(r"(?<!\d)((?:19|20)\d\d)(?!\d)", folders)
+    if years:
+        return max(int(y) for y in years)
+    suffix = re.findall(r"_[A-Z](\d\d)(?=/|$)", folders)
+    if suffix:
+        return 2000 + max(int(y) for y in suffix)
+    return int(published[:4]) if published[:4].isdigit() else 0
+
+
+@dataclass(frozen=True)
+class Block:
+    """A square of a TnmBlocks layer: (i, j) on a grid of `size` metres in crs, composed from
+    the files (name, url, survey year), newest first. The key tells sets of files apart: a new survey over
+    the block gives it another key, so it is read again."""
+    crs: str
+    i: int
+    j: int
+    size: float
+    year: int  # of the newest file
+    key: str
+    files: Tuple[Tuple[str, str, int], ...] = ()
+
+
+class TnmBlocks(IndexedTiles):
+    """Blocks of the files of a dataset of The National Map (USGS 3DEP), found through the
+    TNM Access API and read by HTTP range requests.
+
+    The files are big (10 km tiles of the 1 m DEM: 10-450 MB; Alaska's IfSAR cells: up to
+    900 MB) and tiled, mostly cloud-optimized, so only the blocks over the grid are read:
+    squares of block_m on a fixed grid in the files' CRS, each cached as a GeoTIFF of its own
+    (<folder>/<epsg>/<i // 10>_<j // 10>/<year>_<i>_<j>_<key>.tif). A place is often in
+    several files (surveys, "projects"), and a newer project may cover only part of a tile,
+    so a block is composed newest first: an older file fills only the pixels still without
+    data and is read only while some remain. The index answers are cached per 0.25° tile
+    like a sheet index; a new project over a block changes its key, so the block is read
+    again (update.py, or a search after the answer was renewed) and the older file deleted.
+    """
+    index_crs = "EPSG:4326"
+
+    def __init__(self, description: str, dataset: str, prefix: str, folder: str, native_res: float,
+                 block_m: float, bytes_per_tile: float, api: str = TNM_API):
+        super().__init__(description, api, prefix, folder, native_res, bytes_per_tile)
+        self.dataset, self.block_m = dataset, block_m
+
+    def _item(self, product: Dict) -> Optional[Dict]:
+        """A product of the API as cached ({name, url, crs, extent (in crs), year, published}),
+        or None if it is not used."""
+        raise NotImplementedError
+
+    def _fetch_tile(self, lat: float, lon: float, path: str):
+        items: Dict[str, Dict] = {}
+        offset, total = 0, 1
+        while offset < total:  # pages of up to 500 products
+            for attempt in range(RETRIES):
+                try:
+                    response = requests.get(self.index_url, timeout=120, headers=cache.http_headers(), params={
+                        "datasets": self.dataset, "max": 500, "offset": offset,
+                        "bbox": f"{lon},{lat},{lon + osm.TILE_DEG},{lat + osm.TILE_DEG}"})
+                    response.raise_for_status()
+                    page = response.json()
+                    break
+                except (requests.RequestException, ValueError) as e:  # the API is sometimes slow or down
+                    if attempt == RETRIES - 1:
+                        raise requests.RequestException(f"TNM API: {e}")
+                    _sleep(attempt)
+            products = page.get("items") or []
+            for product in products:
+                item = self._item(product)
+                if item:
+                    items[item["url"]] = item
+            offset, total = offset + len(products), (page.get("total") or 0) if products else 0
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        tmp = _part(path)
+        with open(tmp, "w", encoding="utf-8") as out:
+            json.dump({"sheets": list(items.values())}, out)
+        os.replace(tmp, path)
+
+    def _items(self, cache_dir: str, west: float, south: float, east: float, north: float,
+               update: Optional[str] = None) -> List[Dict]:
+        """The listed files of the index tiles over a box (WGS84)."""
+        items: Dict[str, Dict] = {}
+        for lat, lon in osm.tiles(west, south, east, north):
+            for item in self._index_tile(cache_dir, lat, lon, update):
+                items[item["url"]] = item
+        return list(items.values())
+
+    def _blocks(self, items: List[Dict], bounds: Dict[str, tuple], shape=None) -> List[Block]:
+        """The blocks within bounds (per CRS: left, bottom, right, top), and under the shape
+        (in WGS84) if given, with the files over each, newest first."""
+        size = self.block_m
+        over: Dict[tuple, List[Dict]] = {}
+        for item in items:
+            if item["crs"] not in bounds:
+                continue
+            left, bottom, right, top = bounds[item["crs"]]
+            e_left, e_bottom, e_right, e_top = item["extent"]
+            left, bottom, right, top = max(left, e_left), max(bottom, e_bottom), min(right, e_right), min(top, e_top)
+            if left >= right or bottom >= top:
+                continue
+            for i in range(math.floor(left / size), math.ceil(right / size)):
+                for j in range(math.floor(bottom / size), math.ceil(top / size)):
+                    over.setdefault((item["crs"], i, j), []).append(item)
+        if shape is not None:
+            from area import project
+            from shapely.geometry import box
+            projected = {crs: project(shape, "EPSG:4326", crs) for crs in bounds}
+            over = {k: v for k, v in over.items()
+                    if projected[k[0]].intersects(box(k[1] * size, k[2] * size, (k[1] + 1) * size, (k[2] + 1) * size))}
+        blocks = []
+        for (crs, i, j), files in over.items():
+            files = sorted(files, key=lambda f: (f["year"], f.get("published", ""), f["name"]), reverse=True)
+            key = hashlib.sha1(",".join(sorted(f["name"] for f in files)).encode()).hexdigest()[:8]
+            blocks.append(Block(crs, i, j, size, files[0]["year"], key,
+                                tuple((f["name"], f["url"], f["year"]) for f in files)))
+        return blocks
+
+    def _query(self, grid: Grid, cache_dir: str) -> list:
+        west, south, east, north = transform_bounds(grid.crs, "EPSG:4326", *grid.bounds)
+        items = self._items(cache_dir, west, south, east, north, self._update)
+        bounds = {crs: transform_bounds(grid.crs, crs, *grid.bounds) for crs in {item["crs"] for item in items}}
+        shape = None
+        if grid.area_shape is not None:
+            from area import project
+            shape = project(grid.area_shape, grid.crs, "EPSG:4326")
+        # Blocks in the working CRS first: copied onto the grid as they are, they win where
+        # a tile is delivered in two UTM zones
+        return sorted(self._blocks(items, bounds, shape),
+                      key=lambda b: (not _same_crs(b.crs, grid.crs), b.crs, b.j, b.i))
+
+    def tile_path(self, cache_dir: str, tile) -> str:
+        return os.path.join(cache_dir, self.folder, tile.crs.lower().replace(":", ""),
+                            f"{tile.i // 10}_{tile.j // 10}", f"{tile.year}_{tile.i}_{tile.j}_{tile.key}.tif")
+
+    def _block_of(self, path: str) -> Optional[Block]:
+        """The block of a cached file (without its files)."""
+        match = re.search(r"[\\/](epsg\d+)[\\/]-?\d+_-?\d+[\\/](\d+)_(-?\d+)_(-?\d+)_([0-9a-f]+)\.tif$", path)
+        if not match:
+            return None
+        return Block(match.group(1).upper().replace("EPSG", "EPSG:"), int(match.group(3)), int(match.group(4)),
+                     self.block_m, int(match.group(2)), match.group(5))
+
+    def _cached_paths(self, cache_dir: str) -> List[str]:
+        return glob.glob(os.path.join(cache_dir, self.folder, "epsg*", "*", "*.tif"))
+
+    def _cached(self, grid: Grid, cache_dir: str) -> list:
+        blocks = []
+        for path in self._cached_paths(cache_dir):
+            block = self._block_of(path)
+            if block is None:
+                continue
+            s = block.size
+            left, bottom, right, top = transform_bounds(block.crs, grid.crs, block.i * s, block.j * s,
+                                                        (block.i + 1) * s, (block.j + 1) * s)
+            g_left, g_bottom, g_right, g_top = grid.bounds
+            if left < g_right and right > g_left and bottom < g_top and top > g_bottom:
+                blocks.append(block)
+        return sorted(blocks, key=lambda b: (not _same_crs(b.crs, grid.crs), -b.year, b.crs, b.j, b.i))
+
+    def _others(self, cache_dir: str, block: Block) -> List[str]:
+        """The cached files of the same block made from other sets of files."""
+        folder = os.path.dirname(self.tile_path(cache_dir, block))
+        found = [os.path.join(folder, n) for n in os.listdir(folder)] if os.path.isdir(folder) else []
+        return [p for p in found if (b := self._block_of(p)) is not None and (b.i, b.j) == (block.i, block.j)
+                and b.key != block.key]
+
+    def _prune(self, cache_dir: str, sheets: List[Block]) -> int:
+        older = []
+        for block in sheets:
+            if os.path.exists(self.tile_path(cache_dir, block)):
+                older += self._others(cache_dir, block)
+        cache.forget(cache_dir, older)
+        return len(older)
+
+    def _block_wgs84(self, block: Block) -> Tuple[float, float, float, float]:
+        s = block.size
+        return transform_bounds(block.crs, "EPSG:4326", block.i * s, block.j * s, (block.i + 1) * s, (block.j + 1) * s)
+
+    def update_index_tile(self, cache_dir: str, lat: float, lon: float) -> Tuple[int, int, int]:
+        """Ask the index again for one tile and read again the cached blocks (centred in it)
+        over which the set of files changed (the older files are deleted)."""
+        self._index_tile(cache_dir, lat, lon, "all")
+        todo = []
+        for path in self._cached_paths(cache_dir):
+            block = self._block_of(path)
+            if block is None:
+                continue
+            west, south, east, north = self._block_wgs84(block)
+            if not (lat <= (south + north) / 2 < lat + osm.TILE_DEG and lon <= (west + east) / 2 < lon + osm.TILE_DEG):
+                continue
+            s = block.size
+            inner = (block.i * s + s / 4, block.j * s + s / 4, (block.i + 1) * s - s / 4, (block.j + 1) * s - s / 4)
+            now = [b for b in self._blocks(self._items(cache_dir, west, south, east, north), {block.crs: inner})
+                   if (b.i, b.j) == (block.i, block.j)]
+            if now and now[0].key != block.key and not os.path.exists(self.tile_path(cache_dir, now[0])):
+                todo.append(now[0])
+        received = sum(self._download_and_record(b, cache_dir) for b in todo)
+        return len(todo), received / 1e6, self._prune(cache_dir, todo)
+
+    def has_data_near(self, lat: float, lon: float, cache_dir: str, metres: float = 2000) -> Optional[bool]:
+        try:
+            items = self._items(cache_dir, lon, lat, lon, lat)
+        except requests.RequestException:
+            return None
+        for item in items:
+            x, y = rio.warp.transform("EPSG:4326", item["crs"], [lon], [lat])
+            left, bottom, right, top = item["extent"]
+            if left - metres <= x[0] <= right + metres and bottom - metres <= y[0] <= top + metres:
+                return True
+        return False
+
+    def download_tile(self, tile, path: str) -> Fetched:
+        px = round(tile.size / self.native_res)
+        transform = from_origin(tile.i * tile.size, (tile.j + 1) * tile.size, self.native_res, self.native_res)
+        return _read_block(tile.files, tile.crs, transform, (px, px), path, self.description)
+
+    def used(self, grid: Grid, cache_dir: str) -> Dict:
+        """With the files the blocks were read from and the years of their surveys (the
+        newest year of a block's name may come from a file without data in it)."""
+        info = super().used(grid, cache_dir)
+        names, years = set(), set()
+        for path in self.files(grid, cache_dir):
+            with rio.open(path) as src:
+                tags = src.tags()
+            names.update(n for n in tags.get("sources", "").split(",") if n)
+            years.update(int(y) for y in tags.get("years", "").split(",") if y)
+        info["source_files"] = sorted(names)
+        info["survey_years"] = [min(years), max(years)] if years else info["survey_years"]
+        return info
+
+
+def _utm_zone_of(box: Dict, extent: List[float]) -> Optional[int]:
+    """The UTM zone of a 1 m tile whose file name does not say it: the zone (of the centre of
+    its box, or a neighbour) in which the tile's extent lands on its box."""
+    lon, lat = (box["minX"] + box["maxX"]) / 2, (box["minY"] + box["maxY"]) / 2
+    zone = int((lon + 180) // 6) + 1
+    cx, cy = (extent[0] + extent[2]) / 2, (extent[1] + extent[3]) / 2
+    for z in (zone, zone - 1, zone + 1):
+        if 1 <= z <= 23:
+            x, y = rio.warp.transform(f"EPSG:{26900 + z}", "EPSG:4326", [cx], [cy])
+            if box["minX"] - 0.01 <= x[0] <= box["maxX"] + 0.01 and box["minY"] - 0.01 <= y[0] <= box["maxY"] + 0.01:
+                return z
+    return None
+
+
+class Usgs1mBlocks(TnmBlocks):
+    """3DEP's standard 1 m DEM: 10 km tiles, USGS_1M_<zone>_x<E / 10 km>y<N of the top / 10 km>_
+    <project>.tif, in NAD83 / UTM of their zone (a tile crossing two zones is delivered in
+    both), with 6 pixels of overlap around; older names give no zone (USGS_one_meter_x..y..)."""
+
+    def _item(self, product: Dict) -> Optional[Dict]:
+        url = product.get("downloadURL") or ""
+        name = url.rsplit("/", 1)[-1]
+        xy = re.search(r"_x(\d+)y(\d+)_", name, re.I)
+        if not name.lower().endswith(".tif") or not xy:
+            return None
+        x, y = int(xy.group(1)), int(xy.group(2))
+        extent = [x * 10000, (y - 1) * 10000, (x + 1) * 10000, y * 10000]
+        zone = re.match(r"USGS_1M_(\d+)_", name, re.I)
+        zone = int(zone.group(1)) if zone else _utm_zone_of(product.get("boundingBox") or {}, extent)
+        if zone is None:
+            return None
+        published = product.get("publicationDate") or ""
+        return {"name": name[:-4], "url": url, "crs": f"EPSG:{26900 + zone}", "extent": extent,
+                "year": _survey_year(url, published), "published": published}
+
+
+class IfsarBlocks(TnmBlocks):
+    """Alaska's 5 m IfSAR DTM: cells of varying extent in Alaska Albers (EPSG:3338), on whole
+    5 m pixels. Their extent is the box of the API projected (a little too large: a file
+    without data in a block costs one opening)."""
+    crs = "EPSG:3338"
+
+    def _item(self, product: Dict) -> Optional[Dict]:
+        url, box = product.get("downloadURL") or "", product.get("boundingBox")
+        if not url.lower().endswith(".tif") or not box:
+            return None
+        extent = transform_bounds("EPSG:4326", self.crs, box["minX"], box["minY"], box["maxX"], box["maxY"],
+                                  densify_pts=21)
+        published = product.get("publicationDate") or ""
+        return {"name": url.rsplit("/", 1)[-1][:-4], "url": url, "crs": self.crs, "extent": list(extent),
+                "year": _survey_year(url, published), "published": published}
+
+
+class DegreeBlocks(Layer):
+    """Blocks of 1°×1° cloud-optimized GeoTIFFs at a fixed URL per tile (3DEP's seamless 1/3″
+    DEM, NAD83 geographic), read by HTTP range requests: a tile is about 450 MB, a block of
+    0.1° about 2 MB. Block (i, j) covers [i, i + 1) × [j, j + 1) tenths of a degree, cached in
+    <folder>/<tile>/<i>_<j>.tif; a tile the service does not have (404: sea, Canada) is missing.
+    """
+
+    def __init__(self, description: str, folder: str, url: Callable[[str], str], crs: str,
+                 px_per_degree: int, native_res: float, bytes_per_tile: float = 2e6, credit: Optional[Credit] = None):
+        self.description, self.folder, self.url, self.crs = description, folder, url, crs
+        self.px_per_degree, self.native_res, self._bytes = px_per_degree, native_res, bytes_per_tile
+        self.credit = credit
+
+    @staticmethod
+    def tile_name(i: int, j: int) -> str:
+        """The 1° tile of a block, named by its north-west corner (n38w120: 37-38° N, 120-119° W)."""
+        return f"{_hemi(j // 10 + 1, 'n', 's', 2)}{_hemi(i // 10, 'e', 'w', 3)}"
+
+    def tiles(self, grid: Grid) -> list:
+        west, south, east, north = transform_bounds(grid.crs, self.crs, *grid.bounds)
+        shape = None
+        if grid.area_shape is not None:
+            from area import project
+            shape = project(grid.area_shape, grid.crs, self.crs)
+        found = []
+        for j in range(math.floor(south * 10), math.floor(north * 10) + 1):
+            for i in range(math.floor(west * 10), math.floor(east * 10) + 1):
+                if shape is not None:
+                    from shapely.geometry import box
+                    if not shape.intersects(box(i / 10, j / 10, (i + 1) / 10, (j + 1) / 10)):
+                        continue
+                found.append((i, j))
+        return found
+
+    def tile_path(self, cache_dir: str, tile) -> str:
+        return os.path.join(cache_dir, self.folder, self.tile_name(*tile), f"{tile[0]}_{tile[1]}.tif")
+
+    def tile_of(self, path: str):
+        match = re.fullmatch(rf"{re.escape(self.folder)}/([ns]\d\d[ew]\d\d\d)/(-?\d+)_(-?\d+)\.tif", path)
+        if not match or self.tile_name(int(match.group(2)), int(match.group(3))) != match.group(1):
+            return None
+        return int(match.group(2)), int(match.group(3))
+
+    def bounds_wgs84(self, tile) -> Tuple[float, float, float, float]:
+        i, j = tile
+        return i / 10, j / 10, (i + 1) / 10, (j + 1) / 10
+
+    def bytes_per_tile(self) -> float:
+        return self._bytes
+
+    def download_tile(self, tile, path: str) -> Fetched:
+        i, j = tile
+        name = self.tile_name(i, j)
+        px = self.px_per_degree // 10
+        transform = from_origin(i / 10, (j + 1) / 10, 1 / self.px_per_degree, 1 / self.px_per_degree)
+        return _read_block([(name, self.url(name), 0)], self.crs, transform, (px, px), path, self.description)
+
+
 def _sheet_order(sheet: Sheet) -> tuple:
     """Newer year first; within a year, the later publication (higher numbers in the file name)."""
     return (sheet.year,) + tuple(int(n) for n in re.findall(r"\d+", sheet.name)[:2])
@@ -1067,11 +1530,18 @@ class Source:
     ortho: Optional[OrthoService] = None
     note: str = ""                  # licence or quality note printed at the start
     fallback: Optional[str] = "europe"  # source that fills gaps in the data on land
+    # Sources that fill, in turn, what the fallback left (Alaska: its IfSAR, then 1/3″)
+    more_fallbacks: Tuple[str, ...] = ()
     bbox: Optional[Tuple[float, float, float, float]] = None  # (south, north, west, east) for --source auto
     grid_origin: Tuple[float, float] = (0.0, 0.0)  # pixel edges of the data in the working CRS (grid.make_grid)
     # Licences and notices of the data; a source with one credit gives it to its layers,
     # one with more sets each layer's own (europe: FABDEM and Copernicus)
     credits: Tuple[Credit, ...] = ()
+    # The working CRS of a centre when crs is None (the USA: NAD83 / UTM, the CRS of the 1 m tiles)
+    local_crs: Callable[[float, float], str] = utm_crs
+    # The source --source auto takes instead when the terrain layer has no data near the
+    # centre (Alaska: its IfSAR where there is no 1 m lidar)
+    instead_without_data: Optional[str] = None
 
     def __post_init__(self):
         if self.default_resolution is None:
@@ -1098,7 +1568,12 @@ class Source:
         return south <= lat <= north and west <= lon <= east
 
     def working_crs(self, lat: float, lon: float) -> str:
-        return self.crs or utm_crs(lat, lon)
+        return self.crs or self.local_crs(lat, lon)
+
+    @property
+    def fallbacks(self) -> List[str]:
+        """The sources that fill gaps on land, in turn."""
+        return [self.fallback, *self.more_fallbacks] if self.fallback else []
 
 
 GEOPORTAL = "https://mapy.geoportal.gov.pl/wss/service/PZGIK"
@@ -1119,6 +1594,27 @@ SLOVAK_TILES: List[str] = []
 ZBGIS_ORTHO = OrthoService("Orthophoto ZBGIS (ÚGKK SR)",
                            "https://zbgisws.skgeodesy.sk/zbgis_ortofoto_wms/service.svc/get", "1",
                            "slovakia/ortho/live", "© ÚGKK SR")
+# USGS 3DEP (the USA): blocks read from the files on S3 by HTTP range requests; the 1 m
+# DEM per project (newest first), Alaska's IfSAR DTM, and the 1/3″ DEM for the gaps
+USGS_3DEP = "https://prd-tnm.s3.amazonaws.com/StagedProducts/Elevation"
+USGS_1M = Usgs1mBlocks("3DEP 1 m DEM (terrain)", "Digital Elevation Model (DEM) 1 meter", "dem1m",
+                       "usa/3dep-1m", native_res=1.0, block_m=1000, bytes_per_tile=2e6)
+USGS_1M.credit = USGS_1M_CREDIT
+USGS_IFSAR = IfsarBlocks("3DEP Alaska IfSAR 5 m DTM (terrain)", "Alaska IFSAR 5 meter DEM", "ifsar5m",
+                         "usa/ifsar-5m", native_res=5.0, block_m=5000, bytes_per_tile=2e6)
+USGS_IFSAR.credit = USGS_IFSAR_CREDIT
+USGS_13 = DegreeBlocks("3DEP 1/3 arc-second DEM (terrain)", "usa/3dep-13/live",
+                       lambda name: f"{USGS_3DEP}/13/TIFF/current/{name}/USGS_13_{name}.tif",
+                       "EPSG:4269", px_per_degree=10800, native_res=10.0, credit=USGS_13_CREDIT)
+# NAIP in the map's own tiling; the cached tiles end at zoom 16 (enlarged above it)
+USGS_ORTHO = OrthoService("USGS Imagery (USDA NAIP)", None, "", "usa/ortho/live",
+                          "USGS The National Map: Orthoimagery (USDA NAIP)",
+                          base_url="https://basemap.nationalmap.gov/arcgis/rest/services/USGSImageryOnly/MapServer"
+                                   "/tile/{z}/{y}/{x}", base_max_zoom=16)
+USA_NOTE = ("USGS 3DEP data, public domain. There is no surface model (trees, buildings) for the USA yet: "
+            "lines over trees or buildings are not recognised. The orthophoto ends at zoom 16.")
+# Alaska for --source auto (the Aleutians west of 180° are left to the usa source)
+ALASKA_BOX = (51.0, 71.5, -180.0, -129.9)
 FABDEM = "https://huggingface.co/buckets/links-ads/fabdem/resolve/tiles"
 COPERNICUS = "https://copernicus-dem-30m.s3.amazonaws.com"
 
@@ -1238,6 +1734,31 @@ SOURCES: Dict[str, Source] = {s.id: s for s in [
     _spain(canary=True),
     _spain(canary=False),
     Source(
+        id="alaska", name="USGS 3DEP (1 m DEM, Alaska)",
+        description="USGS 3DEP (Alaska): 1 m lidar DEM where there is one, newest survey first; gaps from "
+                    "the 5 m IfSAR DTM, then the 1/3 arc-second DEM; NAD83 / NAVD88",
+        nmt=USGS_1M, countries=("us",), bbox=ALASKA_BOX, local_crs=nad83_utm_crs, ortho=USGS_ORTHO,
+        fallback="alaska_ifsar", more_fallbacks=("usgs10m",), instead_without_data="alaska_ifsar",
+        credits=(USGS_1M_CREDIT,), note=USA_NOTE),
+    Source(
+        id="alaska_ifsar", name="USGS 3DEP (Alaska IfSAR 5 m)",
+        description="USGS 3DEP (Alaska): IfSAR DTM 5 m (radar, 2012-2019), gaps from the 1/3 arc-second DEM",
+        nmt=USGS_IFSAR, local_crs=nad83_utm_crs, ortho=USGS_ORTHO, fallback="usgs10m",
+        credits=(USGS_IFSAR_CREDIT,),
+        note=USA_NOTE + " Alaska's IfSAR is a radar model at 5 m: lines shorter than about 30 m are not reliable."),
+    Source(
+        id="usa", name="USGS 3DEP (1 m DEM)",
+        description="USGS 3DEP (USA, Puerto Rico, US Virgin Islands): 1 m lidar DEM, newest survey first, "
+                    "NAD83 / UTM, NAVD88; gaps from the 1/3 arc-second DEM",
+        # 10 km files of 10-450 MB per project: blocks of 1 km read by HTTP range requests
+        nmt=USGS_1M, countries=("us", "pr", "vi"), local_crs=nad83_utm_crs, ortho=USGS_ORTHO,
+        fallback="usgs10m", credits=(USGS_1M_CREDIT,), note=USA_NOTE),
+    Source(
+        id="usgs10m", name="USGS 3DEP (1/3 arc-second DEM)",
+        description="USGS 3DEP seamless 1/3 arc-second DEM (about 10 m): the USA, Hawaii and the territories",
+        nmt=USGS_13, local_crs=nad83_utm_crs, ortho=USGS_ORTHO, credits=(USGS_13_CREDIT,),
+        note="The 1/3 arc-second DEM has pixels of about 10 m: lines shorter than about 60 m are not reliable."),
+    Source(
         id="europe", name="FABDEM + Copernicus DEM",
         description="FABDEM V1-2 (terrain, trees and buildings removed) and Copernicus GLO-30 (surface), 30 m",
         nmt=DegreeTiles("FABDEM (terrain)", "fabdem/v1-2", _fabdem_url, native_res=30, bytes_per_tile=20e6,
@@ -1255,9 +1776,10 @@ SOURCES: Dict[str, Source] = {s.id: s for s in [
 ]}
 
 # Rough boxes used when the country cannot be looked up (offline)
-OFFLINE_BOXES = {"mt": (35.78, 36.10, 14.15, 14.60), "pl": (49.0, 54.9, 14.1, 24.2),
-                 "es": (27.0, 43.9, -18.6, 4.4), "sk": (47.7, 49.65, 16.8, 22.6),
-                 "ch": (45.8, 47.85, 5.9, 10.5)}
+OFFLINE_BOXES = [("mt", (35.78, 36.10, 14.15, 14.60)), ("pl", (49.0, 54.9, 14.1, 24.2)),
+                 ("es", (27.0, 43.9, -18.6, 4.4)), ("sk", (47.7, 49.65, 16.8, 22.6)),
+                 ("ch", (45.8, 47.85, 5.9, 10.5)), ("us", (24.4, 49.4, -125.0, -66.9)), ("us", ALASKA_BOX),
+                 ("pr", (17.8, 18.6, -67.4, -65.2))]
 
 
 def country_code(lat: float, lon: float, cache_dir: str) -> Optional[str]:
@@ -1268,7 +1790,7 @@ def country_code(lat: float, lon: float, cache_dir: str) -> Optional[str]:
             return code.lower()
     except (requests.RequestException, ValueError):
         pass
-    for code, (s, n, w, e) in OFFLINE_BOXES.items():
+    for code, (s, n, w, e) in OFFLINE_BOXES:
         if s <= lat <= n and w <= lon <= e:
             return code
     return None
@@ -1304,6 +1826,9 @@ def choose_source(name: str, lat: float, lon: float, cache_dir: str, elevation_f
             why = source_unavailable(source)
             if why:  # e.g. our own Slovak tiles without a copy set up
                 return SOURCES["europe"], f"the centre is in {code.upper()}, but {why}"
+            if source.instead_without_data and source.nmt.has_data_near(lat, lon, cache_dir) is False:
+                return (SOURCES[source.instead_without_data],
+                        f"the centre is in {code.upper()}, but {source.id} has no terrain data near it")
             return source, f"the centre is in {code.upper()}"
     return SOURCES["europe"], f"no national source for {code.upper() if code else 'this place'}"
 
@@ -1512,7 +2037,7 @@ def fill_water(elevation_path: str, surface_path: Optional[str], grid: Grid, wbm
 
 def fill_gaps(elevation_path: str, surface_path: Optional[str], grid: Grid, fallback: "Source",
               cache_dir: str, out_path: str, update: Optional[str] = None,
-              exclude: Optional[np.ndarray] = None) -> Tuple[str, int]:
+              exclude: Optional[np.ndarray] = None, name: str = "gap") -> Tuple[str, int]:
     """Fill the remaining gaps in the data on land from another source.
 
     Each gap gets the other source shifted by the median height difference in a
@@ -1523,6 +2048,7 @@ def fill_gaps(elevation_path: str, surface_path: Optional[str], grid: Grid, fall
     GAP_MAX_LOCAL_SHIFT from the overall median is not trusted.
     Saves a boolean mask of the filled pixels to out_path; returns
     (out_path, number of filled pixels). Pixels in `exclude` (the sea) are left alone.
+    The fallback's grids are saved next to out_path as <name>_nmt.npy and <name>_nmpt.npy.
     """
     from scipy import ndimage
 
@@ -1534,10 +2060,10 @@ def fill_gaps(elevation_path: str, surface_path: Optional[str], grid: Grid, fall
     if not filled.any():
         np.save(out_path, filled)
         return out_path, 0
-    pairs = [(elevation, fallback.nmt, "gap_nmt.npy")]
+    pairs = [(elevation, fallback.nmt, f"{name}_nmt.npy")]
     if surface_path:
         surface = np.load(surface_path, mmap_mode="r+")
-        pairs.append((surface, fallback.nmpt or fallback.nmt, "gap_nmpt.npy"))
+        pairs.append((surface, fallback.nmpt or fallback.nmt, f"{name}_nmpt.npy"))
     for target, layer, name in pairs:
         gaps = np.isnan(target) if exclude is None else np.isnan(target) & ~exclude
         if not gaps.any():
@@ -1564,6 +2090,26 @@ def fill_gaps(elevation_path: str, surface_path: Optional[str], grid: Grid, fall
     filled &= np.isfinite(elevation)
     np.save(out_path, filled)
     return out_path, int(filled.sum())
+
+
+def fill_gaps_chain(elevation_path: str, surface_path: Optional[str], grid: Grid, fallbacks: List["Source"],
+                    cache_dir: str, out_path: str, update: Optional[str] = None,
+                    exclude: Optional[np.ndarray] = None) -> Tuple[str, List[Tuple["Source", int]]]:
+    """Fill the gaps on land from each fallback in turn (fill_gaps), each only what the ones
+    before it left (most sources have one; Alaska: its IfSAR, then the 1/3″ DEM). Saves the
+    mask of all filled pixels to out_path; returns (out_path, [(fallback, filled pixels)])."""
+    filled, counts = None, []
+    for n, fallback in enumerate(fallbacks):
+        step = out_path if n == 0 else f"{os.path.splitext(out_path)[0]}{n}.npy"
+        _, pixels = fill_gaps(elevation_path, surface_path, grid, fallback, cache_dir, step, update,
+                              exclude=exclude, name="gap" if n == 0 else f"gap{n}")
+        counts.append((fallback, pixels))
+        if n == 0:
+            filled = np.load(step)
+        elif pixels:
+            filled |= np.load(step)
+            np.save(out_path, filled)
+    return out_path, counts
 
 
 def load_slope_file(slope_file: str, grid: Grid, out_path: str) -> str:

@@ -544,12 +544,13 @@ def prepare_data(plan: Plan) -> Data:
             wbm = src.water_body_mask(grid, cache_dir, os.path.join(work, "wbm.npy"), p.update)
             sea_zone = src.near(wbm == src.OCEAN, src.SHORE_BUFFER, grid.res)
         if p.fill_gaps == "on" and source.fallback:
-            fallback = src.SOURCES[source.fallback]
-            filled_path, filled_px = src.fill_gaps(elevation_path, surface_path, grid, fallback, cache_dir,
-                                                   os.path.join(work, "filled.npy"), p.update, exclude=sea_zone)
-            if filled_px:
-                emit("info", f"Filled {filled_px * plan.resolution ** 2 / 1e6:.2f} km² of gaps in the data "
-                             f"from {fallback.name}")
+            filled_path, filled = src.fill_gaps_chain(elevation_path, surface_path, grid,
+                                                      [src.SOURCES[f] for f in source.fallbacks], cache_dir,
+                                                      os.path.join(work, "filled.npy"), p.update, exclude=sea_zone)
+            for fallback, filled_px in filled:
+                if filled_px:
+                    emit("info", f"Filled {filled_px * plan.resolution ** 2 / 1e6:.2f} km² of gaps in the data "
+                                 f"from {fallback.name}")
         if p.water == "fill":
             water_path = src.fill_water(elevation_path, surface_path, grid, wbm, sea_zone,
                                         os.path.join(work, "water.npy"))

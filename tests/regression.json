@@ -562,5 +562,82 @@
     },
     "notes": "skipped without FINDALINE_MIRROR; --source auto picks Slovakia (the centre is in SK); first run on an empty cache: 9 s, 2 DTM tiles 12 MB and 2 DSM tiles 14 MB copied from the mirror; forest everywhere: all lines over trees",
     "seconds": 2.6
+  },
+  "R22": {
+    "place": "El Capitan, Yosemite Valley, USA: USGS 3DEP 1 m blocks read by HTTP range requests from 10 km files; the tile is in two projects, the newer (2020) has no data here, so the 2019 one (an older file layout, not a COG) fills the blocks",
+    "args": "--lat 37.7339 --lon -119.6377 --radius 400 --min-length 50 --max-length 400",
+    "sets": [
+      "sources",
+      "us"
+    ],
+    "expected": {
+      "anchors": 150738,
+      "open": 28211,
+      "checked": 261949,
+      "lines": 18985,
+      "spots": 144,
+      "csv_sha256": "634373b65e30a5d88ae6a7c8d2505a0eec5e265ea31816406496116ef0dfc03a",
+      "length_km": 2096.316,
+      "clearance_min": 0.0,
+      "clearance_mean": 3.512,
+      "clearance_max": 134.79,
+      "over_trees": 0,
+      "coverage": 100.0,
+      "empty_tiles": 0,
+      "source": "USGS 3DEP (1 m DEM)"
+    },
+    "notes": "--source auto picks usa (the centre is in US); first run on an empty cache: 18 s, 9 blocks of 1 km, 15 MB; working grid in NAD83 / UTM 11N, the blocks copied onto it as they are",
+    "seconds": 17.9
+  },
+  "R23": {
+    "place": "Moab Rim, Utah, USA: a 1 m tile in three projects; the blocks are composed from 2020 and 2018 (the 2022 project has no data here)",
+    "args": "--lat 38.5610 --lon -109.5680 --radius 400 --min-length 50 --max-length 400",
+    "sets": [
+      "us"
+    ],
+    "expected": {
+      "anchors": 35878,
+      "open": 1447,
+      "checked": 1971,
+      "lines": 241,
+      "spots": 5,
+      "csv_sha256": "c9bce68407e4a0ba7afcc9b37891e8ce068221e29ad62bb18c6bb194cab785c9",
+      "length_km": 24.378,
+      "clearance_min": 0.01,
+      "clearance_mean": 0.538,
+      "clearance_max": 2.95,
+      "over_trees": 0,
+      "coverage": 100.0,
+      "empty_tiles": 0,
+      "source": "USGS 3DEP (1 m DEM)"
+    },
+    "notes": "run.json lists both files read (source_files) and the survey years 2018-2020",
+    "seconds": 11.7
+  },
+  "R24": {
+    "place": "Mount Juneau, Alaska, USA: no 1 m lidar near the centre, so --source auto takes Alaska's IfSAR DTM (5 m, cells in Alaska Albers)",
+    "args": "--lat 58.3093 --lon -134.3890 --radius 600 --min-length 60 --max-length 400",
+    "sets": [
+      "sources",
+      "us"
+    ],
+    "expected": {
+      "anchors": 6797,
+      "open": 5078,
+      "checked": 5494,
+      "lines": 80,
+      "spots": 12,
+      "csv_sha256": "5e7bb1857f2b9a95d95b1707df10f5e00870c92311e8d0e9622f17b1359d4f81",
+      "length_km": 18.346,
+      "clearance_min": 0.01,
+      "clearance_mean": 0.583,
+      "clearance_max": 2.0,
+      "over_trees": 0,
+      "coverage": 100.0,
+      "empty_tiles": 0,
+      "source": "USGS 3DEP (Alaska IfSAR 5 m)"
+    },
+    "notes": "the reason printed: alaska has no terrain data near it; 5 m by default; first run on an empty cache: 11 s, 2 blocks of 5 km, 4 MB",
+    "seconds": 9.8
   }
 }

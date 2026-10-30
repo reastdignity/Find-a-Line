@@ -6,7 +6,7 @@ This guide takes you from nothing to your first map of possible highlines. You d
 - An internet connection (the elevation data and aerial photos are downloaded automatically)
 - About 1 GB of free disk space for a few searches
 
-The tool works best in Poland, Malta and Switzerland, where it uses very detailed national elevation data (1 m), and in Spain (5 m). It also works anywhere else in Europe with less detailed data (30 m), which is good enough to find long lines only. It picks the right data by itself.
+The tool works best in Poland, Malta, Switzerland and the USA, where it uses very detailed national elevation data (1 m; in the USA without trees and buildings for now), and in Spain and Alaska (5 m). It also works anywhere else in Europe with less detailed data (30 m), which is good enough to find long lines only. It picks the right data by itself.
 
 ## 1. Install the tools (once)
 You need two tools: **Git** downloads the project, **uv** installs Python and everything the script needs (you don't install Python yourself).

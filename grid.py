@@ -19,6 +19,13 @@ def utm_crs(lat: float, lon: float) -> str:
     return f"EPSG:{(32600 if lat >= 0 else 32700) + zone}"
 
 
+def nad83_utm_crs(lat: float, lon: float) -> str:
+    """UTM zone (NAD83) containing the point, e.g. EPSG:26913: the CRS of the USGS 1 m DEM
+    (zones 1-23 north; elsewhere the WGS84 zone)."""
+    zone = min(60, int((lon + 180) // 6) + 1)
+    return f"EPSG:{26900 + zone}" if lat >= 0 and zone <= 23 else utm_crs(lat, lon)
+
+
 @dataclass
 class Grid:
     """Working raster grid covering the search area (see area.py for its mask)."""
