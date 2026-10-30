@@ -35,11 +35,13 @@ sys.path.insert(0, REPO)
 ACCOUNTS = {"FINDALINE_SESSION_SECRET": "ui-shots-" * 5, "FINDALINE_GITHUB_CLIENT_ID": "id",
             "FINDALINE_GITHUB_CLIENT_SECRET": "secret", "FINDALINE_ADMINS": "github:1"}
 
-# name -> (interface, hash, CSS selector clicked after loading or None); "{run}" is the clip's run
+# name -> (interface, hash, action after loading or None: a CSS selector to click, or "scroll:<selector>" to
+# scroll that element (or the page) to its end); "{run}" is the clip's run
 PAGES = {
     "d-home": ("d", "", None),
     "d-menu": ("d", "", ".c-account-btn"),        # the account menu (desktop: a popover)
     "d-account": ("d", "#account", None),         # the account page (phones)
+    "d-account-end": ("d", "#account", "scroll:.c-main"),
     "d-new": ("d", "#new", None),
     "d-result": ("d", "#run={run}", None),
     "d-favourites": ("d", "#favourites", None),
@@ -176,6 +178,11 @@ def main():
                         page = context.new_page()  # a fresh page each: no menu or route of the one before
                         page.goto(f"{site}/?ui={ui}{hash_.format(run=run)}")
                         page.wait_for_timeout(2500)  # the event stream stays open: no "network idle"
+                        if click and click.startswith("scroll:"):
+                            page.evaluate("(sel) => { const e = document.querySelector(sel) || "
+                                          "document.scrollingElement; e.scrollTop = e.scrollHeight; }", click[7:])
+                            page.wait_for_timeout(400)
+                            click = None
                         target = page.query_selector(click) if click else None
                         if click and not (target and target.is_visible()):
                             page.close()

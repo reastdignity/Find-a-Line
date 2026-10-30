@@ -33,7 +33,7 @@
 .ui .c-account-who > span:last-child { display: flex; flex-direction: column; }
 .ui .c-account-links { display: flex; flex-direction: column; }
 .ui .c-account-theme { display: flex; flex-direction: column; gap: 6px; }
-.ui .c-top .r-pop { width: 290px; }
+.ui .c-top .r-pop { width: 290px; max-height: calc(100vh - 80px); }  /* the account menu: Sign out in view */
 
 /* Menus (a card's actions, the account) */
 .ui .c-menu { display: flex; flex-direction: column; margin: -6px -8px; }
@@ -191,6 +191,7 @@
 .ui .c-admin-head b { overflow-wrap: anywhere; }
 .ui .c-admin-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin-top: 4px; }
 .ui .c-admin-workers { margin: 10px 0 0; padding-left: 18px; }
+.ui .c-admin-limits { margin: 8px 0 0; color: var(--ink-2); }
 .ui .c-check { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: var(--ink-2); cursor: pointer; }
 .ui .c-user-pending { background: var(--warn); }
 .ui .c-user-blocked { background: var(--bad); }

@@ -4,6 +4,7 @@
 // delete) and a link to the OpenStreetMap extracts (their own page: they need a map). Every request is an
 // administrator's only (web.py).
 
+import { Fragment } from "preact";
 import { useEffect, useState } from "preact/hooks";
 import { Button, Panel, Stat, Stats, StatusChip, type Status } from "../../ui/components";
 import { api, type AdminReport, type AdminRun, type AdminStatus, type AdminUser, type Job } from "../api";
@@ -30,7 +31,7 @@ function Users({users, onChange, onError}: {users: AdminUser[]; onChange(): void
       {u.unlimited && !u.admin && <span class="u-badge u-n">without limits</span>}
     </div>
     <div class="u-small">since {(u.created || "?").slice(0, 10)} · last sign-in {when(u.last_login, "never")}
-      {" · "}{u.sessions} session(s)</div>
+      {" · "}{u.sessions} {u.sessions === 1 ? "session" : "sessions"}</div>
     {!u.admin && <div class="c-admin-tools">
       {u.status !== "approved" && <Button kind="primary" onClick={() => change(api.adminSetUser(u.id, {status: "approved"}))}>
         {u.status === "blocked" ? "Unblock" : "Approve"}</Button>}
@@ -79,10 +80,11 @@ function Reports({reports, onChange, onError}: {reports: AdminReport[]; onChange
       </div>
       <p class="c-report-text">{r.text}</p>
       <div class="u-small c-report-context">
-        {c.run && (r.run_name ? <a href={runHash(c.run, c.line || null)}>{r.run_name}{c.line ? ", the line" : ""}</a>
-          : <span>run {c.run} (deleted)</span>)}
-        {c.page && <span> · page {c.page}</span>}{c.ui && <span> · interface {c.ui}</span>}
-        {c.viewport && <span> · window {c.viewport}</span>}
+        {[c.run && (r.run_name ? <a href={runHash(c.run, c.line || null)}>{r.run_name}{c.line ? ", the line" : ""}</a>
+            : <span>run {c.run} (deleted)</span>),
+          c.page && <span>page {c.page}</span>, c.ui && <span>interface {c.ui}</span>,
+          c.viewport && <span>window {c.viewport}</span>]
+          .filter(Boolean).map((part, i) => <Fragment key={i}>{i > 0 && " · "}{part}</Fragment>)}
         {c.user_agent && <div class="u-mono c-report-agent">{c.user_agent}</div>}
       </div>
       <div class="c-admin-tools">
@@ -121,12 +123,15 @@ export function AdminC({jobs}: {jobs: Job[]}) {
     <Panel title="Server" actions={<Button kind="ghost" icon="refresh" onClick={load}>Refresh</Button>}>
       {status && <>
         <Stats>
-          <Stat value={status.workers.length} label="workers" />
-          <Stat value={status.free_gb} unit="GB" label={status.free_gb_min !== null
-            ? `free (no new searches below ${status.free_gb_min} GB)` : "free"} />
-          <Stat value={status.queue} label={status.queue_max !== null
-            ? `waiting or running (at most ${status.queue_max})` : "waiting or running"} />
+          <Stat value={status.workers.length} label={status.workers.length === 1 ? "worker" : "workers"} />
+          <Stat value={status.free_gb} unit="GB" label="free disk" />
+          <Stat value={status.queue} unit={status.queue_max !== null ? `/ ${status.queue_max}` : undefined}
+                label="in the queue" />
         </Stats>
+        {(status.free_gb_min !== null || status.queue_max !== null) && <p class="u-small c-admin-limits">
+          {[status.free_gb_min !== null && `No new searches below ${status.free_gb_min} GB free.`,
+            status.queue_max !== null && `At most ${status.queue_max} searches waiting or running.`]
+            .filter(Boolean).join(" ")}</p>}
         {status.workers.length ? <ul class="c-admin-workers u-small">{status.workers.map((w) =>
             <li key={w.id}>worker {w.id} since {when(w.started)}</li>)}</ul>
           : <p class="c-error">No worker is running.</p>}

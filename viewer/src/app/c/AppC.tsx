@@ -121,8 +121,9 @@ export function ShellC({ui, tries, result}: ShellProps) {
     go("#home", true);  // the new card, highlighted; Back does not return to the filled form
   };
   const editJob = route.page === "run" ? jobs.jobs.find((j) => j.run_id === route.id)?.id || null : null;
+  // Admin and the OSM extracts open from the account: on phones its item stays the way back
   const nav: Nav | null = route.page === "home" || route.page === "favourites" || route.page === "account" ? route.page
-    : null;
+    : route.page === "admin" || route.page === "osm" ? "account" : null;
   const focused = route.page === "new" || route.page === "run";  // pages with their own top bar
 
   let page;
