@@ -14,6 +14,7 @@ import { PlaceMap } from "../PlaceMap";
 import { FINISHED, useJobs } from "../useJobs";
 import { DESKTOP, IconButton, Rail, Screen, Segmented, Sheet, Toast, useMedia, type NavItem,
          type Theme } from "../../ui/components";
+import { canReport, openReport } from "../../report";
 import { Icon, Logo } from "../../ui/icons";
 import { storedTheme, storeTheme, uiHref } from "../../ui/choice";
 import { useUsage } from "../../search/useSearch";
@@ -45,6 +46,7 @@ function Account({theme, onTheme}: {theme: Theme; onTheme(theme: Theme): void}) 
     <Segmented label="Theme" value={theme} onChange={onTheme}
                options={[{value: "auto", label: "Auto"}, {value: "light", label: "Light"}, {value: "dark", label: "Dark"}]} />
     <div class="b-account-links">
+      {canReport() && <button type="button" class="b-report" onClick={() => openReport()}>Report a problem</button>}
       {!user.local && <><a href="/privacy" target="_blank">Privacy</a><a href="/about" target="_blank">About and data licences</a></>}
       <a href={uiHref("old")}>Old interface</a>
       <a href={uiHref("c")}>Try C</a>

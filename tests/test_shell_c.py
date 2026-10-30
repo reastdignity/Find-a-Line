@@ -437,7 +437,37 @@ def test_shell_c_phone(data, tmp_path):
 
 PUBLIC_SCRIPT = """
 const RUN = "%(run)s", ADMIN = %(admin)s;
+const typeIn = (el, value) => { el.value = value; el.dispatchEvent(new Event("input", {bubbles: true})); };
+/** Send a report from the dialog that is open: its kind, its text; then the dialog closed. */
+const report = (kind, words, then) => wait(() => $("dialog.n-report[open] .u-seg") && !$("dialog.n-report textarea").value
+                                           && text("dialog.n-report .n-attached").includes("the page"), () => {
+  const sent = {attached: text("dialog.n-report .n-attached")};
+  $$("dialog.n-report .u-seg button").find((b) => b.textContent === kind).click();
+  later(() => {
+    typeIn($("dialog.n-report textarea"), words);
+    later(() => {
+      $("dialog.n-report button[type=submit]").click();
+      wait(() => text("dialog.n-report h2") === "Thank you", () => {
+        button("Close").click();
+        later(() => { sent.closed = !$("dialog.n-report[open]"); then(sent); });
+      });
+    });
+  });
+});
 run({
+  notice(next) {
+    // The beta notice after the sign-in, once: the cookie of the sign-in is gone after it
+    wait(() => $("dialog.n-beta[open]"), () => {
+      result.notice = {title: text("dialog.n-beta h2"), main: text("dialog.n-beta .n-warn").includes("break of the main"),
+                       links: $$("dialog.n-beta .n-ways a").map((a) => a.getAttribute("href"))};
+      button("Understood").click();
+      later(() => {
+        result.notice.closed = !$("dialog.n-beta[open]");
+        result.notice.cookie = document.cookie.includes("findaline-welcome");
+        next();
+      });
+    });
+  },
   home(next) { wait(() => (ADMIN || card("run", RUN)) && $(".c-account-btn") && $(".c-cards, .c-empty"), () => {
     result.cards = $$(".c-card").map((c) => c.dataset.run);
     $(".c-account-btn").click();
@@ -453,11 +483,54 @@ run({
     location.hash = "#admin";
     wait(() => $$(".c-admin .u-panel-head h2").length > 3, () => {
       result.admin = $$(".c-admin .u-panel-head h2").map((h) => h.textContent);
+      result.reports = $$(".c-report").map((r) => [r.querySelector(".u-badge").textContent,
+                                                    r.querySelector(".c-report-text").textContent,
+                                                    !!r.querySelector(".c-report-context a"),
+                                                    !!r.querySelector(".c-report-agent")]);
+      const done = (fn) => wait(() => !$(".r-spin"), fn);
+      if (result.reports.length) {
+        $(".c-report .c-admin-tools button").click();  // Done
+        wait(() => $(".c-report-done"), () => {
+          $$(".c-report")[0].querySelectorAll(".c-admin-tools button")[1].click();  // Delete…
+          later(() => {
+            $(".c-report-delete").click();
+            wait(() => $$(".c-report").length === result.reports.length - 1, () => {
+              result.reportsAfter = $$(".c-report").length;
+              location.hash = "#osm";
+              wait(() => $$(".c-osm > p, .c-osm .c-admin-row").length > 1, () => { location.hash = "#home"; next(); });
+            });
+          });
+        });
+        return;
+      }
       location.hash = "#osm";  // the extracts' own page, beside its map
       wait(() => $$(".c-osm > p, .c-osm .c-admin-row").length > 1, () => {  // the intro and the regions
         result.osm = $$(".c-osm h2").map((h) => h.textContent);
         location.hash = "#home";
         wait(() => $(".c-cards, .c-empty"), next);
+      });
+    });
+  },
+  reports(next) {
+    if (ADMIN) return next();
+    // Report a problem: from the account menu, then from a line of the run (its run and line sent with it)
+    later(() => $(".c-account-btn").click());  // (after the menu closed by the step before was drawn)
+    wait(() => button("Report a problem"), () => {
+      button("Report a problem").click();
+      report("Interface", "The map does not move.", (fromMenu) => {
+        result.fromMenu = fromMenu;
+        location.hash = "#run=" + RUN;
+        wait(() => $(".r-rows .r-row"), () => {
+          $(".r-rows .r-row").click();
+          wait(() => button("Report this line"), () => {
+            button("Report this line").click();
+            report("Water level", "The river is 2 m too high here.", (fromLine) => {
+              result.fromLine = fromLine;
+              location.hash = "#home";
+              wait(() => card("run", RUN), next);
+            });
+          });
+        });
       });
     });
   },
@@ -567,20 +640,31 @@ def test_shell_c_public(tmp_path, clip_run, monkeypatch):
     try:
         while not server.started:
             time.sleep(0.1)
-        r = signed_in({"id": 1, "login": "admin"}, True, "edge-admin")  # adopts nothing: A's run has its owner
-        assert "timeout" not in r and "error" not in r, json.dumps(r)
-        assert "Admin" in r["account"] and r["name"] == "admin", r
-        assert {"Server", "Users", "All searches", "Runs", "OpenStreetMap extracts"} <= set(r["admin"]), r
-        assert r["osm"] == ["At the map centre", "Downloaded"] and "OpenStreetMap extracts" in r["account"], r
-        assert r["csp"] == []
         r = signed_in({"id": 11, "login": "a"}, False, "edge-a")
         assert "timeout" not in r and "error" not in r, json.dumps(r)
+        assert r["notice"] == {"title": "An early beta", "main": True, "closed": True, "cookie": False,
+                               "links": ["https://github.com/reastdignity/Find-a-Line/issues/new/choose",
+                                         "mailto:admin@example.org"]}, r
         assert r["cards"] == [RUN_A] and r["name"] == "a", r
         assert "Admin" not in r["account"] and "Privacy" in r["account"] and "About" in r["account"], r
-        assert r["menu"] == ["Open the result", "Share…", "Delete…"], r
+        assert "Report a problem" in r["account"], r
+        assert r["fromMenu"]["closed"] and "the window's size" in r["fromMenu"]["attached"], r
+        assert "the run and the line" in r["fromLine"]["attached"] and r["fromLine"]["closed"], r
+        sent = Jobs(str(data)).reports()
+        assert [(s["category"], s["context"].get("line") is not None, bool(s["context"]["user_agent"])) for s in sent] ==             [("water", True, True), ("interface", False, True)], sent
+        assert r["menu"] == ["Open the result", "Share…", "Report a problem…", "Delete…"], r
         assert r["link"].startswith(f"{site}/s/") and r["shared"] == "shared", r
         assert r["confirm"].startswith("Delete “A's run”") and r["deleted"], r
         assert not (data / "runs" / RUN_A).exists()
+        assert r["csp"] == []
+        r = signed_in({"id": 1, "login": "admin"}, True, "edge-admin")
+        assert "timeout" not in r and "error" not in r, json.dumps(r)
+        assert "Admin" in r["account"] and r["name"] == "admin", r
+        assert {"Server", "Users", "All searches", "Runs", "OpenStreetMap extracts"} <= set(r["admin"]), r
+        assert "Problem reports (2 open)" in r["admin"], r
+        assert r["reports"] == [["water level", "The river is 2 m too high here.", False, True],
+                                ["interface", "The map does not move.", False, True]], r  # the run is deleted
+        assert r["reportsAfter"] == 1, r
         assert r["csp"] == []
     finally:
         server.should_exit = True

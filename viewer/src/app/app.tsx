@@ -20,6 +20,7 @@ import { OsmPanel } from "./OsmPanel";
 import { PlaceMap } from "./PlaceMap";
 import { SearchForm } from "./SearchForm";
 import { AppB } from "./b/AppB";
+import { BetaNotice, ReportDialog } from "./ReportDialog";
 import { AppC } from "./c/AppC";
 import { AppD } from "./d/AppD";
 import { Gallery } from "../ui/Gallery";
@@ -144,5 +145,7 @@ function App() {
 }
 
 const SHELLS = {old: App, b: AppB, c: AppC, d: AppD, kit: Gallery, "kit-result": KitResult, "kit-search": KitSearch};
-const Shell = SHELLS[chooseUi()];
-render(<Shell />, document.getElementById("app")!);
+const choice = chooseUi(), Shell = SHELLS[choice];
+// The beta notice after a sign-in and Report a problem (the public site), whichever interface is shown
+const dialogs = ["old", "b", "c", "d"].includes(choice) && <><BetaNotice /><ReportDialog /></>;
+render(<><Shell />{dialogs}</>, document.getElementById("app")!);

@@ -111,11 +111,19 @@ MIGRATIONS = [
                                        name TEXT NOT NULL, created TEXT);
        CREATE INDEX favourite_folders_user ON favourite_folders (IFNULL(user_id, 0));
        ALTER TABLE favourites ADD COLUMN folder_id INTEGER;""",
+    # 10: problem reports of the users (the app's "Report a problem"): a category, the text and the page,
+    # run, line, window and browser they were sent from (JSON); open or done, kept until an administrator
+    # deletes them
+    """CREATE TABLE reports (id INTEGER PRIMARY KEY, user_id INTEGER, created TEXT, category TEXT NOT NULL,
+                             text TEXT NOT NULL, context TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'open');""",
 ]
 FAVOURITES_MAX = 10000  # favourite lines of a user (a safeguard of the database, the same for everyone)
 FOLDERS_MAX = 1000      # folders of favourites of a user
 FOLDER_DEPTH_MAX = 8    # folders inside one another (a top-level folder is at depth 1)
 FOLDER_NAME_MAX = 100   # characters of a folder's name
+REPORT_CATEGORIES = ("results", "water", "interface", "other")  # of a problem report
+REPORT_TEXT_MAX = 4000  # characters of a problem report
+REPORT_STATUSES = ("open", "done")
 
 
 # An absolute path on the server: C:\... (or C:/...), or /dir/... not in a URL (http://host/...: the
@@ -642,6 +650,36 @@ class Jobs:
                                (user_id, *inside)).rowcount
             db.execute(f"DELETE FROM favourite_folders WHERE id IN ({marks})", inside)
         return {"folders": len(inside), "favourites": lines}
+
+    # --- Problem reports (the users send them, administrators read them) ---
+
+    def add_report(self, user_id: Optional[int], category: str, text: str, context: Dict) -> int:
+        """A user's problem report (checked by web.checked_report); its id."""
+        with self._db() as db:
+            return db.execute("INSERT INTO reports (user_id, created, category, text, context) VALUES (?, ?, ?, ?, ?)",
+                              (user_id, datetime.now().isoformat(timespec="seconds"), category, text,
+                               json.dumps(context))).lastrowid
+
+    def reports(self, limit: int = 200) -> List[Dict]:
+        """The latest problem reports, newest first: id, user_id, created, category, text, context (a
+        dict), status."""
+        with self._db() as db:
+            rows = db.execute("SELECT * FROM reports ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
+        return [{**dict(r), "context": json.loads(r["context"])} for r in rows]
+
+    def set_report_status(self, report_id: int, status: str):
+        """Mark a report open or done; KeyError when there is none, ValueError for another status."""
+        if status not in REPORT_STATUSES:
+            raise ValueError(status)
+        with self._db() as db:
+            if not db.execute("UPDATE reports SET status = ? WHERE id = ?", (status, report_id)).rowcount:
+                raise KeyError(report_id)
+
+    def delete_report(self, report_id: int):
+        """Delete a report; KeyError when there is none."""
+        with self._db() as db:
+            if not db.execute("DELETE FROM reports WHERE id = ?", (report_id,)).rowcount:
+                raise KeyError(report_id)
 
     def all_runs(self) -> List[Dict]:
         """Every run's row (the admin tab), newest first."""

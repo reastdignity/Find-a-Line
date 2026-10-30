@@ -7,6 +7,7 @@ import { Button, Chip, Chips, IconButton, Panel, Progress, StatusChip } from "..
 import { Icon } from "../../ui/icons";
 import { LinkField, Popover } from "../../result/view";
 import { forgetRun } from "../../result/load";
+import { canReport, openReport } from "../../report";
 import { UsageMeters, type UsageState } from "../../search";
 import { api, type RunListed } from "../api";
 import { beingSaved, jobProgress, type JobsState, type JobView } from "../useJobs";
@@ -143,6 +144,9 @@ function SearchCard({card, runs, jobs, publicSite, highlight}:
       <Icon name="share" />Share…</button>,
     job && st.unfinished && <button key="cancel" type="button" role="menuitem" class="c-menu-item" onClick={act(cancel)}>
       <Icon name="close" />Cancel the search</button>,
+    canReport() && <button key="report" type="button" role="menuitem" class="c-menu-item"
+                           onClick={act(() => openReport({about: name, context: run ? {run: run.id} : {}}))}>
+      <Icon name="warn" />Report a problem…</button>,
     canDelete && <button key="delete" type="button" role="menuitem" class="c-menu-item c-danger" onClick={act(() => setPanel("delete"))}>
       <Icon name="close" />Delete…</button>,
   ].filter(Boolean);

@@ -9,6 +9,7 @@ import { Icon } from "../../ui/icons";
 import { dh } from "../../filters";
 import type { Line } from "../../types";
 import type { ResultModel } from "../model";
+import { canReport, openReport } from "../../report";
 import { FavouritePicker } from "./FavouritePicker";
 import { ResultNote } from "./ResultSummary";
 import { cx, num, Swatch, useModel } from "./common";
@@ -154,6 +155,10 @@ export function LineDetails({model, linkOf, onZoom, onStep, part = "all", note =
       <Button icon="link" class="r-copy" onClick={link}>{shownCopy?.ok ? "Link copied" : "Copy link"}</Button>
       {onZoom && <Button icon="zoom" onClick={() => onZoom(l)}>Zoom</Button>}
       {model.profileClosed && <Button icon="ruler" class="r-reprofile" onClick={() => model.showProfile()}>Profile</Button>}
+      {canReport() && <Button icon="warn" kind="ghost" class="r-report"
+                              onClick={() => openReport({category: "results", about: `a line of ${l.run ? l.run.info.name : model.data.run.name}`,
+                                                         context: {run: model.runOf(l), line: model.lineLink(l)}})}>
+        Report this line</Button>}
     </div>
     {shownCopy && !shownCopy.ok && <LinkField text={shownCopy.text} />}
     {shownCopy?.ok && <input type="hidden" class="r-copied" value={shownCopy.text} />}

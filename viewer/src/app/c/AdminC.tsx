@@ -1,11 +1,12 @@
 // C's admin page of the public site (the old app's Admin.tsx in the new look, the same requests): the
 // server (workers, free disk, queue), the users (approve, block, without limits, end their sessions),
-// every search with its owner (cancel), every run (open, the demo flag) and a link to the OpenStreetMap
-// extracts (their own page: they need a map). Every request is an administrator's only (web.py).
+// every search with its owner (cancel), every run (open, the demo flag), the users' problem reports (done,
+// delete) and a link to the OpenStreetMap extracts (their own page: they need a map). Every request is an
+// administrator's only (web.py).
 
 import { useEffect, useState } from "preact/hooks";
 import { Button, Panel, Stat, Stats, StatusChip, type Status } from "../../ui/components";
-import { api, type AdminRun, type AdminStatus, type AdminUser, type Job } from "../api";
+import { api, type AdminReport, type AdminRun, type AdminStatus, type AdminUser, type Job } from "../api";
 import { runHash } from "./route";
 
 const JOBS_SHOWN = 50;
@@ -62,10 +63,46 @@ function Runs({runs, names, onChange, onError}: {runs: AdminRun[]; names: Map<nu
   </li>)}</ul>;
 }
 
+const KINDS: Record<string, string> = {results: "results", water: "water level", interface: "interface", other: "other"};
+
+function Reports({reports, onChange, onError}: {reports: AdminReport[]; onChange(): void; onError(e: Error): void}) {
+  const [asking, setAsking] = useState<number | null>(null);
+  const change = (p: Promise<unknown>) => p.then(onChange, onError);
+  if (!reports.length) return <p class="u-small">No reports.</p>;
+  return <ul class="c-admin-list">{reports.map((r) => {
+    const c = r.context;
+    return <li key={r.id} class={"c-admin-row c-report" + (r.status === "done" ? " c-report-done" : "")} data-report={r.id}>
+      <div class="c-admin-head">
+        <span class="u-badge">{KINDS[r.category] || r.category}</span>
+        <StatusChip status={r.status === "done" ? "done" : "waiting"}>{r.status}</StatusChip>
+        <b>{r.user_name || "?"}</b><span class="u-small">{when(r.created)}</span>
+      </div>
+      <p class="c-report-text">{r.text}</p>
+      <div class="u-small c-report-context">
+        {c.run && (r.run_name ? <a href={runHash(c.run, c.line || null)}>{r.run_name}{c.line ? ", the line" : ""}</a>
+          : <span>run {c.run} (deleted)</span>)}
+        {c.page && <span> · page {c.page}</span>}{c.ui && <span> · interface {c.ui}</span>}
+        {c.viewport && <span> · window {c.viewport}</span>}
+        {c.user_agent && <div class="u-mono c-report-agent">{c.user_agent}</div>}
+      </div>
+      <div class="c-admin-tools">
+        <Button kind={r.status === "open" ? "primary" : "default"}
+                onClick={() => change(api.adminReportStatus(r.id, r.status === "open" ? "done" : "open"))}>
+          {r.status === "open" ? "Done" : "Reopen"}</Button>
+        {asking === r.id
+          ? <><Button kind="danger" class="c-report-delete" onClick={() => { setAsking(null); change(api.adminDeleteReport(r.id)); }}>
+              Delete it</Button><Button kind="ghost" onClick={() => setAsking(null)}>Keep</Button></>
+          : <Button kind="ghost" onClick={() => setAsking(r.id)}>Delete…</Button>}
+      </div>
+    </li>;
+  })}</ul>;
+}
+
 export function AdminC({jobs}: {jobs: Job[]}) {
   const [status, setStatus] = useState<AdminStatus | null>(null);
   const [users, setUsers] = useState<AdminUser[]>([]);
   const [runs, setRuns] = useState<AdminRun[]>([]);
+  const [reports, setReports] = useState<AdminReport[]>([]);
   const [error, setError] = useState("");
   const onError = (e: Error) => setError(e.message);
   const load = () => {
@@ -73,6 +110,7 @@ export function AdminC({jobs}: {jobs: Job[]}) {
     api.adminStatus().then(setStatus, onError);
     api.adminUsers().then((r) => setUsers(r.users), onError);
     api.adminRuns().then((r) => setRuns(r.runs), onError);
+    api.adminReports().then((r) => setReports(r.reports), onError);
   };
   useEffect(load, []);
   const names = new Map(users.map((u) => [u.id, u.name]));
@@ -108,6 +146,10 @@ export function AdminC({jobs}: {jobs: Job[]}) {
             <Button kind="danger" onClick={() => api.cancel(j.id).catch(onError)}>Cancel</Button></div>}
         </li>;
       })}</ul> : <p class="u-small">No searches.</p>}
+    </Panel>
+    <Panel title={`Problem reports${reports.some((r) => r.status === "open")
+      ? ` (${reports.filter((r) => r.status === "open").length} open)` : ""}`}>
+      <Reports reports={reports} onChange={load} onError={onError} />
     </Panel>
     <Panel title="Runs">
       <Runs runs={runs} names={names} onChange={load} onError={onError} />

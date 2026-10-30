@@ -96,6 +96,12 @@ export interface AdminRun {
   run_id: string; user_id: number | null; visibility: "private" | "demo"; bytes: number; created: string;
   shared: boolean; name: string | null; has_map: boolean;
 }
+/** A problem report as the admin page lists it (web.py /api/admin/reports). */
+export interface AdminReport {
+  id: number; user_id: number | null; user_name: string | null; created: string; category: string; text: string;
+  status: "open" | "done"; run_name: string | null;
+  context: {page?: string; ui?: string; run?: string; line?: string; viewport?: string; user_agent?: string};
+}
 export interface AdminStatus {
   workers: {id: string; pid: number; host: string; started: string}[];
   free_gb: number; free_gb_min: number | null; queue: number; queue_max: number | null;
@@ -157,6 +163,12 @@ export const api = {
   share: (id: string) => call<{url: string}>("POST", `/api/runs/${encodeURIComponent(id)}/share`),
   unshare: (id: string) => call<{ok: boolean}>("DELETE", `/api/runs/${encodeURIComponent(id)}/share`),
   deleteRun: (id: string) => call<{ok: boolean}>("DELETE", `/api/runs/${encodeURIComponent(id)}`),
+  report: (body: {category: string; text: string; context: object}) =>
+    call<{id: number}>("POST", "/api/reports", body),
+  adminReports: () => call<{reports: AdminReport[]}>("GET", "/api/admin/reports"),
+  adminReportStatus: (id: number, status: "open" | "done") =>
+    call<{ok: boolean}>("POST", `/api/admin/reports/${id}`, {status}),
+  adminDeleteReport: (id: number) => call<{ok: boolean}>("DELETE", `/api/admin/reports/${id}`),
   favourites: () => call<{favourites: Favourite[]; folders: FavouriteFolder[]}>("GET", "/api/favourites"),
   moveFavourite: (run: string, line: string, folder: number | null) =>
     call<{ok: boolean}>("POST", `/api/runs/${encodeURIComponent(run)}/favourites/folder`, {line, folder}),

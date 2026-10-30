@@ -236,3 +236,8 @@
 .ui .c-result-phone .u-sheet { z-index: 7; }
 .ui .c-result-phone .u-sheet-body { display: flex; flex-direction: column; gap: 10px; }
 .ui .c-result-phone .leaflet-top { top: 60px; }
+
+/* Problem reports on the admin page */
+.ui .c-report-text { margin: 4px 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.ui .c-report-done .c-report-text { color: var(--ink-2); }
+.ui .c-report-agent { overflow-wrap: anywhere; margin-top: 2px; }

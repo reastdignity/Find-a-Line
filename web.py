@@ -280,6 +280,41 @@ def checked_folder_name(value) -> str:
     return value.strip()
 
 
+REPORT_AGENT_MAX = 300  # characters of a report's User-Agent
+REPORT_UIS = ("b", "c", "d", "old")
+VIEWPORT = re.compile(r"\d{1,5}x\d{1,5}")
+
+
+def checked_report(body) -> Tuple[str, str, Dict]:
+    """(category, text, context) of a problem report; ValueError for anything else. The text: 1 to
+    jobs.REPORT_TEXT_MAX characters, no control characters but line breaks and tabs; the context's
+    values that are not as expected are left out (a report is not refused for them)."""
+    import jobs as jb
+    if not isinstance(body, dict) or body.get("category") not in jb.REPORT_CATEGORIES:
+        raise ValueError("category: " + ", ".join(jb.REPORT_CATEGORIES))
+    text = body.get("text")
+    if not isinstance(text, str) or not text.strip() or len(text.strip()) > jb.REPORT_TEXT_MAX \
+            or any((ord(c) < 32 and c not in "\n\r\t") or 127 <= ord(c) < 160 for c in text):
+        raise ValueError(f"text: 1 to {jb.REPORT_TEXT_MAX} characters")
+    given = body.get("context") if isinstance(body.get("context"), dict) else {}
+    context: Dict = {}
+    page = given.get("page")
+    if isinstance(page, str) and len(page) <= 300 and not any(ord(c) < 32 for c in page):
+        context["page"] = page
+    if given.get("ui") in REPORT_UIS:
+        context["ui"] = given["ui"]
+    run = given.get("run")
+    if isinstance(run, str) and SAFE_PART.fullmatch(run) and len(run) <= 200:
+        context["run"] = run
+        try:
+            context["line"] = checked_line(given.get("line"))
+        except ValueError:
+            pass
+    if isinstance(given.get("viewport"), str) and VIEWPORT.fullmatch(given["viewport"]):
+        context["viewport"] = given["viewport"]
+    return body["category"], text.strip(), context
+
+
 def checked_favourite(body) -> Tuple[str, Optional[Dict]]:
     """(line, its values; None: unmark it) of a request {"line": "lat1,lon1,lat2,lon2", "favourite":
     true|false, "data": FavouriteLine (when true)}; ValueError for anything else."""
@@ -330,7 +365,9 @@ SESSION_CHECK = 30  # seconds between checks of the session inside an open event
 REFUSAL_WINDOW = 600
 PLACE_CHARS_MAX = 200  # of a name the place box looks up
 RATE_NAMES = {"estimate": "estimates", "profile": "profiles", "place": "place lookups",  # Limits.<kind>_rate
-              "job": "searches started"}
+              "report": "problem reports", "job": "searches started"}
+WELCOME_COOKIE = "__Host-findaline-welcome"  # set by a sign-in for 10 minutes: the page shows the beta notice
+WELCOME_SECONDS = 600
 # The files of a run the public site serves (what mapping.save_map and runs.save_results write, without
 # run.json: its parameters and data files are the owner's); never progress.json, tiles or other files
 RUN_FILES = ("map.html", "data.js", "lines.js", "lines.csv", "lines.geojson", "ATTRIBUTION.txt")
@@ -528,10 +565,11 @@ def create_app(data_dir: str, token: Optional[str] = None, port: int = PORT, sta
     @app.get("/", response_class=HTMLResponse)
     def page(request: Request):
         if not public:
-            return APP_HTML.format(token=token, user=html.escape(json.dumps({"local": True})))
+            return APP_HTML.format(token=token, user=html.escape(json.dumps({"local": True})), contact="")
         found = signed_in(request)
         if found and found[0].approved:
-            return APP_HTML.format(token=found[1], user=html.escape(json.dumps(found[0].public())))
+            return APP_HTML.format(token=found[1], user=html.escape(json.dumps(found[0].public())),
+                                   contact=html.escape(public.contact))
         return signin_page(accounts.providers, *(found or (None, None)), demos=runs_of(None))
 
     @app.get("/login/{provider}")
@@ -572,6 +610,9 @@ def create_app(data_dir: str, token: Optional[str] = None, port: int = PORT, sta
         response = RedirectResponse(next_path, 303)
         response.set_cookie(ac.SESSION_COOKIE, session, max_age=ac.SESSION_DAYS * 86400, path="/", secure=True,
                             httponly=True, samesite="lax")
+        # A mark for the page, which reads and deletes it (so not HttpOnly): the beta notice after a sign-in
+        response.set_cookie(WELCOME_COOKIE, "1", max_age=WELCOME_SECONDS, path="/", secure=True, httponly=False,
+                            samesite="lax")
         return response
 
     @app.post("/logout")
@@ -1064,6 +1105,24 @@ def create_app(data_dir: str, token: Optional[str] = None, port: int = PORT, sta
         record("favourite_folder", user, str(folder), {"do": "delete", **gone})
         return gone
 
+    @app.post("/api/reports")
+    def add_report(body: Dict, request: Request, user: ac.User = Depends(current_user)):
+        """A problem report of the user (the app's "Report a problem"): {"category", "text", "context":
+        {"page", "ui", "run", "line", "viewport"}}; the browser's User-Agent is added. A run the user may
+        not open is left out."""
+        within_rate("report", user)
+        try:
+            category, text, context = checked_report(body)
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+        if context.get("run") and not may_open(user, context["run"]):
+            context.pop("run")
+            context.pop("line", None)
+        context["user_agent"] = (request.headers.get("user-agent") or "")[:REPORT_AGENT_MAX]
+        report = jobs.add_report(user.id, category, text, context)
+        record("report", user, report, {"do": "add", "category": category})
+        return {"id": report}
+
     @app.get("/api/favourites")
     def all_favourites(user: ac.User = Depends(current_user)):
         """The user's favourite lines in every run they may still open (a run that is no longer a demo
@@ -1140,6 +1199,40 @@ def create_app(data_dir: str, token: Optional[str] = None, port: int = PORT, sta
         return {"runs": [{**row, "shared": bool(row["shared"]), "name": meta[row["run_id"]].get("name"),
                           "has_map": meta[row["run_id"]]["has_map"]}
                          for row in jobs.all_runs() if row["run_id"] in meta]}
+
+    @app.get("/api/admin/reports")
+    def admin_reports(user: ac.User = Depends(require_admin)):
+        """The users' problem reports, newest first, with the user's name and the run's name."""
+        admin_only()
+        names = {u["id"]: u["name"] for u in users.listing()}
+        found = jobs.reports()
+        meta = {r["id"]: r for r in rn.list_runs(runs_dir, {f["context"].get("run") for f in found} - {None})}
+        return {"reports": [{**f, "user_name": names.get(f["user_id"]),
+                             "run_name": meta[f["context"]["run"]].get("name") if f["context"].get("run") in meta
+                             else None} for f in found]}
+
+    @app.post("/api/admin/reports/{report}")
+    def admin_report_status(report: int, body: Dict, user: ac.User = Depends(require_admin)):
+        """Mark a report open or done: {"status": "open"|"done"}."""
+        admin_only()
+        try:
+            jobs.set_report_status(report, body.get("status") if isinstance(body, dict) else None)
+        except KeyError:
+            raise HTTPException(404, "no such report")
+        except ValueError:
+            raise HTTPException(400, "status: open or done")
+        record("report", user, report, {"do": "status", "status": body["status"]})
+        return {"ok": True}
+
+    @app.delete("/api/admin/reports/{report}")
+    def admin_report_delete(report: int, user: ac.User = Depends(require_admin)):
+        admin_only()
+        try:
+            jobs.delete_report(report)
+        except KeyError:
+            raise HTTPException(404, "no such report")
+        record("report", user, report, {"do": "delete"})
+        return {"ok": True}
 
     @app.get("/api/osm")
     async def osm_regions(lat: float, lon: float, user: ac.User = Depends(require_admin)):
@@ -1264,6 +1357,7 @@ APP_HTML = """<!doctype html>
 <html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="findaline-token" content="{token}">
 <meta name="findaline-user" content="{user}">
+<meta name="findaline-contact" content="{contact}">
 <title>Find-a-Line</title>
 <link rel="stylesheet" href="/app/app.css">
 </head><body><div id="app"></div>
@@ -1334,7 +1428,9 @@ def privacy_page(contact: str, keep_events_days: Optional[float]) -> str:
         ("Sessions", f"A random token in a cookie (__Host-findaline); the site stores only its SHA-256 hash, with a "
          f"token against cross-site requests and when it was made and last used. A session ends when you sign out, "
          f"after {ac.SESSION_DAYS} days, or after {ac.IDLE_DAYS} days without a visit, and is then deleted. "
-         f"Signing in uses a second, signed cookie for at most {ac.OAUTH_SECONDS // 60} minutes."),
+         f"Signing in uses a second, signed cookie for at most {ac.OAUTH_SECONDS // 60} minutes, and leaves a third "
+         f"one ({WELCOME_COOKIE}, no data) for at most {WELCOME_SECONDS // 60} minutes, which only tells the page to "
+         f"show its notice once."),
         ("Searches", f"What you search (the place, the drawn or loaded area, the options), its title and status, "
          f"and its messages and progress. Why: to run the search and show it to you. The messages are deleted "
          f"{events} after the search ended; the search itself stays in your queue."),
@@ -1347,11 +1443,16 @@ def privacy_page(contact: str, keep_events_days: Optional[float]) -> str:
          f"run is deleted."),
         ("Folders of favourites", f"The names you give them, which folder each is in and when you made it; at most "
          f"{jb.FOLDERS_MAX}. Kept until you delete them (with what is in them)."),
+        ("Problem reports", "What you write in Report a problem, its kind and when you sent it, with the page, the "
+         "run and line it was sent from, the size of the window and your browser's identification (its User-Agent: "
+         "browser, version, system). Why: to find and fix what goes wrong. Read by the administrators; kept until "
+         "an administrator deletes it (ask the contact below to have yours deleted)."),
         ("Quotas", f"How many km² your searches covered and how many uncached Nominatim requests they made, with the "
          f"time; deleted after {2 * jb.DAY / 86400:g} days. Request rates are counted in memory only."),
         ("Audit log", f"Sign-ins and sign-ups, approvals and blocks, searches started and cancelled, share links "
          f"made, renewed and revoked, deleted runs, the demo flag, favourite lines marked, unmarked and moved, "
-         f"folders of favourites made, changed and deleted (not their names), other "
+         f"folders of favourites made, changed and deleted (not their names), problem reports sent (not their "
+         f"text), other "
          f"administrators' actions and refusals by a "
          f"limit: the time, the action, the user id and what it concerned. Why: to find abuse and mistakes. "
          f"Deleted after {AUDIT_DAYS} days."),

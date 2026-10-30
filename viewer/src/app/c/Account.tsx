@@ -10,6 +10,7 @@ import { Icon } from "../../ui/icons";
 import { storeTheme, uiHref, type UiChoice } from "../../ui/choice";
 import { Popover } from "../../result/view";
 import { api, user } from "../api";
+import { canReport, openReport } from "../../report";
 import { PlaceMap } from "../PlaceMap";
 import type { Job } from "../api";
 import { AdminC } from "./AdminC";
@@ -34,6 +35,8 @@ export function AccountBody({theme, setTheme, onPick, tries = TRIES_C}:
     <nav class="c-account-links">
       {!user.local && user.admin && <a class="c-menu-item" href="#admin" onClick={pick}><Icon name="user" />Admin</a>}
       {(user.local || user.admin) && <a class="c-menu-item" href="#osm" onClick={pick}><Icon name="layers" />OpenStreetMap extracts</a>}
+      {canReport() && <button type="button" class="c-menu-item" onClick={() => { pick(); openReport(); }}>
+        <Icon name="warn" />Report a problem</button>}
       {!user.local && <a class="c-menu-item" href="/privacy" target="_blank"><Icon name="info" />Privacy</a>}
       {!user.local && <a class="c-menu-item" href="/about" target="_blank"><Icon name="info" />About and data licences</a>}
       {tries.map((ui) => ui === "old"

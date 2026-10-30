@@ -38,7 +38,8 @@
 .ui.b-app .b-account { display: flex; flex-direction: column; gap: 10px; }
 .ui.b-app .b-account-user { display: flex; align-items: center; gap: 8px; }
 .ui.b-app .b-account-links { display: flex; flex-direction: column; gap: 6px; font-size: 13.5px; }
-.ui.b-app .b-account-links a { color: var(--accent); }
+.ui.b-app .b-account-links a, .ui.b-app .b-report { color: var(--accent); }
+.ui.b-app .b-report { border: 0; background: none; padding: 0; text-align: left; font: inherit; cursor: pointer; }
 .ui.b-app .b-signout { align-self: flex-start; }
 .ui.b-app .b-account-button { margin-top: 4px; }
 

@@ -292,6 +292,11 @@ def test_sign_in_with_github(public, providers, tmp_path):
     cookie = answer.headers["set-cookie"]
     assert cookie.startswith(ac.SESSION_COOKIE + "=") and all(f in cookie.lower() for f in (
         "secure", "httponly", "samesite=lax", "path=/", "max-age=2592000")) and "domain" not in cookie.lower()
+    # The mark of the beta notice: for the page's script (not HttpOnly), 10 minutes, only from a sign-in
+    welcome = [c for c in answer.headers.get_list("set-cookie") if c.startswith(web.WELCOME_COOKIE + "=1")]
+    assert len(welcome) == 1 and "httponly" not in welcome[0].lower() and all(
+        f in welcome[0].lower() for f in ("secure", "samesite=lax", "path=/", "max-age=600")), welcome
+    assert web.WELCOME_COOKIE not in public.get("/").headers.get("set-cookie", "")
     page = public.get("/")
     assert "waiting for an administrator" in page.text and "alice" in page.text and "findaline-token" not in page.text
     assert public.get("/api/jobs").status_code == 403
@@ -1223,6 +1228,52 @@ def test_favourite_folders(run_people, tmp_path, monkeypatch):
     assert not any("name" in e["detail"] for e in log)  # the names stay out of the log
 
 
+def test_problem_reports(run_people, tmp_path, monkeypatch):
+    """Problem reports: signed-in users send them (category, text, the page's context; the server adds the
+    User-Agent and leaves out a run the user may not open), within the report rate; administrators list
+    them with names, mark them done and delete them; the audit log has no text."""
+    import audit
+    import jobs as jb
+    a, b, admin = run_people["a"], run_people["b"], run_people["admin"]
+    ids = run_people["ids"]
+    body = {"category": "water", "text": "  The lake is 3 m too high.\nSee the second line.  ",
+            "context": {"page": "#run=x&line=1", "ui": "d", "run": RUN_A, "line": LINE, "viewport": "1280x800"}}
+    sent = a.post("/api/reports", json=body, headers={"user-agent": "TestBrowser/1.0"})
+    assert sent.status_code == 200, sent.text
+    assert run_people["anonymous"].post("/api/reports", json=body).status_code == 401
+    assert run_people["pending"].post("/api/reports", json=body).status_code == 403
+    for wrong in ({**body, "category": "bugs"}, {**body, "text": " "}, {**body, "text": "x" * (jb.REPORT_TEXT_MAX + 1)},
+                  {**body, "text": "a\x00b"}, {**body, "text": 5}, {"text": "no category"}):
+        assert admin.post("/api/reports", json=wrong).status_code == 400, wrong  # (no rate for administrators)
+    odd = b.post("/api/reports", json={**body, "context": {"run": RUN_A, "line": LINE, "ui": "x", "viewport": "big",
+                                                             "page": "p\x01"}})  # not b's run, odd values
+    assert odd.status_code == 200
+    listed = admin.get("/api/admin/reports").json()["reports"]
+    assert [r["user_id"] for r in listed] == [ids["b"], ids["a"]]
+    first = listed[1]
+    assert first["text"] == "The lake is 3 m too high.\nSee the second line." and first["status"] == "open"
+    assert first["context"] == {"page": "#run=x&line=1", "ui": "d", "run": RUN_A, "line": LINE, "viewport": "1280x800",
+                                "user_agent": "TestBrowser/1.0"}
+    assert first["user_name"] == "a" and first["run_name"] == "A's run"
+    assert set(listed[0]["context"]) == {"user_agent"} and listed[0]["run_name"] is None
+    assert a.get("/api/admin/reports").status_code == 403
+    assert a.post(f"/api/admin/reports/{first['id']}", json={"status": "done"}).status_code == 403
+    assert admin.post(f"/api/admin/reports/{first['id']}", json={"status": "done"}).status_code == 200
+    assert admin.post(f"/api/admin/reports/{first['id']}", json={"status": "gone"}).status_code == 400
+    assert admin.post("/api/admin/reports/999", json={"status": "done"}).status_code == 404
+    assert admin.get("/api/admin/reports").json()["reports"][1]["status"] == "done"
+    assert admin.delete(f"/api/admin/reports/{listed[0]['id']}").status_code == 200
+    assert admin.delete(f"/api/admin/reports/{listed[0]['id']}").status_code == 404
+    assert len(admin.get("/api/admin/reports").json()["reports"]) == 1
+    statuses = [a.post("/api/reports", json=body).status_code for _ in range(3)]
+    assert statuses == [200, 200, 429]  # 3 a minute: one sent already
+    log = [e for e in audit.Audit(str(tmp_path)).entries() if e["action"] == "report"]
+    assert {e["detail"]["do"] for e in log} == {"add", "status", "delete"}
+    assert not any("text" in e["detail"] or "lake" in json.dumps(e["detail"]) for e in log)
+    privacy = run_people["anonymous"].get("/privacy").text
+    assert "Problem reports" in privacy and web.WELCOME_COOKIE in privacy
+
+
 def test_local_favourites(tmp_path, clip_run, settings, account_settings, providers):
     """The local app: its one user's favourites (user_id NULL), its token for the map; when the data
     folder goes public, they go to the first administrator with the runs."""
@@ -1626,7 +1677,27 @@ def test_jobs_database_gets_folders(tmp_path):
     jobs.adopt_runs(str(tmp_path / "runs"), 7)
     assert [f["name"] for f in jobs.folders(7)] == ["Local"] and jobs.favourites(7)[0]["folder_id"] == folder
     db = sqlite3.connect(tmp_path / "jobs.sqlite")
-    assert db.execute("PRAGMA user_version").fetchone()[0] == len(jb.MIGRATIONS) == 9
+    assert db.execute("PRAGMA user_version").fetchone()[0] == len(jb.MIGRATIONS) >= 9
+    db.close()
+
+
+def test_jobs_database_gets_reports(tmp_path):
+    """jobs.sqlite of version 9 gets the table of problem reports; its favourites stay."""
+    import sqlite3
+
+    import cache
+    import jobs as jb
+    db = sqlite3.connect(tmp_path / "jobs.sqlite")
+    cache.migrate(db, jb.MIGRATIONS[:9])
+    db.execute("INSERT INTO favourites (user_id, run_id, line, data, created) VALUES (3, 'old', '1,2,3,4', '{}', '')")
+    db.commit()
+    db.close()
+    jobs = jb.Jobs(str(tmp_path))
+    assert len(jobs.favourites(3)) == 1
+    report = jobs.add_report(3, "results", "none found", {"page": "#home"})
+    assert [(r["id"], r["status"], r["context"]) for r in jobs.reports()] == [(report, "open", {"page": "#home"})]
+    db = sqlite3.connect(tmp_path / "jobs.sqlite")
+    assert db.execute("PRAGMA user_version").fetchone()[0] == len(jb.MIGRATIONS) == 10
     db.close()
 
 
