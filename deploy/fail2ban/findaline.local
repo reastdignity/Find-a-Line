@@ -3,7 +3,8 @@
 # the host's firewall (Ubuntu's banaction, nftables; nginx runs on the host, so the ban covers the
 # site). Normal use stays far below: an expired session or a pending account gives a few 401/403
 # per page load, the app's own rate limits a few 429 per minute at most, and nginx's limit_req only
-# refuses beyond 20 requests per second (with a burst of 200). Only 127.0.0.1 and ::1 are never
+# refuses beyond 20 requests per second (with a burst of 200); the 429 of orthophoto tiles (/cache/,
+# a burst of 1000) are not counted (the filter's ignoreregex). Only 127.0.0.1 and ::1 are never
 # banned: add your own fixed address to ignoreip, or test the jail from another network.
 [findaline]
 enabled  = true

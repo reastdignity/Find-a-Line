@@ -300,7 +300,8 @@ What the configuration sets: `client_max_body_size 2m`; 10 s instead of nginx's 
 client's request headers and body (in the `http` block, so for every server: the headers of an
 HTTP/1.1 request are read before nginx knows which site they are for); 400 for any request with an
 `Upgrade` header (the app has no WebSockets); per client address 20 requests/s with a burst of 200
-(a map view loads dozens of orthophoto tiles at once) and 40 connections, 10 requests/minute with a
+and 40 connections, for orthophoto tiles (`/cache/`) 100 requests/s with a burst of 1000 and 100
+connections (zooming a map asks for a few hundred tiles within seconds), 10 requests/minute with a
 burst of 10 for `/login/` and `/auth/` (beyond them: 429); `/api/events` (the live event stream)
 without buffering and with a read timeout of an hour, other requests 620 s (an estimate may wait
 for the worker's quick lane); gzip for scripts, JSON, CSS and CSV (a run's `data.js` shrinks about
@@ -348,8 +349,10 @@ The jail `findaline` reads the site's own log and bans an address with more than
 (401 sign-in required, 403 forbidden, 429 too many requests) in 10 minutes for an hour, on ports 80
 and 443 of the host (Ubuntu's ban action, nftables; SSH stays open to it). That is far above normal
 use: an expired session or an account waiting for approval gives a few 401/403 per page load, the
-app's own limits a few 429 a minute. Ubuntu's package also enables the jail `sshd` (failed SSH
-logins, read from the journal). Only the host itself is never banned: to keep your own fixed
+app's own limits a few 429 a minute. The 429 of orthophoto tiles (`/cache/`) are not counted
+(`ignoreregex` of the filter): zooming a map quickly may still exceed their limit, and the map
+takes a refused tile from the orthophoto's service instead, as one that is not in the cache.
+Ubuntu's package also enables the jail `sshd` (failed SSH logins, read from the journal). Only the host itself is never banned: to keep your own fixed
 address out of both jails, uncomment `ignoreip` in `/etc/fail2ban/jail.d/findaline.local` (with
 your address) for the site, or set it under `[DEFAULT]` in a file of your own,
 `/etc/fail2ban/jail.d/00-ignore.local`, for all jails, then `sudo systemctl restart fail2ban`.

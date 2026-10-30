@@ -3,8 +3,8 @@
 # functions of deploy/vps.sh that setup and update run (docs/deployment.md, sections 4 and 5), in
 # front of the running web service of compose.yaml: nginx -t, then the answers through it (headers
 # once each, HTTP/2, gzip, Upgrade refused, http to https, unknown names refused, the masked log,
-# the rate limits) and fail2ban's filter on the log it wrote; also the script's edits of ufw's
-# stock rules files (section 2). A self-signed certificate stands in for certbot's. Run it in a fresh
+# the rate limits, the tiles' own) and fail2ban's filter on the log it wrote (not the tiles' 429);
+# also the script's edits of ufw's stock rules files (section 2). A self-signed certificate stands in for certbot's. Run it in a fresh
 # container on the network of the web service (CI: the docker job):
 #   docker run --rm --network findaline_web -v "$PWD:/src:ro" \
 #     ubuntu:26.04@sha256:<digest of .github/workflows/ci.yml> bash /src/tests/nginx_check.sh
@@ -114,12 +114,22 @@ counts=$(seq 400 | xargs -P 16 -I{} "${C[@]}" -o /dev/null -w '%{http_code}\n' "
 echo "$counts"
 echo "$counts" | grep -q ' 429$' || fail "no 429 beyond the burst"
 echo "$counts" | grep -q ' 401$' || fail "no request reached the app"
+tiles=$(seq 300 | xargs -P 16 -I{} "${C[@]}" -o /dev/null -w '%{http_code}\n' "https://$SITE/cache/none.png" | sort | uniq -c)
+echo "$tiles"
+! echo "$tiles" | grep -q ' 429$' || fail "orthophoto tiles refused within their burst"
 logins=$(for _ in $(seq 15); do code "https://$SITE/login/github"; echo; done | sort | uniq -c)
 echo "$logins"
 echo "$logins" | grep -q ' 429$' || fail "no 429 beyond the sign-in burst"
 matched=$(fail2ban-regex $log /etc/fail2ban/filter.d/findaline.conf | sed -n 's/^Lines: .* \([0-9]*\) matched.*/\1/p')
 echo "fail2ban-regex: $matched lines matched"
 [ "${matched:-0}" -gt 100 ] || fail "the filter matched ${matched:-0} refusals"
+for request in "GET /cache/poland/ortho/live/wm256/13/4551/2774.jpg" "GET /api/schema"; do
+  echo "203.0.113.7 - - [$(date '+%d/%b/%Y:%H:%M:%S %z')] \"$request HTTP/2.0\" 429 564 \"-\" \"curl\"" > /tmp/one.log
+  fail2ban-regex /tmp/one.log /etc/fail2ban/filter.d/findaline.conf | grep '^Lines:'
+done > /tmp/one.out
+cat /tmp/one.out
+grep -q '^Lines: 1 lines, 1 ignored, 0 matched' <(head -1 /tmp/one.out) || fail "a 429 of an orthophoto tile counted"
+grep -q '^Lines: 1 lines, 0 ignored, 1 matched' <(tail -1 /tmp/one.out) || fail "a 429 of the app not counted"
 
 nginx -s quit
 echo "OK: nginx and fail2ban of deploy/"

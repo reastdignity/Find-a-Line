@@ -13,10 +13,12 @@ HOST = r"(?P<host>[0-9A-Fa-f:.]+|[\w\-.^_]*\w)"  # what fail2ban puts for <HOST>
 
 
 def _filter():
+    """The failregex and ignoreregex lines of the filter, compiled."""
     parser = configparser.ConfigParser(interpolation=None)
     parser.read(os.path.join(DEPLOY, "fail2ban", "findaline.conf"), encoding="utf-8")
-    return [re.compile(line.strip().replace("<HOST>", HOST))
-            for line in parser["Definition"]["failregex"].splitlines() if line.strip()]
+    return [[re.compile(line.strip().replace("<HOST>", HOST))
+             for line in parser["Definition"][key].splitlines() if line.strip()]
+            for key in ("failregex", "ignoreregex")]
 
 
 def _line(status, request='GET /api/jobs HTTP/2.0', ip="203.0.113.7", referer="-"):
@@ -26,10 +28,12 @@ def _line(status, request='GET /api/jobs HTTP/2.0', ip="203.0.113.7", referer="-
 
 def test_fail2ban_filter():
     """Refusals (401, 403, 429) count, with the client's address; nothing else does, also not a 401
-    in the size, the referer or the user agent of another answer."""
-    regexes = _filter()
+    in the size, the referer or the user agent of another answer; nor a 429 of an orthophoto tile."""
+    regexes, ignored = _filter()
 
     def host(line):
+        if any(regex.search(line) for regex in ignored):
+            return None
         for regex in regexes:
             match = regex.search(line)
             if match:
@@ -40,6 +44,11 @@ def test_fail2ban_filter():
         assert host(_line(status)) == "203.0.113.7"
     assert host(_line(429, "POST /api/estimate HTTP/1.1", ip="2001:db8::5")) == "2001:db8::5"
     assert host(_line(401, "GET /s/<token>/data.js HTTP/2.0")) == "203.0.113.7"
+    tile = "GET /cache/poland/ortho/live/wm256/13/4551/2774.jpg HTTP/2.0"
+    assert host(_line(429, tile)) is None
+    assert host(_line(403, tile)) == "203.0.113.7"
+    assert host(_line(429, "GET /api/x?next=/cache/a HTTP/2.0")) == "203.0.113.7"
+    assert host(_line(429, "GET /api/x HTTP/2.0", referer="https://findaline.example.org/cache/a"))         == "203.0.113.7"
     for status in (200, 204, 301, 304, 400, 404, 500, 502, 503):
         assert host(_line(status)) is None, status
     assert host(_line(200, 'GET /api/x" 401 0 "x HTTP/2.0'.replace('"', '\\x22'))) is None  # nginx escapes "
