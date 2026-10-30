@@ -43,6 +43,11 @@ dev = [
 tools = [
     "huggingface-hub>=2.3.0",
 ]
+# Screenshots of the UI on desktop and phone profiles (tools/ui_shots.py): `uv sync --group ui`, then
+# `uv run playwright install chromium webkit`; not installed by a plain `uv sync` nor in the image
+ui = [
+    "playwright>=1.64.1",
+]
 
 [tool.uv]
 package = false  # a set of scripts, not an installable package
