@@ -61,7 +61,7 @@ export function AccountMenu({theme, setTheme, tries}: {theme: Theme; setTheme(t:
   </Popover>;
 }
 
-/** A page with a panel on the left and the map it uses on the right (below it on phones). */
+/** A page with a panel on the left and the map it uses on the right (on phones the map on top, the panel scrolling under it). */
 export function MapPage({title, children}: {title: string; children: (place: PlaceMap) => ComponentChildren}) {
   const ref = useRef<HTMLDivElement>(null);
   const [place, setPlace] = useState<PlaceMap | null>(null);

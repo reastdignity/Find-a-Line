@@ -178,6 +178,11 @@ def main():
                         page = context.new_page()  # a fresh page each: no menu or route of the one before
                         page.goto(f"{site}/?ui={ui}{hash_.format(run=run)}")
                         page.wait_for_timeout(2500)  # the event stream stays open: no "network idle"
+                        try:  # the maps' tiles (OpenTopoMap can be slow): an empty map is no finding
+                            page.wait_for_function("!document.querySelector('.leaflet-tile:not(.leaflet-tile-loaded)')",
+                                                   timeout=10000)
+                        except Exception:
+                            print(f"{name} ({device}): map tiles still loading")
                         if click and click.startswith("scroll:"):
                             page.evaluate("(sel) => { const e = document.querySelector(sel) || "
                                           "document.scrollingElement; e.scrollTop = e.scrollHeight; }", click[7:])

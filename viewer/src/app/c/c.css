@@ -222,9 +222,10 @@
 .ui.c-narrow .c-bar .s-bar { gap: 6px 12px; padding: 8px 12px calc(8px + env(safe-area-inset-bottom, 0px)); min-height: 0; }
 .ui.c-narrow .c-bar .s-bar-line { flex-basis: 100%; order: 5; }
 .ui.c-narrow .c-bar .s-start { flex: 1 1 100%; order: 6; }
-.ui.c-narrow .c-mappage { flex-direction: column; overflow-y: auto; }
-.ui.c-narrow .c-sidepanel { width: auto; border-right: 0; overflow: visible; }
-.ui.c-narrow .c-mappage .c-newmap { flex: none; height: 50vh; }
+/* A map page on phones as the new search: the map on top (it stays), the panel scrolls under it */
+.ui.c-narrow .c-mappage { flex-direction: column; overflow: hidden; }
+.ui.c-narrow .c-mappage .c-newmap { order: -1; flex: none; height: 34vh; border-bottom: 1px solid var(--line); }
+.ui.c-narrow .c-sidepanel { width: auto; flex: 1; min-height: 0; border-right: 0; overflow-y: auto; }
 .ui .c-result-phone { position: relative; overflow: hidden; }
 .ui .c-result-phone .c-col-map { position: absolute; inset: 0; }
 .ui .c-phone-top { position: absolute; top: 10px; left: 10px; right: 10px; z-index: 6; display: flex; gap: 8px; align-items: flex-start; }
