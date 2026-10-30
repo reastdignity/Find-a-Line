@@ -2,9 +2,11 @@
 // bubble opens while the mouse is over the button and while the button has the keyboard's focus; a
 // click or a tap toggles it (phones have no hover); Esc and a click outside close it. The mouse may
 // move from the button onto the bubble (to read or select its text): leaving either closes it after
-// CLOSE_MS unless the pointer enters one of them again. The bubble is a popover in the top layer, so no scrolling panel cuts it off; it sits under the button (over it
-// near the bottom of the window) and stays inside the window (positioned through the CSSOM, which
-// the CSP allows). Styles in ui.css (u-hint*).
+// CLOSE_MS unless the pointer enters one of them again. The bubble is a popover in the top layer, so
+// no scrolling panel cuts it off; it sits under the button, or over it when it would not fit in the
+// visible part below (`visibleBottom`: the visual viewport, the scrolling panels around the button,
+// a bar that stays at their bottom, data-hint-floor) and there is room above; it stays inside the
+// window (positioned through the CSSOM, which the CSP allows). Styles in ui.css (u-hint*).
 
 import type { ComponentChildren } from "preact";
 import { useEffect, useLayoutEffect, useRef, useState } from "preact/hooks";
@@ -14,6 +16,25 @@ let ids = 0;
 const GAP = 6;     // between the button and the bubble
 const MARGIN = 16; // between the bubble and the window's edges
 const CLOSE_MS = 150;  // from leaving the button or the bubble to closing
+
+/** Where the visible room under `button` ends (px from the top of the layout viewport): the bottom
+ *  of the visual viewport (a phone's keyboard, a pinch zoom), of every scrolling panel around the
+ *  button (C's form above its bottom bar, B's sheet) and the top of a bar that stays at the bottom
+ *  over the content (data-hint-floor while it is sticky or fixed: the estimate in B's sheet). */
+function visibleBottom(button: HTMLElement, at: DOMRect): number {
+  const view = window.visualViewport;
+  let bottom = view ? view.offsetTop + view.height : document.documentElement.clientHeight;
+  for (let el = button.parentElement; el && el !== document.body; el = el.parentElement) {
+    if (/auto|scroll/.test(getComputedStyle(el).overflowY)) bottom = Math.min(bottom, el.getBoundingClientRect().bottom);
+  }
+  for (const floor of document.querySelectorAll<HTMLElement>("[data-hint-floor]")) {
+    const r = floor.getBoundingClientRect();
+    const position = getComputedStyle(floor).position;
+    if (r.height > 0 && r.top >= at.bottom && r.left < at.right && r.right > at.left
+        && (position === "sticky" || position === "fixed")) bottom = Math.min(bottom, r.top);
+  }
+  return bottom;
+}
 
 /** The "?" button of `label` (its accessible name: "About <label>") with its bubble. */
 export function Hint({label, children}: {label: string; children: ComponentChildren}) {
@@ -50,11 +71,13 @@ export function Hint({label, children}: {label: string; children: ComponentChild
     const place = () => {
       const at = button.current?.getBoundingClientRect();
       if (!at) return;
-      const width = document.documentElement.clientWidth, height = document.documentElement.clientHeight;
+      const width = document.documentElement.clientWidth;
       const w = tip.offsetWidth, h = tip.offsetHeight;
       const left = Math.max(MARGIN, Math.min(at.left, width - MARGIN - w));
-      const below = at.bottom + GAP;
-      const top = below + h > height - GAP && at.top - GAP - h > GAP ? at.top - GAP - h : below;
+      const below = at.bottom + GAP, above = at.top - GAP - h;
+      const ceiling = (window.visualViewport?.offsetTop ?? 0) + GAP;
+      // below unless it would run past the visible part there and fits above
+      const top = below + h > visibleBottom(button.current!, at) - GAP && above >= ceiling ? above : below;
       tip.style.left = `${Math.round(left)}px`;
       tip.style.top = `${Math.round(top)}px`;
     };
@@ -65,11 +88,13 @@ export function Hint({label, children}: {label: string; children: ComponentChild
     document.addEventListener("keydown", key);
     window.addEventListener("scroll", place, true);  // the panel under it scrolls: follow the button
     window.addEventListener("resize", place);
+    window.visualViewport?.addEventListener("resize", place);  // a phone's keyboard, a zoom
     return () => {
       document.removeEventListener("pointerdown", outside);
       document.removeEventListener("keydown", key);
       window.removeEventListener("scroll", place, true);
       window.removeEventListener("resize", place);
+      window.visualViewport?.removeEventListener("resize", place);
     };
   }, [open]);
 

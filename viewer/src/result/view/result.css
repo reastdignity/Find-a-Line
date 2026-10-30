@@ -48,6 +48,8 @@
 /* Filters */
 .ui .r-filters { display: flex; flex-direction: column; gap: 10px; }
 .ui .r-filters .u-chip .u-badge { margin-left: 2px; }
+/* "How to read the result" among the chips: their size (.n-intro-link inherits the panel's) */
+.ui .r-filters .r-intro-link { font-size: 13px; }
 .ui .r-editor-x { position: absolute; top: 6px; right: 6px; }
 .ui .r-editor { position: relative; display: flex; flex-direction: column; gap: 10px; padding: 10px 12px; border-radius: 10px; background: var(--surface-2); }
 .ui .r-limit { display: flex; flex-direction: column; gap: 2px; }

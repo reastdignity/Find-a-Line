@@ -37,8 +37,9 @@ ACCOUNTS = {"FINDALINE_SESSION_SECRET": "ui-shots-" * 5, "FINDALINE_GITHUB_CLIEN
             "FINDALINE_GITHUB_CLIENT_SECRET": "secret", "FINDALINE_ADMINS": "github:1"}
 
 # name -> (interface, hash, actions after loading or None: a CSS selector to click, "scroll:<selector>" to
-# scroll that element (or the page) to its end, or a list of such steps[, the user: "admin" (default) or
-# "walker", an approved user with the site's limits]); "{run}" is the clip's run
+# scroll that element (or the page) to its end, "low:<selector>" to click the last one scrolled to the
+# bottom of its panel (a "?" near the bottom: its bubble opens upwards), or a list of such steps[, the user:
+# "admin" (default) or "walker", an approved user with the site's limits]); "{run}" is the clip's run
 MORE = [".s-more-head", ".s-topic:nth-of-type(2) > summary"]  # More settings, Anchors opened (Lines is)
 PAGES = {
     "d-home": ("d", "", None),
@@ -50,6 +51,7 @@ PAGES = {
     "d-new-intro": ("d", "#new", ".s-intro .n-intro-link"),  # "How a search works" (ui/Intro.tsx)
     "d-new-more": ("d", "#new", MORE),
     "d-new-more-hint": ("d", "#new", MORE + [".s-topics details[open] .u-hint"]),  # a setting's "?" (no bounds: admin)
+    "d-new-low-hint": ("d", "#new", MORE + ["low:.s-topics details[open] .u-hint"]),  # the last "?" at the bottom: its bubble above it
     "d-new-limited": ("d", "#new", ".s-intro .n-intro-link", "walker"),  # the intro with the limits
     "d-new-limited-hint": ("d", "#new", MORE + [".s-topics details[open] .u-hint"], "walker"),  # a "?" with the bounds
     "d-result": ("d", "#run={run}", None),
@@ -59,6 +61,7 @@ PAGES = {
     "d-osm": ("d", "#osm", None),
     "b-search": ("b", "#search", None),
     "b-search-hint": ("b", "#search", ".u-hint"),
+    "b-search-low-hint": ("b", "#search", "low:.u-hint"),  # the last "?" at the bottom: its bubble above it
     "b-searches": ("b", "#searches", None),
     "b-result": ("b", "#run={run}", None),
     "b-admin": ("b", "#admin", None),
@@ -66,6 +69,23 @@ PAGES = {
     "c-home": ("c", "", None),
     "c-result": ("c", "#run={run}", None),
 }
+
+# The "low:" step: the last matching element is scrolled to just above the bottom of the visible part of
+# its scrolling panel (or above a bar that stays there, data-hint-floor), then marked for the click
+LOWEST = """(sel) => {
+  const all = [...document.querySelectorAll(sel)].filter((e) => e.checkVisibility({visibilityProperty: true}));
+  const e = all[all.length - 1];
+  if (!e) return;
+  let box = e.parentElement;
+  while (box && !/auto|scroll/.test(getComputedStyle(box).overflowY)) box = box.parentElement;
+  box = box || document.scrollingElement;
+  let bottom = Math.min(box.getBoundingClientRect().bottom || innerHeight, innerHeight);
+  for (const f of box.querySelectorAll("[data-hint-floor]")) {
+    if (getComputedStyle(f).position === "sticky") bottom = Math.min(bottom, f.getBoundingClientRect().top);
+  }
+  box.scrollTop += e.getBoundingClientRect().bottom - (bottom - 24);
+  e.setAttribute("data-shot-low", "");
+}"""
 
 INTROS = ("search", "result")  # the intros of ui/Intro.tsx (localStorage "findaline.intro.<name>")
 
@@ -211,11 +231,15 @@ def main():
                                               "document.scrollingElement; e.scrollTop = e.scrollHeight; }", step[7:])
                                 page.wait_for_timeout(400)
                                 continue
+                            if step.startswith("low:"):  # the last one, at the bottom of its panel
+                                page.evaluate(LOWEST, step[4:])
+                                step = "[data-shot-low]"
                             target = page.query_selector(step)
                             if not (target and target.is_visible()):
                                 missing = True
                                 break
-                            target.scroll_into_view_if_needed()
+                            if step != "[data-shot-low]":
+                                target.scroll_into_view_if_needed()
                             target.click()
                             page.wait_for_timeout(600)
                         if missing:  # this device does not show it

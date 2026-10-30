@@ -30,9 +30,6 @@ const useId = (prefix: string) => useState(() => `${prefix}-${++ids}`)[0];
 
 const unitOf = (name: string) => t(`field.${name}.unit`);
 
-/** The label of a field with its unit. */
-const labelOf = (field: SchemaField) => label(field.name) + (unitOf(field.name) ? `, ${unitOf(field.name)}` : "");
-
 /** A value with its unit as the hints write it ("30°", "5 %", "200 m"). */
 const withUnit = (value: number, unit: string) => unit === "°" ? `${value}°` : unit ? `${value} ${unit}` : String(value);
 
@@ -215,12 +212,20 @@ function ParamInput({field, value, onChange, id, invalid}:
   const changed = (e: Event) => onChange(parseValue(field, (e.currentTarget as HTMLInputElement).value));
   // A number field keeps what is being typed (defaultValue, read when it is left: the page is drawn
   // again on every event of the queue); a new value from elsewhere (reset) gives it a new key
-  return field.type === "number" || field.type === "integer"
+  const unit = unitOf(field.name);
+  const unitId = unit ? `${id}-unit` : undefined;
+  const input = field.type === "number" || field.type === "integer"
     ? <input id={id} key={`${field.name}:${text}`} class={cx("u-input", invalid && "s-invalid")} type="number"
              step={field.type === "integer" ? 1 : "any"} defaultValue={text} min={field.min ?? undefined}
              max={field.max ?? undefined} placeholder={field.optional ? "default" : ""} onChange={changed}
-             aria-invalid={invalid || undefined} />
-    : <input id={id} class="u-input" type="text" value={text} placeholder={field.optional ? "default" : ""} onInput={changed} />;
+             aria-invalid={invalid || undefined} aria-describedby={unitId} />
+    : <input id={id} class="u-input" type="text" value={text} placeholder={field.optional ? "default" : ""} onInput={changed}
+             aria-describedby={unitId} />;
+  if (!unit) return input;
+  // The unit at the right end of the box (not in the label); the text stays clear of it (--s-unit: its width)
+  return <span class="s-unit-box" style={{"--s-unit": `${[...unit].length}ch`}}>
+    {input}<span class="s-unit" id={unitId}>{unit}</span>
+  </span>;
 }
 
 function Setting({s, field}: {s: SearchState; field: SchemaField}) {
@@ -228,7 +233,7 @@ function Setting({s, field}: {s: SearchState; field: SchemaField}) {
   const changed = field.name in s.values;
   const problem = s.problems[field.name];
   return <div class={cx("s-setting", changed && "s-is-changed")} data-field={field.name}>
-    <Field htmlFor={id} label={<span class={cx(changed && "s-changed")}>{labelOf(field)}</span>}
+    <Field htmlFor={id} label={<span class={cx(changed && "s-changed")}>{label(field.name)}</span>}
            hintLabel={label(field.name)} hint={hintOf(field)}
            value={changed ? <button type="button" class="s-reset" title="Back to the default"
                                     onClick={() => {
@@ -326,7 +331,8 @@ export function EstimateBar({search: s, usage, layout = "box", label}:
       {button}
     </div>;
   }
-  return <div class="s-estimate">
+  // data-hint-floor: a "?" bubble opens upwards rather than under it (sticky in B's sheet)
+  return <div class="s-estimate" data-hint-floor>
     <div class={cx("s-est", `s-${state}`)}>
       {stats && <div class="s-est-row">{stats}</div>}
       {statusLine}
