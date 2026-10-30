@@ -4,7 +4,8 @@ PAGES on a desktop (Chromium, 1400 × 900) and on two phones (Playwright's devic
 WebKit, Safari's engine; Pixel 7 on Chromium), each with its viewport, pixel ratio, touch and user agent,
 in the light theme and optionally the dark one.
 
-The site is the public one (signed in as an administrator, so Admin and the OSM extracts are there), run
+The site is the public one (signed in as an administrator, so Admin and the OSM extracts are there;
+the "-limited" pages as an approved user with the site's limits), run
 from a scratch data folder with a run of the Żabi Koń clip (tests/data, computed offline), a problem
 report and a worker of this process (the estimates of a new search need its quick lane). It is served over
 HTTPS with a certificate made for the run: WebKit, unlike Chromium, sends no Secure cookie (the session's
@@ -35,8 +36,10 @@ sys.path.insert(0, REPO)
 ACCOUNTS = {"FINDALINE_SESSION_SECRET": "ui-shots-" * 5, "FINDALINE_GITHUB_CLIENT_ID": "id",
             "FINDALINE_GITHUB_CLIENT_SECRET": "secret", "FINDALINE_ADMINS": "github:1"}
 
-# name -> (interface, hash, action after loading or None: a CSS selector to click, or "scroll:<selector>" to
-# scroll that element (or the page) to its end); "{run}" is the clip's run
+# name -> (interface, hash, actions after loading or None: a CSS selector to click, "scroll:<selector>" to
+# scroll that element (or the page) to its end, or a list of such steps[, the user: "admin" (default) or
+# "walker", an approved user with the site's limits]); "{run}" is the clip's run
+MORE = [".s-more-head", ".s-topic:nth-of-type(2) > summary"]  # More settings, Anchors opened (Lines is)
 PAGES = {
     "d-home": ("d", "", None),
     "d-menu": ("d", "", ".c-account-btn"),        # the account menu (desktop: a popover)
@@ -45,6 +48,10 @@ PAGES = {
     "d-new": ("d", "#new", None),
     "d-new-hint": ("d", "#new", ".u-hint"),       # the first "?" of the search panel, its bubble open
     "d-new-intro": ("d", "#new", ".s-intro .n-intro-link"),  # "How a search works" (ui/Intro.tsx)
+    "d-new-more": ("d", "#new", MORE),
+    "d-new-more-hint": ("d", "#new", MORE + [".s-topics details[open] .u-hint"]),  # a setting's "?" (no bounds: admin)
+    "d-new-limited": ("d", "#new", ".s-intro .n-intro-link", "walker"),  # the intro with the limits
+    "d-new-limited-hint": ("d", "#new", MORE + [".s-topics details[open] .u-hint"], "walker"),  # a "?" with the bounds
     "d-result": ("d", "#run={run}", None),
     "d-result-intro": ("d", "#run={run}", ".r-filters .n-intro-link"),  # "How to read the result"
     "d-favourites": ("d", "#favourites", None),
@@ -109,7 +116,8 @@ def certificate(folder: str):
 
 
 def serve(data: str):
-    """The public site on a free port of 127.0.0.1, with a worker; (address, session cookie, stop)."""
+    """The public site on a free port of 127.0.0.1, with a worker; (address, session cookies by user, run,
+    stop)."""
     import uvicorn
 
     import accounts as ac
@@ -127,6 +135,9 @@ def serve(data: str):
     admin = users.sign_in("github", "1", "admin")
     cookie, _ = users.new_session(admin.id)
     climber = users.sign_in("github", "11", "a climber")  # a user waiting for approval, in Admin's list
+    walker = users.sign_in("github", "12", "a walker")  # approved, with the limits of the site
+    users.set_status(walker.id, "approved")
+    cookies = {"admin": cookie, "walker": users.new_session(walker.id)[0]}
     jobs = Jobs(data, public=True)
     run = clip_run(data)
     jobs.add_run(run, admin.id, 1)
@@ -147,7 +158,7 @@ def serve(data: str):
     def stop():
         server.should_exit = True
         scheduler.stop()
-    return site, cookie, run, stop
+    return site, cookies, run, stop
 
 
 def main():
@@ -163,7 +174,7 @@ def main():
 
     os.makedirs(args.out, exist_ok=True)
     data = args.data_dir or tempfile.mkdtemp(prefix="ui-shots-")
-    site, cookie, run, stop = serve(data)
+    site, cookies, run, stop = serve(data)
     wanted = [w for w in args.only.split(",") if w]
     pages = {n: p for n, p in PAGES.items() if not wanted or any(w in n for w in wanted)}
     themes = ["light", "dark"] if args.dark else ["light"]
@@ -176,13 +187,15 @@ def main():
                 options.pop("default_browser_type", None)
                 for theme in themes:
                     context = browser.new_context(**options, color_scheme=theme, ignore_https_errors=True)
-                    context.add_cookies([{"name": "__Host-findaline", "value": cookie, "domain": "localhost",
-                                          "path": "/", "secure": True, "httpOnly": True, "sameSite": "Lax"}])
                     # the theme, and the intros put away (ui/Intro.tsx): the "-intro" pages open them
                     context.add_init_script(f"try {{ localStorage.setItem('findaline-theme', {json.dumps(theme)}); "
                                             + "".join(f"localStorage.setItem('findaline.intro.{intro}', 'seen'); "
                                                       for intro in INTROS) + "} catch (e) {}")
-                    for name, (ui, hash_, click) in pages.items():
+                    for name, (ui, hash_, steps, *who) in pages.items():
+                        context.clear_cookies()
+                        context.add_cookies([{"name": "__Host-findaline", "value": cookies[who[0] if who else "admin"],
+                                              "domain": "localhost", "path": "/", "secure": True, "httpOnly": True,
+                                              "sameSite": "Lax"}])
                         page = context.new_page()  # a fresh page each: no menu or route of the one before
                         page.goto(f"{site}/?ui={ui}{hash_.format(run=run)}")
                         page.wait_for_timeout(2500)  # the event stream stays open: no "network idle"
@@ -191,18 +204,23 @@ def main():
                                                    timeout=10000)
                         except Exception:
                             print(f"{name} ({device}): map tiles still loading")
-                        if click and click.startswith("scroll:"):
-                            page.evaluate("(sel) => { const e = document.querySelector(sel) || "
-                                          "document.scrollingElement; e.scrollTop = e.scrollHeight; }", click[7:])
-                            page.wait_for_timeout(400)
-                            click = None
-                        target = page.query_selector(click) if click else None
-                        if click and not (target and target.is_visible()):
-                            page.close()
-                            continue
-                        if target:
+                        missing = False
+                        for step in ([steps] if isinstance(steps, str) else steps or []):
+                            if step.startswith("scroll:"):
+                                page.evaluate("(sel) => { const e = document.querySelector(sel) || "
+                                              "document.scrollingElement; e.scrollTop = e.scrollHeight; }", step[7:])
+                                page.wait_for_timeout(400)
+                                continue
+                            target = page.query_selector(step)
+                            if not (target and target.is_visible()):
+                                missing = True
+                                break
+                            target.scroll_into_view_if_needed()
                             target.click()
                             page.wait_for_timeout(600)
+                        if missing:  # this device does not show it
+                            page.close()
+                            continue
                         path = os.path.join(args.out, f"{name}-{device}-{theme}.png")
                         page.screenshot(path=path)
                         page.close()

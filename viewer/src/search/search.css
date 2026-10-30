@@ -6,6 +6,8 @@
 .ui .s-intro { margin: 0 0 -6px; font-size: 13px; }
 .ui .s-intro .n-intro-link { display: inline-flex; align-items: center; gap: 6px; }
 .ui .s-intro .u-ic { width: 15px; height: 15px; }
+/* B's floating panel starts right under its tabs: a little air above the link */
+.ui .s-b > .s-intro { margin-top: 10px; }
 .ui .s-where { display: flex; flex-direction: column; gap: 12px; }
 /* The place box (PlaceBox) */
 .ui .s-placebox { display: flex; flex-direction: column; gap: 6px; }

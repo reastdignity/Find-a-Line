@@ -24,7 +24,11 @@ export function limitLines(usage: Usage): string[] {
       + (one.radius_m != null ? " " + t("intro.search.limit_circle", {radius: n(one.radius_m / 1000)}) : ""));
   } else if (one?.radius_m != null) search.push(t("intro.search.limit_radius", {radius: n(one.radius_m / 1000)}));
   if (one?.max_length_m != null) search.push(t("intro.search.limit_length", {length: n(one.max_length_m)}));
-  if (search.length) lines.push(t("intro.search.limit_one", {parts: search.join(", ")}));
+  if (search.length || one?.bbox_km != null) {
+    lines.push([search.length ? t("intro.search.limit_one", {parts: search.join(", ")}) : "",
+                one?.bbox_km != null ? t("intro.search.limit_bbox", {bbox: n(one.bbox_km)}) : ""]
+      .filter(Boolean).join(" "));
+  }
   const day: string[] = [];
   if (q.jobs_day.limit != null) day.push(t("intro.search.limit_jobs", {count: q.jobs_day.limit}));
   if (q.km2.limit != null) day.push(t("intro.search.limit_km2", {km2: n(q.km2.limit)}));

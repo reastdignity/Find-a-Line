@@ -311,6 +311,7 @@
   "intro.search.limit_circle": "(a circle up to {{radius}} km)",
   "intro.search.limit_radius": "a circle up to {{radius}} km",
   "intro.search.limit_length": "lines up to {{length}} m",
+  "intro.search.limit_bbox": "The whole search fits in a box of {{bbox}} km on each side.",
   "intro.search.limit_day": "Every {{hours}} hours: {{parts}}.",
   "intro.search.limit_jobs_one": "{{count}} search",
   "intro.search.limit_jobs_other": "{{count}} searches",
