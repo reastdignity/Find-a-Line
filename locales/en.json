@@ -331,5 +331,22 @@
   "intro.search.example_sea": "<b>Lines straight out from a sea cliff?</b> Use <b>{{cliffs}}</b> → <b>{{coast}}</b>, set <b>{{angle}}</b> 30° and <b>{{drop}}</b> 30 m. The lines leave the wall over the drop, not along it.",
   "intro.search.example_forest": "<b>A first highline in a forest area?</b> Use the preset <b>{{preset}}</b> and set <b>{{nmpt}}</b> to <b>{{reject}}</b>. Only lines clear of the trees stay.",
 
+  "intro.result.title": "How to read the result",
+  "intro.result.link": "How to read the result",
+  "intro.result.spots": "<b>Spots and lines.</b> Many found lines are almost the same: their anchors are only a few metres apart. The result puts them together into a <i>spot</i>. The map shows one line for each spot: the line with the most clearance (or the longest or highest, as you select). Select a spot to see all its lines.",
+  "intro.result.colours": "<b>Colours.</b>",
+  "intro.result.colour_clean": "Pink: the line is clear of the ground.",
+  "intro.result.colour_over": "Orange: it is clear of the ground but not of trees or buildings.",
+  "intro.result.colour_favourite": "Yellow halo: your favourite.",
+  "intro.result.filters": "<b>Filters hide lines.</b> Filters do not start a new search. They hide the lines that you do not need, and you can change them at any time. The head of the result shows how many lines the filters hide. Your filters stay in this browser for every result.",
+  "intro.result.easy": "<b>Make the map easy to read.</b>",
+  "intro.result.easy_group": "Keep <b>Group similar lines into spots</b> on.",
+  "intro.result.easy_within": "Increase <b>Anchors within</b> (More filters → Grouping) to put near spots together.",
+  "intro.result.easy_clearance": "Set <b>Clearance at least</b> 1–2 m: lines that only just pass go away.",
+  "intro.result.easy_length": "Set <b>Length</b> to the lines that you will rig.",
+  "intro.result.easy_spot": "Set <b>Lines in a spot at least</b> 3 to see places with many options.",
+  "intro.result.easy_off": "Turn grouping off only when you look at a small part of the map.",
+  "intro.result.check": "<b>Check on the spot.</b> The result comes from terrain data. It does not see loose rock, small trees or new buildings, and it does not check a fall onto the backup. Check every line before you rig it.",
+
   "ui.try": "Try interface {{ui}}"
 }

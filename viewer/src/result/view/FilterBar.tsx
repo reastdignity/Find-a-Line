@@ -1,15 +1,19 @@
 // The filters of a result: chips of the main ones (length, clearance, height above the ground, only
 // clear lines; a set one is removable, a click edits it) and "More filters": every filter of the old
 // map (panels.tsx FiltersPanel, filters.ts), shown only when the lines have its data, and the grouping.
-// Values come from and go to the ResultModel (filters, state, ranges).
+// Values come from and go to the ResultModel (filters, state, ranges). "How to read the result"
+// (ResultIntro) opens once, from here: the FilterBar is in every layout of a result.
 
 import { useRef, useState } from "preact/hooks";
 import { Button, Chip, Chips, Segmented } from "../../ui/components";
 import { Icon } from "../../ui/icons";
+import { IntroLink, useIntro } from "../../ui/Intro";
+import { t } from "../../i18n";
 import { active, NO_FILTERS, type Filters } from "../../filters";
 import { COLORS } from "../../style";
 import type { ResultModel } from "../model";
 import { Limit, Swatch, num, useModel } from "./common";
+import { ResultIntro } from "./ResultIntro";
 
 type Main = "len" | "clr" | "height";
 const MAIN_KEYS: (keyof Filters)[] = ["lenMin", "lenMax", "clrMin", "heightMin"];
@@ -79,7 +83,9 @@ export function FilterBar({model, onMore}: FilterBarProps) {
   const anything = active(f) > 0 || !s.showOver || !s.showClean;
   const toggle = (which: Main) => setEditing(editing === which ? null : which);
   const extra = moreActive(model);
+  const intro = useIntro("result");
   return <div class="r-filters" ref={bar}>
+    <ResultIntro state={intro} />
     <Chips>
       {r.len && <Chip on={f.lenMin !== null || f.lenMax !== null} onClick={() => toggle("len")} expanded={editing === "len"}
                       onRemove={f.lenMin !== null || f.lenMax !== null
@@ -103,6 +109,7 @@ export function FilterBar({model, onMore}: FilterBarProps) {
         model.clearFilters();
         setEditing(null);
       }}>Clear all</button>}
+      <IntroLink state={intro} class="r-link r-intro-link">{t("intro.result.link")}</IntroLink>
     </Chips>
     {editing && <div class="r-editor" role="group" aria-label="Filter"
                      onKeyDown={(e) => { if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); closeEditor(); } }}>

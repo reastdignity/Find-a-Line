@@ -14,7 +14,7 @@ import { fmt } from "./useSearch";
 const n = (value: number) => Number(fmt(value)).toLocaleString("en");
 
 /** The lines of "Your limits"; one line without any. */
-function limitLines(usage: Usage): string[] {
+export function limitLines(usage: Usage): string[] {
   if (!usage.limited) return [t(user.local ? "intro.search.limits_local" : "intro.search.limits_none")];
   const q = usage.usage, one = usage.search;
   const lines: string[] = [];
@@ -54,8 +54,9 @@ export function SearchIntro({state, usage}: {state: IntroState; usage: Usage | n
   return <Intro state={state} title={t("intro.search.title")} class="n-intro-search">
     <p><Rich text={t("intro.search.what")} /></p>
     <h3>{t("intro.search.limits")}</h3>
-    {usage ? <ul class="n-limits">{limitLines(usage).map((line) => <li>{line}</li>)}</ul>
-      : <p class="u-small">{t("intro.search.limits_loading")}</p>}
+    {!usage ? <p class="u-small">{t("intro.search.limits_loading")}</p>
+      : usage.limited ? <ul class="n-limits">{limitLines(usage).map((line) => <li>{line}</li>)}</ul>
+      : <p class="n-limits">{limitLines(usage)[0]}</p>}
     <p><Rich text={t("intro.search.narrow")} /></p>
     <p><Rich text={t("intro.search.wide")} /></p>
     <h3>{t("intro.search.examples")}</h3>

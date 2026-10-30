@@ -33,7 +33,8 @@
 .ui .n-again { display: inline-flex; align-items: center; gap: 8px; margin-right: auto; color: var(--ink-2); cursor: pointer; }
 .ui .n-again input { width: 16px; height: 16px; margin: 0; accent-color: var(--accent); }
 .ui .n-colours { list-style: none; padding-left: 0 !important; }
-.ui .n-colours li { display: flex; align-items: center; gap: 8px; }
+.ui .n-colours li { display: flex; align-items: flex-start; gap: 8px; }
+.ui .n-colours li .r-sw { margin-top: .6em; }
 .ui .n-intro-link { border: 0; background: none; padding: 0; color: var(--accent); font: inherit; cursor: pointer; }
 .ui .n-intro-link:hover { text-decoration: underline; }
 @media (max-width: 560px) {

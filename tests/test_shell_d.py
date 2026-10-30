@@ -418,7 +418,7 @@ const dialog = () => $(".n-intro[open]");
 run({
   search(next) { wait(() => $(".s-panel") && dialog(), () => {
     result.search = {title: text(".n-intro[open] h2"), checked: $(".n-intro[open] .n-again input").checked,
-                     limits: $$(".n-intro[open] .n-limits li").map((li) => li.textContent),
+                     limits: text(".n-intro[open] .n-limits"),
                      examples: $$(".n-intro[open] .n-examples li b").length, before: seen("search")};
     button("Got it").click();
     later(() => {
@@ -437,6 +437,19 @@ run({
       })); });
     });
   }); },
+  result(next) {
+    location.hash = "#run=" + SMALL;
+    wait(() => $(".r-filters") && dialog(), () => {
+      result.result = {title: text(".n-intro[open] h2"), swatches: $$(".n-intro[open] .n-colours .r-sw").length,
+                       spot: text(".n-intro[open] i")};
+      button("Got it").click();
+      later(() => {
+        result.result.closed = [!dialog(), seen("result")];
+        $(".r-filters .n-intro-link").click();
+        later(() => { result.result.link = text(".n-intro[open] h2"); button("Got it").click(); later(next); });
+      });
+    });
+  },
 });
 """
 
@@ -445,17 +458,20 @@ run({
 def test_shell_d_intros(data, tmp_path):
     """The intro of a new search ("How a search works") opens once: Got it with "Do not show again" (checked at
     first) puts it away in localStorage, so the next new search opens none; the link in the panel opens it again,
-    and Got it without "Do not show again" forgets it. The local app has no limits."""
+    and Got it without "Do not show again" forgets it. The local app has no limits. A result opens "How to read the
+    result" once (the colours' swatches), and its link in the filters opens it again."""
     from test_shell_c import C_STUBS
     from test_web import INTROS_SEEN
-    stubs = C_STUBS.replace(INTROS_SEEN, "") + 'try { localStorage.removeItem("findaline.intro.search"); } catch (e) {}\n'
+    stubs = C_STUBS.replace(INTROS_SEEN, "") + 'try { localStorage.removeItem("findaline.intro.search"); localStorage.removeItem("findaline.intro.result"); } catch (e) {}\n'
     page = stub_page(data, "dintro", INTRO_SCRIPT % {"small": SMALL}, stubs=stubs)
     with _server(data) as port:
         r = _edge(port, page + "?ui=d#new", tmp_path / "edge-intro")
     assert "timeout" not in r and "error" not in r, json.dumps(r)
     search = r["search"]
     assert search["title"] == "How a search works" and search["checked"] and search["before"] is None, r
-    assert search["limits"] == ["This computer has no limits."] and search["examples"] >= 10, r
+    assert search["limits"] == "This computer has no limits." and search["examples"] >= 10, r
     assert search["closed"] and search["after"] == "seen" and not search["again"], r
     assert search["link"] == "How a search works" and search["unchecked"] == [True, None], r
+    assert r["result"] == {"title": "How to read the result", "swatches": 3, "spot": "spot", "closed": [True, "seen"],
+                           "link": "How to read the result"}, r
     assert r["csp"] == []

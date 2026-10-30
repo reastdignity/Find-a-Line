@@ -82,10 +82,16 @@ export function Intro({state, title, children, class: cls}:
   </dialog>;
 }
 
-/** A text of the catalogue with <b>…</b> drawn in bold (the only markup it may hold; no innerHTML). */
+/** A text of the catalogue with <b>…</b> in bold and <i>…</i> in italics (the only markup it may hold;
+ *  no innerHTML). */
 export function Rich({text}: {text: string}) {
-  const parts = text.split(/<b>(.*?)<\/b>/);
-  return <>{parts.map((part, i) => i % 2 ? <b key={i}>{part}</b> : part)}</>;
+  const parts = text.split(/<(b|i)>(.*?)<\/\1>/);  // text, tag, inner, text, ...
+  const out = [];
+  for (let i = 0; i < parts.length; i += 3) {
+    if (parts[i]) out.push(parts[i]);
+    if (i + 2 < parts.length) out.push(parts[i + 1] === "b" ? <b key={i}>{parts[i + 2]}</b> : <i key={i}>{parts[i + 2]}</i>);
+  }
+  return <>{out}</>;
 }
 
 /** A link that opens the intro again. */
