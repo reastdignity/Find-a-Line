@@ -802,9 +802,15 @@ def create_app(data_dir: str, token: Optional[str] = None, port: int = PORT, sta
     def get_usage(user: ac.User = Depends(current_user)):
         """What the user used in the last 24 hours and holds now, with the quotas that apply (None:
         none; for users without limits, administrators and the local app, whose one user has no id:
-        Jobs.admission and Jobs.use count no quotas for it). Read-only: nothing is recorded."""
+        Jobs.admission and Jobs.use count no quotas for it), and the limits of one search
+        (`search`: its area, a circle's radius, the longest line and the side of its bounding box; None
+        each the same way). Read-only: nothing is recorded."""
         quotas = limits if user.id is not None and user.limited else None
-        return jobs.usage(user.id, quotas)
+        answer = jobs.usage(user.id, quotas)
+        of = (lambda name: getattr(quotas, name)) if quotas is not None else (lambda name: None)
+        answer["search"] = {"area_km2": of("area_km2_max"), "radius_m": of("radius_max"),
+                            "max_length_m": of("max_length_max"), "bbox_km": of("bbox_km_max")}
+        return answer
 
     def parse(body: Dict, user: ac.User) -> Tuple[Dict, pm.SearchParams]:
         """The checked request and its validated parameters (400 otherwise); in a thread (a drawn

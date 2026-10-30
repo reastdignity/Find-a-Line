@@ -26,13 +26,15 @@ export interface SearchBProps {
   usage: UsageState;
   runs: RunListed[] | null;
   wide: boolean;
+  /** The search section is shown (the panel stays mounted while it is not). */
+  visible: boolean;
   onShow(runId: string): void;
   onEdit(jobId: string): void;
   /** The job the panel follows after Start ("" again for a new search). */
   onFollow?(jobId: string): void;
 }
 
-export function SearchB({place, schema, initial, jobs, usage, runs, wide, onShow, onEdit, onFollow}: SearchBProps) {
+export function SearchB({place, schema, initial, jobs, usage, runs, wide, visible, onShow, onEdit, onFollow}: SearchBProps) {
   const [started, setStarted] = useState("");
   useEffect(() => onFollow?.(started), [started]);
   const search = useSearch({place, schema, initial, preset: "typical", onStarted: (id) => {
@@ -66,6 +68,6 @@ export function SearchB({place, schema, initial, jobs, usage, runs, wide, onShow
   </div>;
   return <Sheet label={started ? "Your search" : "New search"} desktop="float" initial="half" peek={150} top={64}>
     {following || <SearchPanel place={place} schema={schema} onStarted={() => {}} search={search} variant="b"
-                               usage={usage.usage} phone={!wide} />}
+                               usage={usage.usage} phone={!wide} visible={visible} />}
   </Sheet>;
 }

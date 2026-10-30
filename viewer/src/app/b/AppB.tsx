@@ -205,7 +205,7 @@ export function AppB() {
       {place && schema && <>
         <div class="b-layer" hidden={section !== "search"}>
           <SearchB key={editing.key} place={place} schema={schema} initial={editing.request} jobs={jobs} usage={usage}
-                   runs={runs} wide={wide} onShow={(id) => show(id)} onEdit={edit}
+                   runs={runs} wide={wide} visible={section === "search"} onShow={(id) => show(id)} onEdit={edit}
                    onFollow={setFollowing} />
         </div>
         {section === "searches" && <div class="b-layer">{panel("My searches",

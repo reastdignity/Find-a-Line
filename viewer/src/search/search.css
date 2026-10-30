@@ -3,6 +3,9 @@
 
 .ui .s-panel { display: flex; flex-direction: column; gap: 14px; }
 .ui .s-panel .u-h.s-gap { margin-top: 6px; }
+.ui .s-intro { margin: 0 0 -6px; font-size: 13px; }
+.ui .s-intro .n-intro-link { display: inline-flex; align-items: center; gap: 6px; }
+.ui .s-intro .u-ic { width: 15px; height: 15px; }
 .ui .s-where { display: flex; flex-direction: column; gap: 12px; }
 /* The place box (PlaceBox) */
 .ui .s-placebox { display: flex; flex-direction: column; gap: 6px; }

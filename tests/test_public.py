@@ -2517,7 +2517,8 @@ def test_no_server_paths_in_public_events(tmp_path, monkeypatch):
 
 def test_usage(tmp_path, settings, account_settings, providers, monkeypatch):
     """GET /api/usage: a limited user's use of the last 24 hours (km², downloads, Nominatim, searches),
-    the searches waiting or running and the size of the runs, each with its quota; users without limits
+    the searches waiting or running and the size of the runs, each with its quota, and the limits of one
+    search (area, radius, longest line, bounding box); users without limits
     and administrators get the counts of jobs and runs without quotas; the local app (no
     FINDALINE_LIMIT_*, or with them: its one user has no quotas) the same. Nothing is recorded."""
     from settings import Limits
@@ -2550,12 +2551,15 @@ def test_usage(tmp_path, settings, account_settings, providers, monkeypatch):
     assert usage["usage"]["jobs_day"] == {"used": 1, "limit": limits.jobs_day_max}
     assert usage["usage"]["jobs_active"] == {"used": 1, "limit": limits.jobs_active_max}
     assert usage["usage"]["runs_gb"] == {"used": 0.2, "limit": limits.runs_gb_max}
+    assert usage["search"] == {"area_km2": limits.area_km2_max, "radius_m": limits.radius_max,
+                               "max_length_m": limits.max_length_max, "bbox_km": limits.bbox_km_max}
     assert audit_rows() == audited  # read-only: no audit event
     for who in ("unlimited", "admin"):
         usage = people[who].get("/api/usage").json()
         assert not usage["limited"], who
         assert all(item["limit"] is None for item in usage["usage"].values()), usage
         assert usage["usage"]["km2"]["used"] is None and usage["usage"]["jobs_active"]["used"] == 0
+        assert all(value is None for value in usage["search"].values()), usage
     anonymous = TestClient(app, base_url=URL)
     assert anonymous.get("/api/usage").status_code == 401
     for client in [*people.values(), anonymous]:
@@ -2570,3 +2574,4 @@ def test_usage(tmp_path, settings, account_settings, providers, monkeypatch):
             usage = client.get("/api/usage").json()
         assert not usage["limited"] and usage["usage"]["jobs_active"] == {"used": 1, "limit": None}, usage
         assert usage["usage"]["km2"] == {"used": None, "limit": None}
+        assert all(value is None for value in usage["search"].values()), usage

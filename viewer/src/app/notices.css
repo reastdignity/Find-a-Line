@@ -16,3 +16,28 @@
 .ui .n-text { min-height: 140px; padding: 8px 12px; resize: vertical; font: inherit; line-height: 1.45; }
 .ui .n-count { align-self: flex-end; }
 .ui .n-attached { color: var(--ink-2); }
+
+/* An intro (ui/Intro.tsx): its text scrolls in the dialog, the footer stays at the bottom of it */
+.ui.u-dialog.n-intro { display: flex; flex-direction: column; width: min(620px, calc(100vw - 32px)); max-height: calc(100dvh - 32px);
+  padding: 0; overflow: hidden; }
+.ui.u-dialog.n-intro:not([open]) { display: none; }
+.ui.u-dialog.n-intro > * { margin: 0; }
+.ui .n-intro > .u-h { padding: 20px 24px 8px; }
+.ui .n-intro-body { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: 4px 24px 8px; line-height: 1.5; }
+.ui .n-intro-body > * { margin: 0 0 12px; }
+.ui .n-intro-body h3 { margin: 16px 0 4px; font-size: 15px; }
+.ui .n-intro-body h3:first-child { margin-top: 4px; }
+.ui .n-intro-body ul { padding-left: 1.2em; }
+.ui .n-intro-body li { margin: 4px 0; }
+.ui .n-intro-foot { flex-wrap: wrap; align-items: center; padding: 12px 24px 16px; border-top: 1px solid var(--line); }
+.ui .n-again { display: inline-flex; align-items: center; gap: 8px; margin-right: auto; color: var(--ink-2); cursor: pointer; }
+.ui .n-again input { width: 16px; height: 16px; margin: 0; accent-color: var(--accent); }
+.ui .n-colours { list-style: none; padding-left: 0 !important; }
+.ui .n-colours li { display: flex; align-items: center; gap: 8px; }
+.ui .n-intro-link { border: 0; background: none; padding: 0; color: var(--accent); font: inherit; cursor: pointer; }
+.ui .n-intro-link:hover { text-decoration: underline; }
+@media (max-width: 560px) {
+  .ui .n-intro > .u-h { padding: 16px 16px 6px; }
+  .ui .n-intro-body { padding: 4px 16px 8px; }
+  .ui .n-intro-foot { padding: 10px 16px 14px; }
+}

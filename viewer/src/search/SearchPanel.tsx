@@ -1,7 +1,7 @@
 // The search panel of the new interfaces: where (Point · Area · Along cliffs · File), the kind of
 // lines (presets as chips, B, or cards, C) with the key fields, "More settings" by topic, and the
 // live estimate with the start (EstimateBar; a shell may place it elsewhere, as C's bottom bar).
-// UsageMeters shows the user's quotas. Styles in search.css (s-*), under the kit's .ui root.
+// UsageMeters shows the user's quotas; SearchIntro, "How a search works", opens once. Styles in search.css (s-*), under the kit's .ui root.
 
 import type { ComponentChildren } from "preact";
 import { useState } from "preact/hooks";
@@ -11,7 +11,9 @@ import type { PlaceMap } from "../app/PlaceMap";
 import { errorText, label, t } from "../i18n";
 import { Button, Field, Progress, Range, RangePair, Segmented, StatusChip, type Option } from "../ui/components";
 import { Icon } from "../ui/icons";
+import { IntroLink, useIntro } from "../ui/Intro";
 import { PlaceBox } from "./PlaceBox";
+import { SearchIntro } from "./SearchIntro";
 import { fmt, KEY_FIELDS, useSearch, withinLimits, type SearchMode, type SearchState } from "./useSearch";
 import "./search.css";
 
@@ -377,6 +379,8 @@ export interface SearchPanelProps {
   usage?: Usage | null;            // for "within your daily limit"
   phone?: boolean;                 // shorter mode labels
   footer?: ComponentChildren;      // after the panel's content (e.g. the user's searches)
+  /** The panel is shown (B keeps it mounted while another section is): its intro opens only then. */
+  visible?: boolean;
 }
 
 /** The panel; with `search` it shows that state, otherwise it keeps its own. */
@@ -389,7 +393,8 @@ function OwnSearch(props: SearchPanelProps) {
   return <PanelBody {...props} s={s} />;
 }
 
-function PanelBody({s, variant, estimate = true, usage, phone, footer}: SearchPanelProps & {s: SearchState}) {
+function PanelBody({s, variant, estimate = true, usage, phone, footer, visible = true}: SearchPanelProps & {s: SearchState}) {
+  const intro = useIntro("search", visible);
   const nameField = s.byName.name;
   const nameId = useId("s-name");
   // The run's name: under Where in C, in More settings in B (its panel stays short)
@@ -398,6 +403,8 @@ function PanelBody({s, variant, estimate = true, usage, phone, footer}: SearchPa
            onInput={(e) => s.setName(e.currentTarget.value)} />
   </Field>;
   return <div class={cx("s-panel", `s-${variant}`)}>
+    <SearchIntro state={intro} usage={usage ?? null} />
+    <p class="s-intro"><IntroLink state={intro}><Icon name="info" />{t("intro.search.link")}</IntroLink></p>
     {variant === "c" && <h2 class="u-h">Where</h2>}
     <Where s={s} phone={phone} />
     {variant === "c" && name}

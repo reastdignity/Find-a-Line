@@ -44,7 +44,9 @@ PAGES = {
     "d-account-end": ("d", "#account", "scroll:.c-main"),
     "d-new": ("d", "#new", None),
     "d-new-hint": ("d", "#new", ".u-hint"),       # the first "?" of the search panel, its bubble open
+    "d-new-intro": ("d", "#new", ".s-intro .n-intro-link"),  # "How a search works" (ui/Intro.tsx)
     "d-result": ("d", "#run={run}", None),
+    "d-result-intro": ("d", "#run={run}", ".r-filters .n-intro-link"),  # "How to read the result"
     "d-favourites": ("d", "#favourites", None),
     "d-admin": ("d", "#admin", None),
     "d-osm": ("d", "#osm", None),
@@ -57,6 +59,8 @@ PAGES = {
     "c-home": ("c", "", None),
     "c-result": ("c", "#run={run}", None),
 }
+
+INTROS = ("search", "result")  # the intros of ui/Intro.tsx (localStorage "findaline.intro.<name>")
 
 DESKTOP = {"viewport": {"width": 1400, "height": 900}, "device_scale_factor": 1}
 DEVICES = {"desktop": ("chromium", None), "iphone": ("webkit", "iPhone 13"), "pixel": ("chromium", "Pixel 7")}
@@ -174,8 +178,10 @@ def main():
                     context = browser.new_context(**options, color_scheme=theme, ignore_https_errors=True)
                     context.add_cookies([{"name": "__Host-findaline", "value": cookie, "domain": "localhost",
                                           "path": "/", "secure": True, "httpOnly": True, "sameSite": "Lax"}])
-                    context.add_init_script(f"try {{ localStorage.setItem('findaline-theme', {json.dumps(theme)}); }} "
-                                            "catch (e) {}")
+                    # the theme, and the intros put away (ui/Intro.tsx): the "-intro" pages open them
+                    context.add_init_script(f"try {{ localStorage.setItem('findaline-theme', {json.dumps(theme)}); "
+                                            + "".join(f"localStorage.setItem('findaline.intro.{intro}', 'seen'); "
+                                                      for intro in INTROS) + "} catch (e) {}")
                     for name, (ui, hash_, click) in pages.items():
                         page = context.new_page()  # a fresh page each: no menu or route of the one before
                         page.goto(f"{site}/?ui={ui}{hash_.format(run=run)}")

@@ -44,6 +44,8 @@ export interface Usage {
   limited: boolean;
   hours: number;
   usage: Record<"km2" | "download_mb" | "nominatim" | "jobs_day" | "jobs_active" | "runs_gb", UsageItem>;
+  /** The limits of one search (null each: none). */
+  search?: {area_km2: number | null; radius_m: number | null; max_length_m: number | null; bbox_km: number | null};
 }
 
 export interface Estimate {

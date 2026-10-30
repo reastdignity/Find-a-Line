@@ -800,9 +800,14 @@ def test_measure_in_the_map(tmp_path, monkeypatch):
     assert raised.startswith(f"Measured: {row[8]:.0f} m, A1 {row[11] + 5:.1f} m"), text
 
 
+# The intros of the app (ui/Intro.tsx) put away, so that no dialog covers a test's page
+INTROS_SEEN = """
+try { for (const name of ["search", "result"]) localStorage.setItem("findaline.intro." + name, "seen"); } catch (e) {}
+"""
+
 # Loaded first on a test page: records every violation of the Content-Security-Policy and
-# writes them into <pre id="csp"> after 30 s (virtual time)
-CSP_STUB = """
+# writes them into <pre id="csp"> after 30 s (virtual time); the intros put away (INTROS_SEEN)
+CSP_STUB = INTROS_SEEN + """
 window.CSP_VIOLATIONS = [];
 document.addEventListener("securitypolicyviolation", (e) => CSP_VIOLATIONS.push(
   e.violatedDirective + " " + e.blockedURI + " " + (e.sample || "")));
