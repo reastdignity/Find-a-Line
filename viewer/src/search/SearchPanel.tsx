@@ -8,6 +8,7 @@ import { useState } from "preact/hooks";
 import type { Field as SchemaField, Preset, Schema, SearchRequest, Usage, UsageItem } from "../app/api";
 import { parseValue, withValue } from "../app/request";
 import type { PlaceMap } from "../app/PlaceMap";
+import { label, t } from "../i18n";
 import { Button, Field, Progress, Range, RangePair, Segmented, StatusChip, type Option } from "../ui/components";
 import { Icon } from "../ui/icons";
 import { PlaceBox } from "./PlaceBox";
@@ -25,8 +26,29 @@ const PHONE_MODES: Option<SearchMode>[] = MODES.map((m) => m.value === "cliffs" 
 let ids = 0;
 const useId = (prefix: string) => useState(() => `${prefix}-${++ids}`)[0];
 
+const unitOf = (name: string) => t(`field.${name}.unit`);
+
 /** The label of a field with its unit. */
-const labelOf = (field: SchemaField) => field.label + (field.unit ? `, ${field.unit}` : "");
+const labelOf = (field: SchemaField) => label(field.name) + (unitOf(field.name) ? `, ${unitOf(field.name)}` : "");
+
+/** A value with its unit as the hints write it ("30°", "5 %", "200 m"). */
+const withUnit = (value: number, unit: string) => unit === "°" ? `${value}°` : unit ? `${value} ${unit}` : String(value);
+
+/** The site's bounds in words (hint.bounds.*), "" without any; `factor`: at least this many times
+ *  the grid size (--group-distance). */
+function boundsText(low: number | null | undefined, high: number | null | undefined, unit: string,
+                    factor?: number | null): string {
+  if (factor) return t("hint.bounds.factor", {factor});
+  const min = low ?? null, max = high ?? null;
+  if (min !== null && max !== null) return t("hint.bounds.both", {min: withUnit(min, unit), max: withUnit(max, unit)});
+  if (min !== null) return t("hint.bounds.min", {min: withUnit(min, unit)});
+  if (max !== null) return t("hint.bounds.max", {max: withUnit(max, unit)});
+  return "";
+}
+
+/** The "?" text of a field: its hint from the catalogue (or `key`'s) and the site's bounds. */
+const hintOf = (field: SchemaField, key = `field.${field.name}.help`) =>
+  [t(key), boundsText(field.min, field.max, unitOf(field.name), field.min_factor)].filter(Boolean).join(" ");
 
 // ---- where -----------------------------------------------------------------------------------
 
@@ -35,9 +57,8 @@ function BufferField({s}: {s: SearchState}) {
   const id = useId("s-buffer");
   if (!field) return null;
   const max = Math.max(field.max ?? 1000, s.buffer);
-  return <Field label={field.label} value={`${s.buffer} m`} htmlFor={id}
-                help="Points and lines grow by it into areas; polygons are used as they are.">
-    <Range id={id} label={field.label} value={s.buffer} min={10} max={max} step={10} onInput={s.setBuffer} />
+  return <Field label={label("buffer")} value={`${s.buffer} m`} htmlFor={id} hint={hintOf(field)}>
+    <Range id={id} label={label("buffer")} value={s.buffer} min={10} max={max} step={10} onInput={s.setBuffer} />
   </Field>;
 }
 
@@ -53,8 +74,8 @@ function Where({s, phone}: {s: SearchState; phone?: boolean}) {
     {s.mode === "point" && <>
       <p class="s-hint s-point">{s.point ? <><Icon name="pin" />Centre {s.point[0].toFixed(5)}, {s.point[1].toFixed(5)}
         {" · "}click elsewhere to move it</> : "Click the map to set the centre of the search."}</p>
-      {radiusField && <Field label={radiusField.label} value={`${s.radius} m`} htmlFor={id}>
-        <Range id={id} label={radiusField.label} value={s.radius} min={50} step={50}
+      {radiusField && <Field label={label("radius")} value={`${s.radius} m`} htmlFor={id} hint={hintOf(radiusField)}>
+        <Range id={id} label={label("radius")} value={s.radius} min={50} step={50}
                max={Math.max(radiusField.max ?? 5000, s.radius)} onInput={s.setRadius} />
       </Field>}
     </>}
@@ -66,7 +87,7 @@ function Where({s, phone}: {s: SearchState; phone?: boolean}) {
           Both anchors of a line lie inside, the webbing may leave the area.</p>
         {areas}
         <BufferField s={s} />
-      </> : <Field label="Name of the area" htmlFor={id} help="An OpenStreetMap area, e.g. Gozo or Jura Krakowsko-Częstochowska.">
+      </> : <Field label={t("hint.area_name.label")} htmlFor={id} hint={t("hint.area_name.help")}>
         <input id={id} class="u-input" type="text" value={s.osmName} placeholder="e.g. Gozo"
                onInput={(e) => s.setOsmName(e.currentTarget.value)} />
       </Field>}
@@ -74,8 +95,8 @@ function Where({s, phone}: {s: SearchState; phone?: boolean}) {
     {s.mode === "cliffs" && <>
       <Segmented label="Along" value={s.coastKind} onChange={s.setCoastKind}
                  options={[{value: "cliffs", label: "Cliffs and crags"}, {value: "coast", label: "Coast"}]} />
-      <Field label={s.byName.within?.label ?? "Within"} htmlFor={id}
-             help="Where: an OpenStreetMap name (e.g. Gozo) or the part of the map you see.">
+      <Field label={label("within")} htmlFor={id}
+             hint={s.byName.within ? hintOf(s.byName.within) : t("field.within.help")}>
         <div class="s-within">
           <input id={id} class="u-input" type="text" value={s.within} placeholder="OSM name or S,W,N,E"
                  onInput={(e) => s.setWithin(e.currentTarget.value)} />
@@ -85,8 +106,8 @@ function Where({s, phone}: {s: SearchState; phone?: boolean}) {
       <BufferField s={s} />
     </>}
     {s.mode === "file" && <>
-      <Field label="Area file" htmlFor={id} help={s.file ? `${s.file.name}: ${s.file.areas.features.length} shapes`
-        : "GeoJSON, KML or GPX: polygons are used as they are, points and lines grown by the buffer."}>
+      <Field label={t("hint.area_file.label")} htmlFor={id} hint={t("hint.area_file.help")}
+             help={s.file && `${s.file.name}: ${s.file.areas.features.length} shapes`}>
         <input id={id} key={s.fileKey} class="s-file" type="file" accept=".geojson,.json,.kml,.gpx"
                onChange={(e) => s.readFile(e.currentTarget)} />
       </Field>
@@ -114,17 +135,18 @@ function Presets({s, variant}: {s: SearchState; variant: "b" | "c"}) {
   const presets = s.schema.presets;
   if (!presets.length) return null;
   const chosen = presets.find((p) => p.id === s.preset);
+  const title = t("hint.presets.label");
   if (variant === "c") {
-    return <div class="s-cards" role="radiogroup" aria-label="Lines to look for">
+    return <Field label={title} hint={t("hint.presets.help")}><div class="s-cards" role="radiogroup" aria-label={title}>
       {presets.map((p) => <button type="button" key={p.id} role="radio" aria-checked={p.id === s.preset}
                                   class={cx("s-card", p.id === s.preset && "u-on")} disabled={!p.available}
                                   title={p.reason ?? undefined} onClick={() => s.applyPreset(p.id)}>
         <b>{p.label}</b><span>{p.available ? describePreset(p, s.byName) : p.reason}</span></button>)}
-    </div>;
+    </div></Field>;
   }
-  return <Field label="Lines to look for" help={chosen && (chosen.values ? describePreset(chosen, s.byName)
+  return <Field label={title} hint={t("hint.presets.help")} help={chosen && (chosen.values ? describePreset(chosen, s.byName)
     : "Your own values: set them below or in More settings.")}>
-    <div class="u-chips" role="radiogroup" aria-label="Lines to look for">
+    <div class="u-chips" role="radiogroup" aria-label={title}>
       {presets.map((p) => <button type="button" key={p.id} role="radio" aria-checked={p.id === s.preset}
                                   class={cx("u-chip", "s-preset", p.id === s.preset && "u-on")} disabled={!p.available}
                                   title={p.reason ?? describePreset(p, s.byName)} onClick={() => s.applyPreset(p.id)}>
@@ -144,18 +166,21 @@ function KeyFields({s}: {s: SearchState}) {
   const changed = (name: string) => name in s.values;
   return <div class="s-keys">
     {byName.min_length && byName.max_length && <Field
-      label={<span class={cx(changed("min_length") || changed("max_length") ? "s-changed" : "")}>Line length</span>}
+      label={<span class={cx(changed("min_length") || changed("max_length") ? "s-changed" : "")}>{t("hint.length.label")}</span>}
+      hintLabel={t("hint.length.label")}
+      hint={[t("hint.length.help"), boundsText(byName.min_length.min, byName.max_length.max, "m")].filter(Boolean).join(" ")}
       value={`${low} – ${high} m`} help={s.problems.min_length && <span class="s-problem">{s.problems.min_length}</span>}>
-      <RangePair label="Line length" low={low} high={high} min={5} max={lengthMax} step={5}
+      <RangePair label={t("hint.length.label")} low={low} high={high} min={5} max={lengthMax} step={5}
                  onInput={(a, b) => s.setValues(withLengths(s, a, b))} />
     </Field>}
     {byName.max_anchor_diff_m && <Field
-      label={<span class={cx(changed("max_anchor_diff_m") && "s-changed")}>{byName.max_anchor_diff_m.label}</span>}
-      value={`≤ ${diff} m`}>
-      <Range label={byName.max_anchor_diff_m.label} value={diff} min={0} max={diffMax} step={1}
+      label={<span class={cx(changed("max_anchor_diff_m") && "s-changed")}>{label("max_anchor_diff_m")}</span>}
+      hintLabel={label("max_anchor_diff_m")} hint={hintOf(byName.max_anchor_diff_m)} value={`≤ ${diff} m`}>
+      <Range label={label("max_anchor_diff_m")} value={diff} min={0} max={diffMax} step={1}
              onInput={(v) => s.setValue("max_anchor_diff_m", v)} />
     </Field>}
-    {source && <Field label={<span class={cx(changed("source") && "s-changed")}>{source.label}</span>} htmlFor={sourceId}>
+    {source && <Field label={<span class={cx(changed("source") && "s-changed")}>{label("source")}</span>} htmlFor={sourceId}
+                      hintLabel={label("source")} hint={hintOf(source)}>
       <select id={sourceId} class="u-input" value={String(s.value("source"))}
               onChange={(e) => s.setValue("source", e.currentTarget.value)}>
         {source.choices!.map((c) => <option value={c}>{source.choice_labels?.[c] ?? c}</option>)}
@@ -202,6 +227,7 @@ function Setting({s, field}: {s: SearchState; field: SchemaField}) {
   const problem = s.problems[field.name];
   return <div class={cx("s-setting", changed && "s-is-changed")} data-field={field.name}>
     <Field htmlFor={id} label={<span class={cx(changed && "s-changed")}>{labelOf(field)}</span>}
+           hintLabel={label(field.name)} hint={hintOf(field)}
            value={changed ? <button type="button" class="s-reset" title="Back to the default"
                                     onClick={() => {
                                       const next = {...s.values};
@@ -211,7 +237,7 @@ function Setting({s, field}: {s: SearchState; field: SchemaField}) {
                                       setTimeout(() => document.getElementById(id)?.focus());
                                     }}>
              reset</button> : undefined}
-           help={<>{problem && <span class="s-problem">{problem}. </span>}{field.help}</>}>
+           help={problem && <span class="s-problem">{problem}.</span>}>
       <ParamInput id={id} field={field} value={s.values[field.name]} invalid={!!problem}
                   onChange={(v) => s.setValue(field.name, v)} />
     </Field>
@@ -366,7 +392,7 @@ function PanelBody({s, variant, estimate = true, usage, phone, footer}: SearchPa
   const nameField = s.byName.name;
   const nameId = useId("s-name");
   // The run's name: under Where in C, in More settings in B (its panel stays short)
-  const name = nameField && <Field label={nameField.label} htmlFor={nameId}>
+  const name = nameField && <Field label={label("name")} htmlFor={nameId} hint={hintOf(nameField)}>
     <input id={nameId} class="u-input" type="text" value={s.name} placeholder="from OpenStreetMap"
            onInput={(e) => s.setName(e.currentTarget.value)} />
   </Field>;

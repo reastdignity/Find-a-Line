@@ -16,6 +16,7 @@ import pytest
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, REPO)
 import accounts as ac  # noqa: E402
+import messages  # noqa: E402
 import web  # noqa: E402
 from settings import AccountSettings, PublicSettings  # noqa: E402
 
@@ -2164,7 +2165,9 @@ def test_request_limits(monkeypatch, tmp_path):
     assert not {"threads", "tile_size", "update", "source", "water", "shore_buffer", "fill_gaps", "coastline",
                 "ortho", "ortho_detail"} & set(fields)
     assert (fields["max_length"]["max"], fields["slope_threshold"]["min"], fields["group_distance"]["min"]) == (2000, 30, 2)
-    assert "at most 2000" in fields["max_length"]["help"]
+    # The page says the bounds in the hint (hint.bounds.*), the help is the catalogue's text alone
+    assert fields["max_length"]["help"] == messages.text("field.max_length.help")
+    assert fields["group_distance"]["min_factor"] == 2 and fields["max_length"]["min_factor"] is None
     local = {f["name"]: f for f in web.schema()}
     assert local["max_length"]["max"] is None and "threads" in local
 

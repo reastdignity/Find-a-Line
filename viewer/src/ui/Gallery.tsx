@@ -62,7 +62,8 @@ function Column({theme}: {theme: Theme}) {
 
     <section class="u-gal-sec"><h3>Panel, fields and ranges</h3>
       <Panel title="Search settings" actions={<IconButton icon="close" label="Close" plain />}>
-        <Field label="Longest line" value={`${length} m`} help="Lines up to this length are checked." htmlFor={`len-${theme}`}>
+        <Field label="Longest line" value={`${length} m`} help="Lines up to this length are checked." htmlFor={`len-${theme}`}
+               hint="The distance between the anchors. A narrow range gives a faster search and a clearer map.">
           <Range id={`len-${theme}`} label="Longest line" value={length} min={10} max={500} step={5} onInput={setLength} />
         </Field>
         <Field label="Length" value={`${span[0]}–${span[1]} m`}>

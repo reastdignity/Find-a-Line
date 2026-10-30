@@ -43,11 +43,13 @@ PAGES = {
     "d-account": ("d", "#account", None),         # the account page (phones)
     "d-account-end": ("d", "#account", "scroll:.c-main"),
     "d-new": ("d", "#new", None),
+    "d-new-hint": ("d", "#new", ".u-hint"),       # the first "?" of the search panel, its bubble open
     "d-result": ("d", "#run={run}", None),
     "d-favourites": ("d", "#favourites", None),
     "d-admin": ("d", "#admin", None),
     "d-osm": ("d", "#osm", None),
     "b-search": ("b", "#search", None),
+    "b-search-hint": ("b", "#search", ".u-hint"),
     "b-searches": ("b", "#searches", None),
     "b-result": ("b", "#run={run}", None),
     "b-admin": ("b", "#admin", None),

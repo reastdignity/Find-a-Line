@@ -91,7 +91,8 @@ SECURITY_HEADERS = {
 def schema(limits: Optional[Limits] = None, hidden_sources=()) -> List[Dict]:
     """The fields of SearchParams the page may set (cli_only and web_only fields are left out),
     with their label, unit, hint (help) and the labels of their choices from the message catalogue,
-    with the bounds of `limits` (min/max; fields and choices they do not allow are left out) and
+    with the bounds of `limits` (min/max, and min_factor: --group-distance's smallest multiple of
+    the grid size; fields and choices they do not allow are left out) and
     without the sources of `hidden_sources` (ADMIN_SOURCES for all but administrators)."""
     import typing
 
@@ -115,17 +116,15 @@ def schema(limits: Optional[Limits] = None, hidden_sources=()) -> List[Dict]:
             choices = [c for c in choices if limits.allows(name, c)]
         default = None if info.default_factory else info.default
         low, high = limits.bounds(name, src.MIN_RESOLUTION) if limits else (None, None)
+        # The page says the bounds in the hint (hint.bounds.*): from min/max, for --group-distance
+        # from its factor of the grid size (min is that factor at the finest resolution)
+        factor = limits.group_distance_min_res if limits and name == "group_distance" else None
         text = messages.text(f"field.{name}.help")
-        if name == "group_distance" and low is not None:
-            text += f" (on this site at least {limits.group_distance_min_res:g} × the resolution)"
-        elif low is not None or high is not None:
-            said = ([] if low is None else [f"at least {low:g}"]) + ([] if high is None else [f"at most {high:g}"])
-            text += f" (on this site {' and '.join(said)})"
         label, unit = messages.text(f"field.{name}.label"), messages.text(f"field.{name}.unit")
         names = {c: src.SOURCES[c].name if name == "source" and c != "auto" else messages.text(f"choice.{name}.{c}")
                  for c in choices or []} or None
         fields.append({"name": name, "type": kind, "choices": choices, "default": default,
-                       "help": text, "group": extra.get("group"), "min": low, "max": high,
+                       "help": text, "group": extra.get("group"), "min": low, "max": high, "min_factor": factor,
                        "optional": not info.is_required() and default is None,
                        "label": label, "unit": unit, "topic": pm.TOPIC_OF.get(name), "choice_labels": names})
     return fields

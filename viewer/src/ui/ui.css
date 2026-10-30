@@ -83,6 +83,21 @@
 .ui .u-field-lab { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; font-weight: 500; }
 .ui .u-field-lab b { font: 500 13px var(--mono); color: var(--accent); }
 .ui .u-field-help { font-size: 12.5px; color: var(--muted); }
+.ui .u-field-name { display: inline-flex; align-items: center; gap: 6px; min-width: 0; }
+
+/* Hint: a "?" after a label and its bubble (a popover in the top layer, placed by Hint.tsx) */
+.ui .u-hint-wrap { display: inline-flex; flex: none; }
+.ui .u-hint { position: relative; display: inline-flex; align-items: center; justify-content: center; width: 18px; height: 18px;
+  padding: 0; border-radius: 50%; border: 1px solid var(--line); background: var(--surface); color: var(--muted);
+  font: 600 11.5px/1 var(--font); cursor: help; }
+.ui .u-hint::after { content: ""; position: absolute; inset: -8px; border-radius: 50%; }  /* a larger target */
+@media (pointer: coarse) { .ui .u-hint::after { inset: -12px; } }
+.ui .u-hint:hover, .ui .u-hint:focus-visible { color: var(--accent); border-color: var(--accent); }
+.ui .u-hint-tip { display: none; position: fixed; inset: auto; margin: 0; border: 0; overflow: visible;
+  width: max-content; max-width: min(280px, calc(100vw - 32px)); padding: 8px 11px; border-radius: 8px;
+  background: var(--ink); color: var(--surface); box-shadow: var(--shadow); z-index: 1000;
+  font: 400 13px/1.45 var(--font); text-align: left; white-space: normal; }
+.ui .u-hint-tip.u-hint-on { display: block; }
 .ui .u-input { min-height: 38px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); padding: 0 12px; width: 100%; }
 .ui .u-input:focus-visible { border-color: var(--accent); }
 @media (pointer: coarse) { .ui .u-input { min-height: 44px; font-size: 16px; } }

@@ -14,6 +14,7 @@ export interface Field {
   optional: boolean;
   min: number | null;  // the site's limits (web.schema), null: none
   max: number | null;
+  min_factor: number | null;  // group_distance: at least this many times the grid size (web.schema)
   label: string;       // a short human label (params.LABELS)
   unit: string;        // "m", "%", "°", ... or ""
   topic: string | null;  // the topic of the new form (params.TOPICS)

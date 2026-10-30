@@ -4,10 +4,13 @@
 
 import type { ButtonHTMLAttributes, ComponentChildren } from "preact";
 import { useEffect, useRef, useState } from "preact/hooks";
+import { Hint } from "./Hint";
 import { Icon, type IconName } from "./icons";
 import "./ui.css";
 
 const cx = (...names: (string | false | null | undefined)[]) => names.filter(Boolean).join(" ");
+
+export { Hint };
 
 export type Theme = "auto" | "light" | "dark";
 
@@ -128,12 +131,17 @@ export function Panel({title, actions, padded = true, class: cls, children}:
   </section>;
 }
 
-/** A labelled field: the label, its current value on the right, the control, a help text. */
-export function Field({label, value, help, htmlFor, children}:
-                      {label: ComponentChildren; value?: ComponentChildren; help?: ComponentChildren; htmlFor?: string;
-                       children?: ComponentChildren}) {
+/** A labelled field: the label with its "?" hint (Hint; `hintLabel` names it when the label is not a
+ *  text), its current value on the right, the control, a help text (always shown: problems, state). */
+export function Field({label, value, help, hint, hintLabel, htmlFor, children}:
+                      {label: ComponentChildren; value?: ComponentChildren; help?: ComponentChildren;
+                       hint?: ComponentChildren; hintLabel?: string; htmlFor?: string; children?: ComponentChildren}) {
   return <div class="u-field">
-    <div class="u-field-lab"><label for={htmlFor}>{label}</label>{value !== undefined && <b>{value}</b>}</div>
+    <div class="u-field-lab">
+      <span class="u-field-name"><label for={htmlFor}>{label}</label>
+        {hint && <Hint label={hintLabel ?? (typeof label === "string" ? label : "")}>{hint}</Hint>}</span>
+      {value !== undefined && <b>{value}</b>}
+    </div>
     {children}
     {help && <div class="u-field-help">{help}</div>}
   </div>;
