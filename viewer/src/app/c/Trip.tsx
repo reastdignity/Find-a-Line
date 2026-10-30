@@ -1,4 +1,4 @@
-// C's favourite lines as a trip list (the old app's Favourites.tsx data): every favourite of the runs
+// C's favourite lines as a trip list (the data of /api/favourites): every favourite of the runs
 // the user may open, sorted by any value, each opens its line in the result page, removed with its star;
 // exported as GeoJSON or CSV (favourites.ts). Loaded again whenever it is shown.
 

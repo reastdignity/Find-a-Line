@@ -1,7 +1,7 @@
 // The state of a new search in the new interfaces: where (four modes), the parameters with the
 // presets, the live estimate and the start. useSearch() holds it, so a shell can show the panel
 // (SearchPanel) and the estimate with the start (EstimateBar) in different places; useUsage() is
-// the user's use of the quotas (/api/usage). The request is built as in the old form (app/request.ts).
+// the user's use of the quotas (/api/usage). The request is built by app/request.ts.
 
 import type { FeatureCollection } from "geojson";
 import { useCallback, useEffect, useMemo, useRef, useState } from "preact/hooks";

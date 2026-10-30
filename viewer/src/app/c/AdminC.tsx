@@ -1,4 +1,4 @@
-// C's admin page of the public site (the old app's Admin.tsx in the new look, the same requests): the
+// The admin page of the public site (C and D; B shows it in its panel): the
 // server (workers, free disk, queue), the users (approve, block, without limits, end their sessions),
 // every search with its owner (cancel), every run (open, the demo flag), the users' problem reports (done,
 // delete) and a link to the OpenStreetMap extracts (their own page: they need a map). Every request is an

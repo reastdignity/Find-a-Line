@@ -76,7 +76,7 @@ Instead of typing commands, you can use Find-a-Line as a page in your web browse
 - **macOS:** double-click **`start.command`** (the first time: right-click it, choose *Open* and confirm; if it does not start, run `chmod +x start.command` in the Terminal in the `Find-a-Line` folder once).
 - Or in the terminal: `uv run findaline.py web`.
 
-A window with the server stays open (closing it stops Find-a-Line) and the page opens in your browser. Click the map where you want to search (or draw an area), press **Estimate**, then **Start**. The **Queue** tab shows the progress; when the search is done, **open map** shows the results, the same map as above.
+A window with the server stays open (closing it stops Find-a-Line) and the page opens in your browser. Press **New search**, click the map where you want to search (or type a place's name and press Enter, or draw an area); the size and the download are shown while you set it up. Press **Start search**: the home page shows its progress, and when it is done, a click on it shows the results in the app.
 
 ## 6. Change the search
 Add options to the command to change what is searched. Some useful ones:
@@ -160,7 +160,7 @@ uv run findaline.py cache update
 
 `cache status` shows how much space each country takes, what is due for a check, and which of your saved searches were made on data that has changed since (run those again to see the new data). `cache update` downloads what changed, for example new laser scans published by geoportal.gov.pl. To free space, delete a country's folder inside `cache`: it is downloaded again when needed.
 
-If searches near the coast often warn that the coastline could not be downloaded, download OpenStreetMap for your country once: in the app, the **OSM** tab, **download** next to your country or region (Poland: about 2 GB, a single voivodeship much less). Or in the terminal:
+If searches near the coast often warn that the coastline could not be downloaded, download OpenStreetMap for your country once: in the app, **OpenStreetMap extracts** in the account menu (top right), **Download** next to your country or region (Poland: about 2 GB, a single voivodeship much less). Or in the terminal:
 
 ```
 uv run findaline.py osm download poland

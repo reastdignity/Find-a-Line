@@ -35,7 +35,7 @@ export function canReport(): boolean {
 export function currentContext(): ReportContext {
   const ui = chooseUi();
   return {page: (location.pathname + location.search + location.hash).slice(0, 300),
-          ...(["b", "c", "d", "old"].includes(ui) ? {ui} : {}), viewport: `${innerWidth}x${innerHeight}`};
+          ...(["b", "c", "d"].includes(ui) ? {ui} : {}), viewport: `${innerWidth}x${innerHeight}`};
 }
 
 /** Open the report's dialog. */

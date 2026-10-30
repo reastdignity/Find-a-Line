@@ -428,7 +428,7 @@ def test_shell_c_phone(data, tmp_path):
     assert home["width"] < 768 and home["nav"] == ["Home", "Favourites", "Account"], r
     assert home["newWidth"] == home["main"] and home["stacked"] and home["thumb"] < 140 and not home["overflow"], r
     assert r["favourites"] == ["Favourites", False], r
-    assert "Old interface" in r["account"][0] and "Try B" in r["account"][0] and not r["account"][1], r
+    assert "Old interface" not in r["account"][0] and "Try B" in r["account"][0] and not r["account"][1], r
     assert r["newSearch"] == {"bar": True, "scrolls": True, "nav": False, "overflow": False}, r
     assert r["sheet"] == [True, False, False, False], r
     assert r["peek"].startswith("Spot 1 of ") and r["stepped"].startswith("Spot 2 of ") and not r["after"], r

@@ -384,8 +384,8 @@ play({
     result.adminItem = !!item;
     if (!item) return next();
     item.click();
-    wait(() => $$(".b-legacy h3").length, () => {
-      result.sections = $$(".b-legacy h3").map((h) => h.textContent);
+    wait(() => $$(".c-admin .u-panel .u-h").length, () => {
+      result.sections = $$(".c-admin .u-panel .u-h").map((h) => h.textContent);
       next();
     });
   },
@@ -397,8 +397,8 @@ play({
 def test_on_the_public_site(tmp_path, clip_run, account_settings, monkeypatch):
     """The public site, signed in through a fake GitHub: a user's rail has no Admin and no OSM, the account
     shows the user, privacy and about and signs out; the card of an own run shares and asks before
-    deleting (in the page); the result's Share makes a link; an administrator gets the Admin item with the
-    old admin panel. No CSP violations."""
+    deleting (in the page); the result's Share makes a link; an administrator gets the Admin item with C's
+    Admin page and the OSM item. No CSP violations."""
     import socket
     import threading
     import time
@@ -470,8 +470,8 @@ def test_on_the_public_site(tmp_path, clip_run, account_settings, monkeypatch):
         signing_in[0] = {"id": 1, "login": "admin"}  # FINDALINE_ADMINS: the Admin item
         (stubs / "stubs.js").write_text(B_STUBS + "window.TEST_ADMIN = true;\n", encoding="utf-8")
         dom, r = page("edge-admin")
-        assert r["rail"] == ["Search", "My searches", "Favourites", "Admin", "Account"], r
-        assert r["adminItem"] and {"Users", "Runs"} <= set(r["sections"]), r
+        assert r["rail"] == ["Search", "My searches", "Favourites", "Admin", "OSM", "Account"], r
+        assert r["adminItem"] and {"Server", "Runs"} <= set(r["sections"]), r
         assert _violations(dom) == []
     finally:
         server.should_exit = True

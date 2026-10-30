@@ -1,5 +1,5 @@
-// The request of a new search from the place and the parameters: shared by the old form
-// (SearchForm.tsx) and the new search panel (search/). Pure functions, no Preact.
+// The request of a new search from the place and the parameters, for the search panel (search/).
+// Pure functions, no Preact.
 
 import type { FeatureCollection } from "geojson";
 import type { Field, SearchRequest } from "./api";

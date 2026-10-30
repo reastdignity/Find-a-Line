@@ -23,7 +23,7 @@ export function parseRoute(hash: string): Route {
  *  public site; OSM: the local app). */
 export function allowedRoute(route: Route, user: {local?: boolean; admin?: boolean}): Route {
   if (route.section === "admin" && (user.local || !user.admin)) return {section: "search"};
-  if (route.section === "osm" && !user.local) return {section: "search"};
+  if (route.section === "osm" && !user.local && !user.admin) return {section: "search"};
   return route;
 }
 

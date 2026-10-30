@@ -1,5 +1,5 @@
-/* The base components of the new interfaces (components.tsx). Everything lives under the root
-   class .ui and its classes start with u-, so the old app (.fa-*) and the viewer are untouched. */
+/* The base components of the interfaces (components.tsx). Everything lives under the root
+   class .ui and its classes start with u-, so the result viewer (map.html) is untouched. */
 @import "./tokens.css";
 
 /* The root: a full-screen page of its own (the new shells) or a block (the gallery's columns) */

@@ -1,5 +1,5 @@
-/* Prototype C (AppC.tsx): classes c-*, under the kit's root class .ui (ui/tokens.css), so the old app
-   and the maps keep their look. Leaflet's maps are isolated (their z-indexes stay inside them). */
+/* Prototype C (AppC.tsx): classes c-*, under the kit's root class .ui (ui/tokens.css), so the maps
+   keep their look. Leaflet's maps are isolated (their z-indexes stay inside them). */
 
 .ui.c-app { flex-direction: column; }
 .ui .c-main { flex: 1; min-height: 0; position: relative; overflow-y: auto; }

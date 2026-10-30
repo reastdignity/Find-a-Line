@@ -20,7 +20,7 @@ import { editHash, go, runHash } from "../c/route";
 import "../c/c.css";
 import "./d.css";
 
-const TRIES: UiChoice[] = ["old", "b", "c"];
+const TRIES: UiChoice[] = ["b", "c"];
 
 /** The link "Copy link" gives: this page in D with the line's hash, whichever interface is remembered. */
 const linkOf = (model: ResultModel, l: Line) => location.origin + uiHref("d") + runHash(model.runOf(l), model.lineLink(l));

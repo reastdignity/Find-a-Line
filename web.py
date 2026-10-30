@@ -281,7 +281,7 @@ def checked_folder_name(value) -> str:
 
 
 REPORT_AGENT_MAX = 300  # characters of a report's User-Agent
-REPORT_UIS = ("b", "c", "d", "old")
+REPORT_UIS = ("b", "c", "d")
 VIEWPORT = re.compile(r"\d{1,5}x\d{1,5}")
 
 
@@ -776,7 +776,7 @@ def create_app(data_dir: str, token: Optional[str] = None, port: int = PORT, sta
 
     @app.get("/api/schema")
     def get_schema(user: ac.User = Depends(current_user)):
-        return {"fields": schema(user_limits(user), hidden_sources(user)), "groups": pm.GROUPS,
+        return {"fields": schema(user_limits(user), hidden_sources(user)),
                 "topics": {topic: title for topic, (title, _) in pm.TOPICS.items()},
                 "presets": presets(user_limits(user))}
 

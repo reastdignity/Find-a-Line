@@ -8,8 +8,8 @@
 import type { ComponentChildren } from "preact";
 import { useEffect, useRef, useState } from "preact/hooks";
 import { api, user, type RunListed, type Schema, type SearchRequest } from "../api";
-import { AdminPanel } from "../Admin";
-import { OsmPanel } from "../OsmPanel";
+import { AdminC } from "../c/AdminC";
+import { OsmC } from "../c/OsmC";
 import { PlaceMap } from "../PlaceMap";
 import { FINISHED, useJobs } from "../useJobs";
 import { DESKTOP, IconButton, Rail, Screen, Segmented, Sheet, Toast, useMedia, type NavItem,
@@ -48,8 +48,8 @@ function Account({theme, onTheme}: {theme: Theme; onTheme(theme: Theme): void}) 
     <div class="b-account-links">
       {canReport() && <button type="button" class="b-report" onClick={() => openReport()}>Report a problem</button>}
       {!user.local && <><a href="/privacy" target="_blank">Privacy</a><a href="/about" target="_blank">About and data licences</a></>}
-      <a href={uiHref("old")}>Old interface</a>
       <a href={uiHref("c")}>Try C</a>
+      <a href={uiHref("d")}>Try D</a>
     </div>
     {!user.local && <button type="button" class="u-btn u-ghost b-signout"
                             onClick={() => api.logout().finally(() => { location.href = "/"; })}>Sign out</button>}
@@ -182,7 +182,7 @@ export function AppB() {
     {value: "searches", label: "My searches", icon: "list", badge: jobs.active || undefined},
     {value: "favourites", label: "Favourites", icon: "star"},
     ...(!user.local && user.admin ? [{value: "admin" as Section, label: "Admin", icon: "user" as const}] : []),
-    ...(user.local ? [{value: "osm" as Section, label: "OSM", icon: "layers" as const}] : []),
+    ...(user.local || user.admin ? [{value: "osm" as Section, label: "OSM", icon: "layers" as const}] : []),
   ];
   const section = route.section;
   const current: Section | null = section === "run" ? "searches" : section;
@@ -213,10 +213,10 @@ export function AppB() {
         {section === "favourites" && <div class="b-layer">{panel("Favourites",
           <FavouritesB place={place} onOpen={(run, line) => show(run, line)} />)}</div>}
         {section === "admin" && user.admin && <div class="b-layer">{panel("Admin",
-          <div class="b-legacy"><AdminPanel place={place} jobs={jobs.jobs} onStarted={() => go({section: "searches"})} /></div>)}
+          <AdminC jobs={jobs.jobs} />)}
         </div>}
-        {section === "osm" && user.local && <div class="b-layer">{panel("OpenStreetMap extracts",
-          <div class="b-legacy"><OsmPanel place={place} onStarted={() => go({section: "searches"})} /></div>)}</div>}
+        {section === "osm" && (user.local || user.admin) && <div class="b-layer">{panel("OpenStreetMap extracts",
+          <OsmC place={place} onStarted={() => go({section: "searches"})} />)}</div>}
         {section === "run" && <div class="b-layer">
           <ResultsB place={place} runId={route.run} line={route.line} nav={nav} wide={wide} runs={runs}
                     onBack={leaveResult} onRun={(id) => show(id)} menu={menuButton} />

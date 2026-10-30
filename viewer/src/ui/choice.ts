@@ -1,8 +1,8 @@
-// Which interface the app shows: ?ui=old|b|c|d|kit|kit-result|kit-search, remembered in localStorage (per browser) until
-// another is chosen. D is the default; the old interface stays at ?ui=old.
+// Which interface the app shows: ?ui=b|c|d|kit|kit-result|kit-search, remembered in localStorage (per browser) until
+// another is chosen. D is the default (the old interface, ?ui=old, was removed: a browser that remembered it gets D).
 
-export type UiChoice = "old" | "b" | "c" | "d" | "kit" | "kit-result" | "kit-search";
-const CHOICES: UiChoice[] = ["old", "b", "c", "d", "kit", "kit-result", "kit-search"];
+export type UiChoice = "b" | "c" | "d" | "kit" | "kit-result" | "kit-search";
+const CHOICES: UiChoice[] = ["b", "c", "d", "kit", "kit-result", "kit-search"];
 const STORAGE_KEY = "findaline-ui";
 
 /** The interface of this page: the parameter (remembered), else the remembered one, else "d". */

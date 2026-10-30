@@ -1446,17 +1446,26 @@ APP_CHECK = """
   const out = document.createElement("pre");
   out.id = "result";
   document.body.appendChild(out);
-  setTimeout(() => {
-    const user = document.querySelector(".fa-user");
-    const tabs = [...document.querySelectorAll(".fa-tabs button")];
-    const admin = tabs.find((b) => b.textContent === "Admin");
-    if (admin) admin.click();
-    setTimeout(() => {
-      out.textContent = JSON.stringify({user: user ? user.textContent : null, tabs: tabs.map((b) => b.textContent),
-        sections: [...document.querySelectorAll(".fa-admin h3")].map((h) => h.textContent),
-        users: document.querySelectorAll(".fa-admin .fa-run").length});
-    }, 3000);
-  }, 3000);
+  const wait = (ok, then, tries = 100) => ok() ? then() : tries ? setTimeout(() => wait(ok, then, tries - 1), 100)
+                                                    : (out.textContent = "timeout " + location.href + " " + document.body.className + " " + [...document.querySelectorAll("[class]")].slice(0, 12).map((e) => e.className).join(","));
+  const panels = () => [...document.querySelectorAll(".c-admin .u-panel")];
+  wait(() => document.querySelector(".c-home"), () => setTimeout(() => {  // after the shell's hash listener
+    location.hash = "#account";
+    wait(() => document.querySelector(".c-account"), () => {
+      const result = {user: document.querySelector(".c-account-who").textContent,
+        signout: !!document.querySelector(".c-signout"),
+        links: [...document.querySelectorAll(".c-account-links .c-menu-item")].map((a) => a.textContent.trim())};
+      const done = () => { out.textContent = JSON.stringify(result); };
+      if (!result.links.includes("Admin")) return done();
+      location.hash = "#admin";
+      wait(() => panels().length && document.querySelector(".c-admin-row"), () => {
+        result.sections = panels().map((p) => p.querySelector(".u-h").textContent);
+        result.users = panels().find((p) => p.querySelector(".u-h").textContent.startsWith("Users"))
+          .querySelectorAll(".c-admin-row").length;
+        done();
+      });
+    });
+  }, 300));
 })();
 """
 
@@ -1539,16 +1548,17 @@ def test_signed_in_app_and_shared_map_in_edge(tmp_path, clip_run, account_settin
     try:
         while not server.started:
             time.sleep(0.1)
-        dom = _edge(f"{site}/login/github?next=/%3Fui%3Dold", tmp_path / "edge")
+        dom = _edge(f"{site}/login/github?next=/", tmp_path / "edge")  # D, the default
         result = json.loads(re.search(r'<pre id="result">(.*?)</pre>', dom, re.S).group(1).replace("&quot;", '"'))
-        assert result["user"] and result["user"].startswith("a") and "sign out" in result["user"], result
-        assert result["tabs"] == ["New search", "Queue", "Runs", "Favourites"], result  # no OSM, no Admin
+        assert result["user"] and result["user"].startswith("a") and result["signout"], result
+        assert "Admin" not in result["links"] and "OpenStreetMap extracts" not in result["links"], result
         assert _violations(dom) == []
-        signing_in[0] = {"id": 1, "login": "admin"}  # FINDALINE_ADMINS: the admin tab
-        dom = _edge(f"{site}/login/github?next=/%3Fui%3Dold", tmp_path / "edge-admin")
+        signing_in[0] = {"id": 1, "login": "admin"}  # FINDALINE_ADMINS: the admin page
+        dom = _edge(f"{site}/login/github?next=/", tmp_path / "edge-admin")
         result = json.loads(re.search(r'<pre id="result">(.*?)</pre>', dom, re.S).group(1).replace("&quot;", '"'))
-        assert result["tabs"] == ["New search", "Queue", "Runs", "Favourites", "Admin"], result
-        assert {"Users", "All searches", "Runs", "OpenStreetMap extracts"} <= set(result["sections"]), result
+        assert {"Admin", "OpenStreetMap extracts"} <= set(result["links"]), result
+        assert {"Server", "All searches", "Runs", "OpenStreetMap extracts"} <= set(result["sections"]), result
+        assert any(s.startswith("Users") for s in result["sections"]), result
         assert result["users"] >= 2 and _violations(dom) == []
         dom = _edge(f"{site}/s/{token}/map.html", tmp_path / "edge-anonymous")
         result = json.loads(re.search(r'<pre id="result">(.*?)</pre>', dom, re.S).group(1).replace("&quot;", '"'))

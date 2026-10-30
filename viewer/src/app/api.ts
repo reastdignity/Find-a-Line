@@ -29,10 +29,9 @@ export interface Preset {
   reason: string | null;
 }
 
-/** /api/schema: the fields, the old form's groups, the new form's topics and the presets. */
+/** /api/schema: the fields, the form's topics and the presets. */
 export interface Schema {
   fields: Field[];
-  groups: Record<string, string>;
   topics: Record<string, string>;
   presets: Preset[];
 }

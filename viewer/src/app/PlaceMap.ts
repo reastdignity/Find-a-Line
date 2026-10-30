@@ -1,8 +1,7 @@
 // The map of the app: a click sets the centre of a circle, or areas are drawn
 // (Leaflet-Geoman: polygons and rectangles), or an uploaded area is shown.
-// The new interfaces reuse its Leaflet map (`map`) for the results too: setSearchVisible(false)
-// takes the search's layers, tools and clicks off it, and `controls` moves its controls (the old
-// app keeps the defaults).
+// The interfaces reuse its Leaflet map (`map`) for the results too: setSearchVisible(false)
+// takes the search's layers, tools and clicks off it; `controls` places its controls.
 
 import "@geoman-io/leaflet-geoman-free";
 import "@geoman-io/leaflet-geoman-free/dist/leaflet-geoman.css";
@@ -35,16 +34,15 @@ export class PlaceMap {
   onPoint: (lat: number, lon: number) => void = () => {};
   onDrawn: () => void = () => {};
 
-  /** `options.controls`: where the zoom buttons, the layer switch and the drawing tools go (the old
-   *  app: zoom and tools top left, layers top right). */
-  constructor(element: HTMLElement, options: {controls?: L.ControlPosition} = {}) {
-    this.controls = options.controls ?? "topleft";
-    this.map = L.map(element, {center: START, zoom: 13, maxZoom: MAX_ZOOM, zoomControl: !options.controls});
-    if (options.controls) L.control.zoom({position: options.controls}).addTo(this.map);
+  /** `options.controls`: where the zoom buttons, the layer switch and the drawing tools go. */
+  constructor(element: HTMLElement, options: {controls: L.ControlPosition}) {
+    this.controls = options.controls;
+    this.map = L.map(element, {center: START, zoom: 13, maxZoom: MAX_ZOOM, zoomControl: false});
+    L.control.zoom({position: options.controls}).addTo(this.map);
     L.control.scale().addTo(this.map);
     const layers = baseLayers(null, MAX_ZOOM);
     this.first = Object.values(layers)[0].addTo(this.map);
-    this.layers = L.control.layers(layers, {}, {position: options.controls ?? "topright"}).addTo(this.map);
+    this.layers = L.control.layers(layers, {}, {position: options.controls}).addTo(this.map);
     this.drawn.addTo(this.map);
     this.shown.addTo(this.map);
     this.preview.addTo(this.map);

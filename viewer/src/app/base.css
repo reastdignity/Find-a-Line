@@ -1,0 +1,2 @@
+/* The page of the app: the shells fill the window (the server-rendered pages scroll: ui/pages.css) */
+html, body { width: 100%; height: 100%; margin: 0; padding: 0; overflow: hidden; font: 13px/1.5 sans-serif; color: #222; }

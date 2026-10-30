@@ -49,7 +49,8 @@ export function Popover({button, label, align = "left", children, open: openProp
   const trigger = () => ref.current?.querySelector<HTMLElement>(FOCUSABLE);  // the button comes before the panel
   useEffect(() => {
     if (!open) return;
-    panel.current?.querySelector<HTMLElement>(FOCUSABLE)?.focus();
+    // Its first control, or the panel itself while its content loads (Compare's list of runs)
+    (panel.current?.querySelector<HTMLElement>(FOCUSABLE) ?? panel.current)?.focus();
     const outside = (e: Event) => { if (ref.current && !ref.current.contains(e.target as Node)) set(false); };
     const key = (e: KeyboardEvent) => { if (e.key === "Escape") { e.preventDefault(); set(false); trigger()?.focus(); } };
     document.addEventListener("pointerdown", outside);
@@ -70,7 +71,8 @@ export function Popover({button, label, align = "left", children, open: openProp
   };
   return <div class="r-popwrap" ref={ref} onFocusOut={left}>
     {button(open, () => set(!open))}
-    {open && <div ref={panel} class={cx("u-panel r-pop", align === "right" && "r-pop-right")} role="dialog" aria-label={label}>
+    {open && <div ref={panel} class={cx("u-panel r-pop", align === "right" && "r-pop-right")} role="dialog" aria-label={label}
+                  tabIndex={-1}>
       {typeof children === "function" ? children() : children}</div>}
   </div>;
 }

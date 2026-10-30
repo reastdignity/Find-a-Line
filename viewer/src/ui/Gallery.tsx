@@ -124,7 +124,7 @@ export function Gallery() {
       <b class="u-grow">Component gallery</b>
       <Segmented label="Theme" value={theme} onChange={choose} options={[
         {value: "both", label: "Both"}, {value: "auto", label: "Auto"}, {value: "light", label: "Light"}, {value: "dark", label: "Dark"}]} />
-      <a href={uiHref("b")}>B</a><a href={uiHref("c")}>C</a><a href={uiHref("old")}>Old interface</a>
+      <a href={uiHref("b")}>B</a><a href={uiHref("c")}>C</a><a href={uiHref("d")}>D</a>
     </header>
     <div class="u-gal-cols">
       {theme === "both" ? <><Column theme="light" /><Column theme="dark" /></> : <Column key={theme} theme={theme} />}

@@ -20,8 +20,8 @@ import { go } from "./route";
 const THEMES = [{value: "auto" as const, label: "Auto"}, {value: "light" as const, label: "Light"},
                 {value: "dark" as const, label: "Dark"}];
 
-/** The other interfaces the account links to (C: the old one and B). */
-export const TRIES_C: UiChoice[] = ["old", "b"];
+/** The other interfaces the account links to (C: B). */
+export const TRIES_C: UiChoice[] = ["b"];
 
 export function AccountBody({theme, setTheme, onPick, tries = TRIES_C}:
                             {theme: Theme; setTheme(t: Theme): void; onPick?(): void; tries?: UiChoice[]}) {
@@ -39,9 +39,7 @@ export function AccountBody({theme, setTheme, onPick, tries = TRIES_C}:
         <Icon name="warn" />Report a problem</button>}
       {!user.local && <a class="c-menu-item" href="/privacy" target="_blank"><Icon name="info" />Privacy</a>}
       {!user.local && <a class="c-menu-item" href="/about" target="_blank"><Icon name="info" />About and data licences</a>}
-      {tries.map((ui) => ui === "old"
-        ? <a key={ui} class="c-menu-item" href={uiHref(ui)}><Icon name="back" />Old interface</a>
-        : <a key={ui} class="c-menu-item" href={uiHref(ui)}><Icon name="next" />Try {ui.toUpperCase()}</a>)}
+      {tries.map((ui) => <a key={ui} class="c-menu-item" href={uiHref(ui)}><Icon name="next" />Try {ui.toUpperCase()}</a>)}
     </nav>
     <div class="c-account-theme"><span class="u-small">Theme</span>
       <Segmented label="Theme" options={THEMES} value={theme} onChange={(t) => { storeTheme(t); setTheme(t); }} /></div>

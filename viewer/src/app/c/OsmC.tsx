@@ -1,4 +1,4 @@
-// C's OpenStreetMap extracts (the old app's OsmPanel.tsx in the new look, the same requests): the
+// The OpenStreetMap extracts (C and D; B shows them in its panel): the
 // Geofabrik regions at the map's centre to download, so the coastline and the cliffs come from the
 // disk instead of the (often overloaded) Overpass API, and the downloaded extracts to update.
 

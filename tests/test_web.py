@@ -841,30 +841,27 @@ APP_SCRIPT = """
   const shapes = {type: "FeatureCollection", features: [box(19.70, 50.10, 19.71, 50.11),
     box(19.705, 50.105, 19.715, 50.115), box(19.80, 50.10, 19.81, 50.11)]};  // two overlap
   const say = (what) => { out.textContent += what + " | "; };
-  const areas = () => (document.querySelector(".fa-areas") || {}).textContent || "none";
-  const button = (text) => [...document.querySelectorAll("button")].find((b) => b.textContent === text);
+  const areas = () => (document.querySelector(".s-areas") || {}).textContent || "none";
+  const button = (text) => [...document.querySelectorAll("button")].find((b) => b.textContent.trim() === text);
   const wait = (ok, then, tries = 100) => ok() ? then() : tries ? setTimeout(() => wait(ok, then, tries - 1), 100)
                                                     : say("timeout");
-  wait(() => window.FINDALINE_PLACE && button("Draw"), () => {
-    button("Draw").click();
+  wait(() => window.FINDALINE_PLACE && button("Area"), () => {
+    button("Area").click();
     setTimeout(() => {
       const place = window.FINDALINE_PLACE;
       place.loadDrawn(shapes);
-      setTimeout(() => {
+      wait(() => areas() !== "none", () => {
         say(areas());
-        button("Clear all").click();
-        setTimeout(() => {
+        button("Clear the place").click();
+        wait(() => areas() === "none", () => {
           say(areas() + ", drawn " + (place.drawnAreas() ? "yes" : "no"));
           place.loadDrawn(shapes);
-          setTimeout(() => {
-            button("Estimate").click();
-            wait(() => button("Start") && !button("Start").disabled, () => {
-              button("Start").click();
-              wait(() => !place.drawnAreas(), () => say("after start: " + areas()));
-            });
-          }, 200);
-        }, 200);
-      }, 200);
+          wait(() => button("Start search") && !button("Start search").disabled, () => {
+            button("Start search").click();
+            wait(() => !location.hash.startsWith("#new"), () => say("started: " + location.hash));
+          });
+        });
+      });
     }, 200);
   });
 })();
@@ -873,8 +870,8 @@ APP_SCRIPT = """
 
 @pytest.mark.skipif(not os.path.exists(EDGE), reason="needs Microsoft Edge")
 def test_app_counts_and_clears_areas(tmp_path):
-    """The form counts separate drawn areas (overlapping shapes are one), "Clear all"
-    removes them, and starting a search clears the map for the next one."""
+    """The new search (D) counts separate drawn areas (overlapping shapes are one), "Clear the place"
+    removes them, and a search starts with all the shapes drawn again."""
     import re
     import urllib.request
     folder = tmp_path / "runs" / "apptest"
@@ -888,13 +885,12 @@ def test_app_counts_and_clears_areas(tmp_path):
         '<script src="/app/app.js"></script>',
         '<script src="stubs.js"></script><script src="/app/app.js"></script><script src="test.js"></script>'),
         encoding="utf-8")
-    dom = _edge_page(tmp_path, "runs/apptest/index.html?ui=old")  # the old app (D is the default)
+    dom = _edge_page(tmp_path, "runs/apptest/index.html?ui=d#new")
     text = re.search(r'<pre id="result">(.*?)</pre>', dom, re.S).group(1)
     drawn, cleared, started = text.split(" | ")[:3]
     assert drawn.startswith("2 separate areas (3 shapes"), text
     assert cleared == "none, drawn no", text
-    assert started == "after start: none", text
-    assert "The worker is not running" in dom  # no worker in this test
+    assert started.startswith("started: "), text
     assert _violations(dom) == []  # style-src 'self': no inline styles in the app
     jobs = Jobs(str(tmp_path))
     queued = jobs.all()
@@ -924,25 +920,25 @@ FILES_SCRIPT = """
   out.id = "result";
   document.body.appendChild(out);
   const say = (what) => { out.textContent += what + " | "; };
-  const button = (text) => [...document.querySelectorAll("button")].find((b) => b.textContent === text);
-  const hint = () => [...document.querySelectorAll(".fa-hint")].map((p) => p.textContent).join(" ");
+  const button = (text) => [...document.querySelectorAll("button")].find((b) => b.textContent.trim() === text);
+  const where = () => (document.querySelector(".s-where") || {}).textContent || "";
+  const help = (name) => { const at = where().indexOf(name + ": "); return at < 0 ? "" : where().slice(at).split(" shapes")[0] + " shapes"; };
   const wait = (ok, then, tries = 100) => ok() ? then() : tries ? setTimeout(() => wait(ok, then, tries - 1), 100)
-                                                    : say("timeout: " + hint() + " " + document.querySelector(".fa-error")?.textContent);
+                                                    : say("timeout: " + where());
   const load = (name, then) => {
-    const input = document.querySelector("input[type=file]");
+    const input = document.querySelector("input.s-file");
     const files = new DataTransfer();
     files.items.add(new File([FILES[name]], name));
     input.files = files.files;
     input.dispatchEvent(new Event("change", {bubbles: true}));
-    wait(() => hint().includes(name + ":"), () => { say(hint()); then(); });
+    wait(() => help(name), () => { say(help(name)); then(); });
   };
   wait(() => window.FINDALINE_PLACE && button("File"), () => {
     button("File").click();
     setTimeout(() => load("crag.kml", () => load("walk.gpx", () => {
-      button("Estimate").click();
-      wait(() => button("Start") && !button("Start").disabled, () => {
-        button("Start").click();
-        wait(() => !hint().includes("walk.gpx"), () => say("started"));
+      wait(() => button("Start search") && !button("Start search").disabled, () => {
+        button("Start search").click();
+        wait(() => !location.hash.startsWith("#new"), () => say("started"));
       });
     })), 200);
   });
@@ -967,8 +963,9 @@ def test_app_reads_area_files(tmp_path):
         '<script src="/app/app.js"></script>',
         '<script src="stubs.js"></script><script src="/app/app.js"></script><script src="test.js"></script>'),
         encoding="utf-8")
-    dom = _edge_page(tmp_path, "runs/apptest/index.html?ui=old")  # the old app (D is the default)
+    dom = _edge_page(tmp_path, "runs/apptest/index.html?ui=d#new")
     text = re.search(r'<pre id="result">(.*?)</pre>', dom, re.S).group(1)
+    assert text.count(" | ") >= 3, text
     kml, gpx, started = text.split(" | ")[:3]
     assert kml.startswith("crag.kml: 2 shapes"), text
     assert gpx.startswith("walk.gpx: 1 shapes"), text
@@ -1316,29 +1313,23 @@ FAVOURITES_TAB_SCRIPT = """
   out.id = "result";
   document.body.appendChild(out);
   const result = {};
-  const button = (text) => [...document.querySelectorAll("button")].find((b) => b.textContent === text);
-  const cards = () => [...document.querySelectorAll(".fa-favourite")];
+  const rows = () => [...document.querySelectorAll(".c-fav[data-line]")];
   const wait = (ok, then, tries = 100) => ok() ? then() : tries ? setTimeout(() => wait(ok, then, tries - 1), 100)
                                                     : (out.textContent = "timeout " + JSON.stringify(result));
-  wait(() => button("Favourites"), () => {
-    button("Favourites").click();
-    wait(() => cards().length, () => {
-      result.cards = cards().length;
-      result.mapLines = Object.values(window.FINDALINE_PLACE.map._layers)
-        .filter((l) => l.options && l.options.color === "#FFD400").length;
-      const select = document.querySelector(".fa-favourites-sort");
-      select.value = "len";
-      select.dispatchEvent(new Event("change"));
-      setTimeout(() => {
-        result.lengths = cards().map((c) => +c.querySelector("b").textContent);
-        result.link = cards()[0].querySelector("a").getAttribute("href");
-        cards()[0].querySelector("button").click();
-        wait(() => cards().length === result.cards - 1, () => {
-          result.after = cards().length;
-          out.textContent = JSON.stringify(result);
-        });
-      }, 300);
-    });
+  wait(() => rows().length, () => {
+    result.cards = rows().length;
+    const select = document.querySelector(".c-trip-sort select");
+    select.value = "len";
+    select.dispatchEvent(new Event("change", {bubbles: true}));
+    setTimeout(() => {
+      result.lengths = rows().map((c) => parseFloat(c.querySelector(".c-fav-open b").textContent));
+      result.link = rows()[0].querySelector(".c-fav-open").getAttribute("href");
+      rows()[0].querySelector(".c-fav-star").click();
+      wait(() => rows().length === result.cards - 1, () => {
+        result.after = rows().length;
+        out.textContent = JSON.stringify(result);
+      });
+    }, 300);
   });
 })();
 """
@@ -1348,8 +1339,8 @@ FAVOURITES_TAB_SCRIPT = """
 def test_favourites_in_the_map_and_the_app(tmp_path, monkeypatch):
     """Favourite lines marked in a map served by the app (a star in the list and in the popup): kept by
     the server, drawn with a halo and a star, a favourite of a group shown as its line, "only
-    favourite lines", the CSV export; the app's tab lists them, sorted, with a link to the line in its
-    map, and removes one."""
+    favourite lines", the CSV export; the app's Favourites page (D) lists them, sorted, with a link to the
+    line in the app, and removes one."""
     import re
     run_id = _clip_run(tmp_path, monkeypatch)
     folder = tmp_path / "runs" / run_id
@@ -1388,11 +1379,11 @@ def test_favourites_in_the_map_and_the_app(tmp_path, monkeypatch):
         '<script src="/app/app.js"></script>',
         '<script src="stubs.js"></script><script src="/app/app.js"></script><script src="test.js"></script>'),
         encoding="utf-8")
-    dom = _edge_page(tmp_path, "runs/apptest/index.html?ui=old")  # the old app (D is the default)
+    dom = _edge_page(tmp_path, "runs/apptest/index.html?ui=d#favourites")
     result = json.loads(re.search(r'<pre id="result">(.*?)</pre>', dom, re.S).group(1).replace("&quot;", '"'))
-    assert result["cards"] == 2 and result["mapLines"] == 2, result
+    assert result["cards"] == 2, result
     assert result["lengths"][0] == 999 and result["lengths"] == sorted(result["lengths"], reverse=True), result
-    assert result["link"] == f"/runs/{run_id}/map.html#line=" + line.replace(",", "%2C"), result
+    assert result["link"].replace("&amp;", "&") == f"#run={run_id}&line=" + line.replace(",", "%2C"), result
     assert result["after"] == 1 and _violations(dom) == []
 
 
@@ -1474,7 +1465,7 @@ UI_SCRIPT = """
 
 @pytest.mark.skipif(not os.path.exists(EDGE), reason="needs Microsoft Edge")
 def test_interface_switch(tmp_path):
-    """?ui= picks the interface: D without it, the old app, the gallery of the new components (kit) and the
+    """?ui= picks the interface: D without it (and for the old app, which is gone), the gallery of the new components (kit) and the
     prototypes B and C, each without CSP violations; the choice is remembered (localStorage)."""
     import html
     import re
@@ -1496,15 +1487,26 @@ def test_interface_switch(tmp_path):
         return json.loads(html.unescape(re.search(r'<pre id="result">(.*?)</pre>', dom, re.S).group(1)))
 
     assert "u-app-d" in shown("")["found"]  # the default
-    assert {"fa-tabs", "fa-try"} <= set(shown("?ui=old")["found"])  # with the way to the new ones
+    old = shown("?ui=old")["found"]  # the old app is gone: the default instead
+    assert "u-app-d" in old and "fa-tabs" not in old, old
     kit = shown("?ui=kit")
     assert {"u-gallery", "u-rail", "u-bnav", "u-sheet"} <= set(kit["found"]), kit
     assert "u-half" in kit["snaps"].split(" -> ")[0] and "u-full" in kit["snaps"].split(" -> ")[1], kit
     assert "u-app-b" in shown("?ui=b")["found"]
     assert "u-app-c" in shown("?ui=c")["found"]
     assert shown("?ui=c")["kept"] == "c"  # every server has its own port: the next page would not see it
-    assert "fa-tabs" in shown("?ui=old")["found"]
 
+
+
+def test_old_app_is_gone():
+    """The old app (its tabs, form and panels, classes fa-*) is not in the bundle any more: B shows C's
+    Admin and OSM pages, and ?ui=old is not a choice (a browser that remembered it gets D)."""
+    root = os.path.join(os.path.dirname(__file__), "..", "viewer")
+    with open(os.path.join(root, "dist", "app.js"), encoding="utf-8") as f:
+        bundle = f.read()
+    assert "fa-tabs" not in bundle and "fa-panel-body" not in bundle
+    with open(os.path.join(root, "src", "ui", "choice.ts"), encoding="utf-8") as f:
+        assert '"old"' not in f.read()
 
 # The results UI's demo page (?ui=kit-result&run=<id>): before the app, the clipboard records what it gets
 RESULTS_STUBS = APP_STUBS + """
@@ -1732,7 +1734,7 @@ def test_schema_has_labels_topics_and_presets(client):
     (their values validate as a request of the web)."""
     schema = client.get("/api/schema").json()
     assert all(f["label"] and f["topic"] in schema["topics"] for f in schema["fields"])
-    assert schema["topics"]["lines"] == "Lines" and schema["groups"] == web.pm.GROUPS  # the old form's groups
+    assert schema["topics"]["lines"] == "Lines" and "groups" not in schema  # only the old form had them
     presets = {p["id"]: p for p in schema["presets"]}
     assert [p["label"] for p in schema["presets"]] == ["Typical highline", "Long lines", "Short & low", "Custom"]
     for preset in presets.values():

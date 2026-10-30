@@ -95,11 +95,9 @@
 .ui.b-app .b-fav .u-ib { color: var(--fav); }
 .ui.b-app .b-empty .u-ic { width: 15px; height: 15px; vertical-align: -2px; }
 
-/* The old app's panels (Admin, OSM) inside B */
-.ui.b-app .b-legacy { font-size: 13.5px; }
-.ui.b-app .b-legacy .fa-run { border-bottom: 1px solid var(--line); padding: 6px 0; }
-.ui.b-app .b-legacy .fa-hint { color: var(--muted); }
-.ui.b-app .b-legacy .fa-error { color: var(--bad); }
+/* C's Admin and OSM pages (AdminC.tsx, OsmC.tsx) inside B's panel: the panel gives the room */
+.ui.b-app .c-page { padding: 0; }
+.ui.b-app .c-page > h1.u-h { display: none; }  /* the panel's title says it */
 
 /* Results: the pill, the panel and the dock are the workspace's (result/view/workspace.css) */
 .ui.b-app .u-sheet .u-sheet-body { display: flex; flex-direction: column; gap: 10px; }

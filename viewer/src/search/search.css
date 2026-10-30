@@ -35,7 +35,7 @@
 .ui .s-card.u-on { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); background: var(--accent-soft); }
 .ui .s-keys { display: flex; flex-direction: column; gap: 14px; }
 
-/* Changed values and problems (as the old form marks them) */
+/* Changed values and problems */
 .ui .s-changed { color: var(--accent); }
 .ui .s-changed::after { content: " •"; }
 .ui .s-problem { color: var(--bad); font-weight: 500; }

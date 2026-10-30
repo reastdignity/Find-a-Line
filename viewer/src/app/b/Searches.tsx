@@ -1,7 +1,7 @@
 // "My searches" of prototype B (B2): the searches waiting or running with their steps and progress
 // (useJobs, jobProgress), the failed ones with their error, and the saved runs (/api/runs) with their
 // numbers: show the results, edit and run again, share (the public site) and delete (the public site,
-// own runs; confirmed in the card). The usage meters on top, and the old app's notice when no worker runs.
+// own runs; confirmed in the card). The usage meters on top, and a notice when no worker runs.
 
 import type { ComponentChildren } from "preact";
 import { useEffect, useRef, useState } from "preact/hooks";
