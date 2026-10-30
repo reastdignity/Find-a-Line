@@ -49,6 +49,8 @@ export class ResultMap {
   private hovered: Line | null = null;
   private measuring: ((a: L.LatLng, b: L.LatLng) => void) | null = null;
   private points: L.LatLng[] = [];
+  private readonly measureListeners = new Set<(measuring: boolean) => void>();
+  private lastSelected: Line | null = null;  // a new selection ends measuring
   private readonly unsubscribe: () => void;
 
   constructor(map: L.Map, model: ResultModel, options: ResultMapOptions = {}) {
@@ -107,6 +109,10 @@ export class ResultMap {
   /** Draw the model again (called on every change of it). */
   render() {
     const model = this.model, selected = model.selected;
+    if ((selected?.line || null) !== this.lastSelected) {
+      this.lastSelected = selected?.line || null;
+      if (this.measuring) { this.cancelMeasure(); this.clearMeasure(); }
+    }
     this.linesLayer.clearLayers();
     this.topLayer.clearLayers();
     this.otherAreas.clearLayers();
@@ -211,12 +217,19 @@ export class ResultMap {
     return this.measuring !== null;
   }
 
+  /** Call `listener` when measure mode starts or ends; returns the function that stops it. */
+  onMeasuring(listener: (measuring: boolean) => void): () => void {
+    this.measureListeners.add(listener);
+    return () => { this.measureListeners.delete(listener); };
+  }
+
   /** Measure mode: the next two clicks on the map are the points, given to `done`; Esc cancels. */
   startMeasure(done: (a: L.LatLng, b: L.LatLng) => void) {
     this.measureLayer.clearLayers();
     this.points = [];
     this.measuring = done;
     this.map.getContainer().style.cursor = "crosshair";
+    this.measureListeners.forEach((f) => f(true));
   }
 
   /** Leave measure mode (the points drawn stay until clearMeasure). */
@@ -225,11 +238,13 @@ export class ResultMap {
     this.measuring = null;
     this.points = [];
     this.map.getContainer().style.cursor = "";
+    this.measureListeners.forEach((f) => f(false));
   }
 
-  /** Remove the points and line of a measurement. */
+  /** Remove the points and line of a measurement (while measuring, the points taken so far too). */
   clearMeasure() {
     this.measureLayer.clearLayers();
+    this.points = [];
   }
 
   private addPoint(at: L.LatLng) {
@@ -246,11 +261,18 @@ export class ResultMap {
     done(a, b);
   }
 
+  // A click beside the lines (theirs do not bubble) ends the selection, as the old map's popup closed
   private onMapClick = (e: L.LeafletMouseEvent) => {
     if (this.measuring) this.addPoint(e.latlng);
+    else if (this.model.selected) this.model.select(null);
   };
 
+  // Escape ends measuring, else the selection; not while typing or in a dialog (a Popover closes itself)
   private onKey = (e: KeyboardEvent) => {
-    if (e.key === "Escape" && this.measuring) { this.cancelMeasure(); this.clearMeasure(); }
+    if (e.key !== "Escape" || e.defaultPrevented) return;
+    if (this.measuring) { this.cancelMeasure(); this.clearMeasure(); return; }
+    const at = document.activeElement;
+    if (at && at.closest("input, select, textarea, [role=dialog], [role=alertdialog]")) return;
+    if (this.model.selected) this.model.select(null);
   };
 }

@@ -1,6 +1,7 @@
 // Favourite lines of the user (on the public site the signed-in one, locally the app's one user),
 // kept by the server (web.py /api/runs/<run>/favourites, /api/favourites): a map marks them, the
-// app lists all of them. Both export them as GeoJSON or CSV.
+// app lists all of them in their folders (nested, as a browser's bookmarks; folders.ts). Both export
+// them as GeoJSON or CSV.
 
 import { lineCoords } from "./keys";
 import type { Line } from "./types";
@@ -21,6 +22,22 @@ export interface Favourite {
   line: string;  // lat1,lon1,lat2,lon2 (keys.ts lineCoords)
   data: FavouriteData;
   created: string;
+  folder_id: number | null;  // null: the top level
+}
+
+/** A folder of favourites (jobs.favourite_folders). */
+export interface FavouriteFolder {
+  id: number;
+  parent_id: number | null;  // null: the top level
+  name: string;
+  created: string;
+}
+
+/** The user's favourites of one run as the server gives them to a map or the result view. */
+export interface RunFavourites {
+  lines: string[];                       // lineCoords
+  in: Record<string, number | null>;     // the folder of each
+  folders: FavouriteFolder[];
 }
 
 const known = (v: number | null) => v === null || !isFinite(v) ? null : v;
@@ -43,36 +60,70 @@ export function favouriteLine(f: Favourite): Line {
 
 let mapToken = "";  // the token of a map's changes, from the server's answer (a map is a static page)
 
-/** The user's favourite lines of a run (lineCoords); rejects when the server keeps none for this page. */
-export async function loadFavourites(runId: string): Promise<string[]> {
+/** The user's favourites of a run with their folders; rejects when the server keeps none for this page. */
+export async function loadRunFavourites(runId: string): Promise<RunFavourites> {
   const response = await fetch("/api/runs/" + encodeURIComponent(runId) + "/favourites");
   if (!response.ok) throw new Error(response.statusText);
   const body = await response.json();
   mapToken = body.token;
-  return body.lines;
+  return {lines: body.lines, in: body.in || {}, folders: body.folders || []};
 }
 
-/** Mark a line of a run as a favourite, or unmark it; `token`: the app's own (a map uses its run's). */
-export async function saveFavourite(runId: string, l: Line, on: boolean, token = mapToken): Promise<void> {
-  const response = await fetch("/api/runs/" + encodeURIComponent(runId) + "/favourites", {
-    method: "POST", headers: {"Content-Type": "application/json", "X-Findaline-Token": token},
-    body: JSON.stringify({line: lineCoords(l), favourite: on, ...(on ? {data: favouriteData(l)} : {})})});
-  if (!response.ok) {
-    const detail = (await response.json().catch(() => ({}))).detail;
-    throw new Error(typeof detail === "string" ? detail : response.statusText);
-  }
+/** The user's favourite lines of a run (lineCoords): the map's. */
+export async function loadFavourites(runId: string): Promise<string[]> {
+  return (await loadRunFavourites(runId)).lines;
 }
 
-/** A line to export with its run. */
+/** A change of the user's favourites; the server's message when it refuses. */
+async function post(url: string, body: unknown, token: string, method = "POST"): Promise<any> {
+  const response = await fetch(url, {
+    method, headers: {"Content-Type": "application/json", "X-Findaline-Token": token},
+    body: body === undefined ? undefined : JSON.stringify(body)});
+  const answer = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(typeof answer.detail === "string" ? answer.detail : response.statusText);
+  return answer;
+}
+
+/** Mark a line of a run as a favourite (into `folder`, null: the top level), or unmark it; `token`: the
+ *  app's own (a map uses its run's). */
+export async function saveFavourite(runId: string, l: Line, on: boolean, token = mapToken,
+                                    folder: number | null = null): Promise<void> {
+  await post("/api/runs/" + encodeURIComponent(runId) + "/favourites",
+             {line: lineCoords(l), favourite: on, ...(on ? {data: favouriteData(l), folder} : {})}, token);
+}
+
+/** Move a favourite (`line`: lineCoords) of a run into a folder (null: the top level). */
+export async function moveFavourite(runId: string, line: string, folder: number | null, token = mapToken): Promise<void> {
+  await post("/api/runs/" + encodeURIComponent(runId) + "/favourites/folder", {line, folder}, token);
+}
+
+/** A new folder in `parent` (null: the top level); its id. */
+export async function addFolder(name: string, parent: number | null, token = mapToken): Promise<number> {
+  return (await post("/api/favourites/folders", {name, parent}, token)).id;
+}
+
+/** Rename a folder and/or move it (`parent` given: null is the top level). */
+export async function changeFolder(id: number, change: {name?: string; parent?: number | null},
+                                   token = mapToken): Promise<void> {
+  await post("/api/favourites/folders/" + id, change, token);
+}
+
+/** Delete a folder with what is in it; how many folders and favourites went. */
+export async function deleteFolder(id: number, token = mapToken): Promise<{folders: number; favourites: number}> {
+  return post("/api/favourites/folders/" + id, undefined, token, "DELETE");
+}
+
+/** A line to export with its run (and its folder's path, "Trips / Tatras", when it has one). */
 export interface Exported {
   line: Line;
   runId: string;
   runName: string;
+  folder?: string;
 }
 
 // The columns of an export: the names of lines.csv (runs.FIELDS) for the values the viewer has
 const COLUMNS: [string, (e: Exported) => string | number | boolean | null][] = [
-  ["run_id", (e) => e.runId], ["run_name", (e) => e.runName],
+  ["run_id", (e) => e.runId], ["run_name", (e) => e.runName], ["folder", (e) => e.folder ?? ""],
   ["length_m", (e) => e.line.len], ["clearance_m", (e) => e.line.clr], ["clearance_nmpt_m", (e) => e.line.clrN],
   ["over_trees_buildings", (e) => e.line.over], ["water_m", (e) => e.line.water], ["filled_m", (e) => e.line.filled],
   ["height_max_m", (e) => known(e.line.hmax)], ["height_mean_m", (e) => known(e.line.hmean)],

@@ -16,7 +16,8 @@ type FavouriteRow = Row & {fav: Favourite};
 
 export function FavouritesB({place, onOpen}: {place: PlaceMap; onOpen(runId: string, line: string): void}) {
   const [items, setItems] = useState<Favourite[] | null>(null);
-  const [error, setError] = useState("");
+  const [error, setError] = useState("");    // the list could not be loaded
+  const [failed, setFailed] = useState("");  // an action failed: said beside the list, which stays
   const [sort, setSort] = useState({key: ADDED, desc: true});
   useEffect(() => { api.favourites().then((r) => setItems(r.favourites), (e) => setError(e.message)); }, []);
   const rows: FavouriteRow[] = useMemo(() => (items || []).map((fav) => ({line: favouriteLine(fav), n: 1, fav})),
@@ -35,9 +36,11 @@ export function FavouritesB({place, onOpen}: {place: PlaceMap; onOpen(runId: str
   const columns = ["len", "clr", "hmax"].map(sortKey);
   if (key && !columns.includes(key)) columns.push(key);
   const remove = (r: FavouriteRow) => api.unfavourite(r.fav.run_id, r.fav.line)
-    .then(() => setItems(items.filter((f) => f !== r.fav)), (e) => setError(e.message));
+    .then(() => { setFailed(""); setItems((now) => (now || []).filter((f) => f !== r.fav)); },
+          (e) => setFailed(e.message));
   const exported = () => sorted.map((r) => ({line: r.line, runId: r.fav.run_id, runName: r.fav.run_name}));
   return <div class="b-favs">
+    {failed && <p class="b-card-error" role="alert">{failed}</p>}
     <div class="b-favs-tools">
       <label class="r-sortby"><span class="u-small">Sort by</span>
         <select class="r-sort b-favs-sort" value={sort.key} onChange={(e) => {

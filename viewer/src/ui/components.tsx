@@ -54,30 +54,35 @@ export function Button({kind = "default", large, full, icon, iconRight, href, ch
 }
 
 /** A square button with an icon only; `label` is its accessible name and tooltip. */
-export function IconButton({icon, label, on, plain, round, fav, class: cls, ...rest}:
-                           {icon: IconName; label: string; on?: boolean; plain?: boolean; round?: boolean; fav?: boolean;
-                            class?: string} & Omit<ButtonHTMLAttributes<HTMLButtonElement>, "icon" | "class">) {
-  return <button type="button" class={cx("u-ib", on && "u-on", plain && "u-plain", round && "u-round", cls)}
-                 aria-label={label} title={label} aria-pressed={on === undefined ? undefined : on} {...rest}>
+export function IconButton({icon, label, on, expanded, plain, round, fav, class: cls, ...rest}:
+                           {icon: IconName; label: string; on?: boolean; expanded?: boolean; plain?: boolean;
+                            round?: boolean; fav?: boolean; class?: string}
+                           & Omit<ButtonHTMLAttributes<HTMLButtonElement>, "icon" | "class">) {
+  // `on`: a toggle (aria-pressed); `expanded`: it opens a panel or menu (aria-expanded), drawn as on while open
+  const pressed = expanded === undefined && on !== undefined ? on : undefined;
+  return <button type="button" class={cx("u-ib", (on || expanded) && "u-on", plain && "u-plain", round && "u-round", cls)}
+                 aria-label={label} title={label} aria-pressed={pressed} aria-expanded={expanded} {...rest}>
     <Icon name={icon} fav={fav} /></button>;
 }
 
 // ---- chips and choices -----------------------------------------------------------------------
 
-/** A chip: a toggle (`on`), a removable value (`onRemove`) or a dashed "add" button (`add`). */
-export function Chip({on, add, icon, onClick, onRemove, removeLabel = "Remove", children}:
+/** A chip: a toggle (`on`), a removable value (`onRemove`) or a dashed "add" button (`add`); `expanded`:
+ *  its click opens a panel (aria-expanded instead of aria-pressed). */
+export function Chip({on, add, icon, onClick, onRemove, removeLabel = "Remove", expanded, children}:
                      {on?: boolean; add?: boolean; icon?: IconName; onClick?: () => void; onRemove?: () => void;
-                      removeLabel?: string; children?: ComponentChildren}) {
+                      removeLabel?: string; expanded?: boolean; children?: ComponentChildren}) {
   const className = cx("u-chip", on && "u-on", add && "u-add");
   const body = <>{(icon || add) && <Icon name={icon || "plus"} />}{children}</>;
   if (onRemove) {  // a span with two buttons: buttons may not nest
     return <span class={className}>
-      {onClick ? <button type="button" class="u-chip-x" onClick={onClick}>{body}</button> : body}
+      {onClick ? <button type="button" class="u-chip-x" aria-expanded={expanded} onClick={onClick}>{body}</button> : body}
       <button type="button" class="u-chip-x" aria-label={removeLabel} title={removeLabel}
               onClick={(e) => { e.stopPropagation(); onRemove(); }}><Icon name="close" /></button>
     </span>;
   }
-  return <button type="button" class={className} aria-pressed={on === undefined ? undefined : on} onClick={onClick}>
+  return <button type="button" class={className} aria-expanded={expanded}
+                 aria-pressed={expanded !== undefined || on === undefined ? undefined : on} onClick={onClick}>
     {body}</button>;
 }
 
@@ -317,6 +322,7 @@ export function Sheet({label, header, children, snap, onSnap, initial = "half", 
   return <section ref={ref} class={cx("u-sheet", `u-${current}`, drag && "u-dragging")} aria-label={label}
                   style={box ? {height: `${height}px`} : undefined}>
     <button type="button" class="u-sheet-handle" aria-label={`${label}: ${current}; drag or press to resize`}
+            aria-expanded={current !== "peek"}
             onPointerDown={down} onPointerMove={move} onPointerUp={up} onPointerCancel={up}
             onKeyDown={(e) => {
               if (e.key === "ArrowUp") { step(1); e.preventDefault(); }
@@ -324,6 +330,7 @@ export function Sheet({label, header, children, snap, onSnap, initial = "half", 
             }}
             onClick={(e) => { if (e.detail === 0) set(current === "full" ? "peek" : SNAPS[SNAPS.indexOf(current) + 1]); }} />
     {header && <div class="u-sheet-head">{header}</div>}
-    <div class="u-sheet-body">{children}</div>
+    {/* At peek the body is cut off: inert, so Tab does not walk into controls nobody sees */}
+    <div class="u-sheet-body" inert={current === "peek" && !drag ? true : undefined}>{children}</div>
   </section>;
 }

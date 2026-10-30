@@ -7,7 +7,9 @@
 import { dh, drop, lowerAnchor, NO_FILTERS, passes, prominence, range as valueRange, saveFilters, savedFilters,
          wallAngle, type Filters } from "../filters";
 import { groupLines, type Group } from "../grouping";
-import { loadFavourites, saveFavourite } from "../favourites";
+import { addFolder, loadRunFavourites, moveFavourite, saveFavourite, type FavouriteFolder,
+         type RunFavourites } from "../favourites";
+import { FolderTree } from "../folders";
 import { lineCoords, lineKey, runLineKey } from "../keys";
 import { hasSavedList, saveList, savedList, sortKey, sortRows, type ListState, type Row } from "../list";
 import { colorOf, inLocalPlane } from "../others";
@@ -38,8 +40,11 @@ export interface ShownRun {
 
 /** What the model asks the server; replaced in tests. */
 export interface ResultApi {
-  loadFavourites(runId: string): Promise<string[]>;
-  saveFavourite(runId: string, line: Line, on: boolean): Promise<void>;
+  /** The user's favourites of a run with their folders (the lines alone: no folders known). */
+  loadFavourites(runId: string): Promise<RunFavourites | string[]>;
+  saveFavourite(runId: string, line: Line, on: boolean, folder?: number | null): Promise<void>;
+  moveFavourite?(runId: string, line: string, folder: number | null): Promise<void>;
+  addFolder?(name: string, parent: number | null): Promise<number>;
   /** The terrain profile of `line` ("lat1,lon1,lat2,lon2") of a run, computed by the server. */
   profile(runId: string, line: string): Promise<Profile>;
 }
@@ -53,8 +58,12 @@ export async function fetchProfile(runId: string, line: string): Promise<Profile
   return body as Profile;
 }
 
-export const SERVER_API: ResultApi = {loadFavourites, saveFavourite: (runId, l, on) => saveFavourite(runId, l, on),
-                                      profile: fetchProfile};
+export const SERVER_API: ResultApi = {
+  loadFavourites: loadRunFavourites, saveFavourite: (runId, l, on, folder) => saveFavourite(runId, l, on, undefined, folder),
+  moveFavourite: (runId, line, folder) => moveFavourite(runId, line, folder), addFolder: (name, parent) => addFolder(name, parent),
+  profile: fetchProfile};
+
+const LAST_FOLDER = "findaline.lastFolder";  // the folder a new favourite goes to: this browser's convenience
 
 export interface ResultOptions {
   /** Load and mark the user's favourites (default as main.tsx: FINDALINE_APP.favourites, else from a server). */
@@ -119,11 +128,17 @@ export class ResultModel {
   note: Note | null = null;
   /** The selected group and the line shown for it; null: none. */
   selected: {group: Group<Line>; line: Line} | null = null;
+  /** The profile of the selected line was closed (ProfileDock); selecting again, or another line, shows it. */
+  profileClosed = false;
 
   // Runs of hundreds of thousands of lines: what goes through every line (keys are strings built
   // from the coordinates) is done only when it changes, and lines are known by the objects
   private readonly favourites = new Set<string>();  // keyOf
   private readonly favouriteSet = new Set<Line>();     // the lines of `favourites` among the runs shown
+  private readonly inFolder = new Map<string, number | null>();  // keyOf -> the favourite's folder
+  /** The user's folders of favourites (from the server with the run's favourites). */
+  folders: FavouriteFolder[] = [];
+  tree = new FolderTree([]);
   private readonly chosen = new Set<Line>();        // the line shown of a group, chosen by the user
   private readonly computed = new Map<string, Profile>();  // by lineCoords (this run's lines only)
   private readonly listeners = new Set<() => void>();
@@ -308,6 +323,7 @@ export class ResultModel {
 
   /** Select a group, or a line (shown for its group: chosen if it is not), or nothing. */
   select(target: Group<Line> | Line | null) {
+    this.profileClosed = false;
     if (target === null) {
       this.selectedLine = null;
     } else if ("members" in target) {
@@ -358,9 +374,21 @@ export class ResultModel {
   choose(g: Group<Line>, line: Line) {
     if (!g.members.includes(line)) return;
     const wasSelected = this.selected?.group === g;
+    this.profileClosed = false;
     this.setChosen(g, line);
     if (wasSelected) this.selectedLine = line;
     this.refreshRows();
+    this.notify();
+  }
+
+  /** Close the selected line's profile (until a line is selected again: select, choose, showProfile). */
+  closeProfile() {
+    this.profileClosed = true;
+    this.notify();
+  }
+
+  showProfile() {
+    this.profileClosed = false;
     this.notify();
   }
 
@@ -373,12 +401,41 @@ export class ResultModel {
 
   isFavourite = (l: Line): boolean => this.favourites.has(this.keyOf(l));
 
+  /** The folder of a favourite (null: the top level); undefined: not a favourite. */
+  folderOf(l: Line): number | null | undefined {
+    const key = this.keyOf(l);
+    return this.favourites.has(key) ? this.tree.known(this.inFolder.get(key)) : undefined;
+  }
+
+  /** The folder a new favourite goes to: the last one chosen in this browser, if it still exists. */
+  get lastFolder(): number | null {
+    try {
+      const v = localStorage.getItem(LAST_FOLDER);
+      return this.tree.known(v === null ? null : Number(v));
+    } catch {
+      return null;
+    }
+  }
+
+  private setLastFolder(folder: number | null) {
+    try {
+      if (folder === null) localStorage.removeItem(LAST_FOLDER); else localStorage.setItem(LAST_FOLDER, String(folder));
+    } catch { /* no storage: the top level next time */ }
+  }
+
   /** The user's favourites of a run; none when the server keeps none for this page. */
   private loadRunFavourites(runId: string) {
     if (!this.wantFavourites) return;
     this.api.loadFavourites(runId).then((found) => {
-      found.forEach((coords) => this.favourites.add(runLineKey(runId, coords)));
-      this.markFavourites(runId, found);
+      const body: {lines: string[]; in: Record<string, number | null>; folders: FavouriteFolder[] | null} =
+        Array.isArray(found) ? {lines: found, in: {}, folders: null} : found;
+      body.lines.forEach((coords) => {
+        const key = runLineKey(runId, coords);
+        this.favourites.add(key);
+        this.inFolder.set(key, body.in[coords] ?? null);
+      });
+      if (body.folders) this.setFolders(body.folders);
+      this.markFavourites(runId, body.lines);
       const regroup = this.filters.favOnly;
       this.favouritesOn = true;
       if (regroup) this.compute();
@@ -387,12 +444,47 @@ export class ResultModel {
     }, () => {});
   }
 
-  /** Mark or unmark a favourite at once; rolled back with a note when the server does not save it. */
-  toggleFavourite(l: Line): Promise<void> {
+  private setFolders(folders: FavouriteFolder[]) {
+    this.folders = folders;
+    this.tree = new FolderTree(folders);
+  }
+
+  /** A new folder of favourites in `parent` (null: the top level); its id, or null with a note. */
+  async newFolder(name: string, parent: number | null): Promise<number | null> {
+    if (!this.api.addFolder) return null;
+    try {
+      const id = await this.api.addFolder(name, parent);
+      this.setFolders([...this.folders, {id, parent_id: parent, name: name.trim(), created: ""}]);
+      this.notify();
+      return id;
+    } catch (e: any) {
+      this.setNote({text: "The folder was not made: " + e.message});
+      return null;
+    }
+  }
+
+  /** Put a line into a folder of favourites: marked there when it is not a favourite, else moved. */
+  saveTo(l: Line, folder: number | null): Promise<void> {
+    this.setLastFolder(folder);
+    const key = this.keyOf(l);
+    if (!this.favourites.has(key)) return this.toggleFavourite(l, folder);
+    const before = this.inFolder.get(key) ?? null;
+    if (before === folder || !this.api.moveFavourite) return Promise.resolve();
+    this.inFolder.set(key, folder);
+    this.notify();
+    return this.api.moveFavourite(this.runOf(l), lineCoords(l), folder).catch((e) => {
+      this.inFolder.set(key, before);
+      this.setNote({text: "The favourite was not moved: " + e.message});
+    });
+  }
+
+  /** Mark or unmark a favourite at once (a new one into `folder`, by default the last folder used);
+   *  rolled back with a note when the server does not save it. */
+  toggleFavourite(l: Line, folder: number | null = this.lastFolder): Promise<void> {
     const key = this.keyOf(l), on = !this.favourites.has(key);
     const flip = (to: boolean) => {
-      if (to) { this.favourites.add(key); this.favouriteSet.add(l); }
-      else { this.favourites.delete(key); this.favouriteSet.delete(l); }
+      if (to) { this.favourites.add(key); this.favouriteSet.add(l); this.inFolder.set(key, folder); }
+      else { this.favourites.delete(key); this.favouriteSet.delete(l); this.inFolder.delete(key); }
     };
     // A line shown stays shown in its group
     const group = this.groupOf(l);
@@ -400,7 +492,7 @@ export class ResultModel {
     flip(on);
     this.note = null;
     this.afterFavourite();
-    return this.api.saveFavourite(this.runOf(l), l, on).catch((e) => {
+    return this.api.saveFavourite(this.runOf(l), l, on, on ? folder : undefined).catch((e) => {
       flip(!on);
       this.note = {text: "The favourite was not saved: " + e.message};
       this.afterFavourite();

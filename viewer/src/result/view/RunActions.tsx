@@ -31,22 +31,20 @@ const runFile = (base: string, id: string, file: string) => base + encodeURIComp
 
 /** Measure: the next two clicks on the map; the profile between them is computed by the server. */
 function Measure({model, view, onMeasured, compact}: RunActionsProps) {
-  const [measuring, setMeasuring] = useState(false);
+  // The map's mode, not a copy: a phone turned round draws another RunActions while measuring goes on
+  const [measuring, setMeasuring] = useState(!!view?.isMeasuring);
   const [error, setError] = useState("");
   useEffect(() => {
-    if (!measuring) return;
-    const key = (e: KeyboardEvent) => { if (e.key === "Escape") setMeasuring(false); };  // ResultMap cancels too
-    document.addEventListener("keydown", key);
-    return () => document.removeEventListener("keydown", key);
-  }, [measuring]);
+    if (!view) return;
+    setMeasuring(view.isMeasuring);
+    return view.onMeasuring(setMeasuring);
+  }, [view]);
   if (!view || !model.canCompute) return null;
   const toggle = () => {
-    if (measuring) { view.cancelMeasure(); view.clearMeasure(); setMeasuring(false); return; }
+    if (measuring) { view.cancelMeasure(); view.clearMeasure(); return; }
     setError("");
     onMeasured?.(null);
-    setMeasuring(true);
     view.startMeasure((a, b) => {
-      setMeasuring(false);
       model.measure([a.lat, a.lng], [b.lat, b.lng]).then((l) => onMeasured?.(l), (e) => {
         view.clearMeasure();
         setError("Not computed: " + e.message);
@@ -59,7 +57,9 @@ function Measure({model, view, onMeasured, compact}: RunActionsProps) {
       : <Button icon="ruler" class={measuring ? "r-on" : ""} aria-pressed={measuring} onClick={toggle}>
           {measuring ? "Cancel" : "Measure"}</Button>}
     {measuring && <span class="r-tip u-small">Click two points on the map</span>}
-    {error && <span class="r-tip r-error u-small" role="alert">{error}</span>}
+    {error && <span class="r-tip r-error u-small" role="alert">{error}
+      <button type="button" class="r-note-x" aria-label="Close the message" onClick={() => setError("")}>
+        <Icon name="close" /></button></span>}
   </span>;
 }
 
@@ -68,15 +68,18 @@ interface OtherItem { run: RunInfo; km: number; status: "off" | "loading" | "on"
 /** Compare: other runs with lines, nearest first (the ones within NEARBY_KM unfolded). */
 function Compare({model, view, compact, base = "/runs/"}: RunActionsProps) {
   const [items, setItems] = useState<OtherItem[] | null>(null);
+  const [failed, setFailed] = useState(false);
+  const [farOpen, setFarOpen] = useState<boolean | null>(null);  // null: open when one of them is shown
   const load = () => {
     if (items) return;
+    setFailed(false);
     loadRunList(base + "runs.js").then((runs) => {
       const b = view ? view.areaBounds() : null;
       const box = b ? [b.getWest(), b.getSouth(), b.getEast(), b.getNorth()]
         : model.data.run.bbox || [model.data.center[1], model.data.center[0], model.data.center[1], model.data.center[0]];
       setItems(listOthers(runs.filter((r) => r.has_map !== false), model.runId, box)
         .map(({run, km}) => ({run, km, status: model.others.has(run.id) ? "on" : "off"})));
-    });
+    }, () => setFailed(true));
   };
   const change = (item: OtherItem, status: OtherItem["status"]) =>
     setItems((all) => all && all.map((i) => i.run.id === item.run.id ? {...i, status} : i));
@@ -94,16 +97,19 @@ function Compare({model, view, compact, base = "/runs/"}: RunActionsProps) {
   </label>;
   return <Popover label="Compare with other runs" align="right"
                   button={(open, toggleOpen) => compact
-                    ? <IconButton icon="compare" label="Compare" on={open} onClick={() => { load(); toggleOpen(); }} />
+                    ? <IconButton icon="compare" label="Compare" expanded={open} onClick={() => { load(); toggleOpen(); }} />
                     : <Button icon="compare" aria-expanded={open} onClick={() => { load(); toggleOpen(); }}>Compare</Button>}>
     {() => {
+      if (failed) return <p class="u-small r-error">The list of runs could not be loaded.{" "}
+        <button type="button" class="r-link" onClick={load}>Try again</button></p>;
       if (!items) return <p class="u-small">Loading the runs…</p>;
       if (!items.length) return <p class="u-small">No other runs with lines.</p>;
       const near = items.filter((i) => i.km <= NEARBY_KM), far = items.filter((i) => i.km > NEARBY_KM);
       return <div class="r-others">
         <b class="u-h4">Show other runs with this one</b>
         {near.length ? near.map(row) : <p class="u-small">None within {NEARBY_KM} km.</p>}
-        {far.length > 0 && <details open={far.some((i) => i.status !== "off")}>
+        {far.length > 0 && <details open={farOpen ?? far.some((i) => i.status !== "off")}
+                                    onToggle={(e) => setFarOpen((e.currentTarget as HTMLDetailsElement).open)}>
           <summary class="u-small">Farther away ({far.length})</summary>{far.map(row)}</details>}
       </div>;
     }}
@@ -148,7 +154,7 @@ export function ShareRun({runId, run: given, compact, align = "right", onChange}
   const stop = () => api.unshare(run.id).then(() => { setUrl(""); setError(""); changed(false); },
                                               (e) => setError(e.message));
   return <Popover label="Share" align={align}
-                  button={(open, toggle) => compact ? <IconButton icon="share" label="Share" on={open} onClick={toggle} />
+                  button={(open, toggle) => compact ? <IconButton icon="share" label="Share" expanded={open} onClick={toggle} />
                     : <Button icon="share" aria-expanded={open} onClick={toggle}>Share</Button>}>
     <div class="r-share">
       <b class="u-h4">Share this run</b>
@@ -169,7 +175,7 @@ export function ShareRun({runId, run: given, compact, align = "right", onChange}
 function Download({model, compact, base = "/runs/"}: RunActionsProps) {
   const id = model.runId;
   return <Popover label="Download" align="right"
-                  button={(open, toggle) => compact ? <IconButton icon="download" label="Download" on={open} onClick={toggle} />
+                  button={(open, toggle) => compact ? <IconButton icon="download" label="Download" expanded={open} onClick={toggle} />
                     : <Button icon="download" aria-expanded={open} onClick={toggle}>Download</Button>}>
     <div class="r-downloads">
       <b class="u-h4">Download the lines</b>

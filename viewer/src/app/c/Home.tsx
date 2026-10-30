@@ -90,6 +90,17 @@ function thumbOf(card: Card): ThumbSource {
 }
 
 /** A search's card: the mini map and the name open a finished one; the menu edits, shares, deletes. */
+/** ↑ ↓ Home End move the focus among the items of a menu. */
+export function menuKeys(e: KeyboardEvent) {
+  const items = Array.from((e.currentTarget as HTMLElement).querySelectorAll<HTMLElement>("[role=menuitem]"));
+  const at = items.indexOf(document.activeElement as HTMLElement);
+  const to = e.key === "ArrowDown" ? (at + 1) % items.length : e.key === "ArrowUp" ? (at - 1 + items.length) % items.length
+    : e.key === "Home" ? 0 : e.key === "End" ? items.length - 1 : -1;
+  if (to < 0 || !items.length) return;
+  e.preventDefault();
+  items[to].focus();
+}
+
 function SearchCard({card, runs, jobs, publicSite, highlight}:
                     {card: Card; runs: RunsState; jobs: JobsState; publicSite: boolean; highlight: boolean}) {
   const {job, run} = card;
@@ -100,6 +111,19 @@ function SearchCard({card, runs, jobs, publicSite, highlight}:
   const [error, setError] = useState("");
   const ref = useRef<HTMLElement>(null);
   useEffect(() => { if (highlight) ref.current?.scrollIntoView?.({block: "nearest"}); }, [highlight]);
+  // A panel opened from the menu takes the focus (the safe choice of a confirmation); closed, the focus
+  // goes back to the menu's button
+  const hadPanel = useRef(false);
+  useEffect(() => {
+    const card = ref.current;
+    if (!card) return;
+    if (panel) card.querySelector<HTMLElement>(".c-card-panel .c-panel-first")?.focus();
+    else if (hadPanel.current) card.querySelector<HTMLElement>(".c-card-menu")?.focus();
+    hadPanel.current = !!panel;
+  }, [panel]);
+  const panelKeys = (e: KeyboardEvent) => {
+    if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); setPanel(""); setUrl(""); }
+  };
   const open = run && run.has_map ? runHash(run.id) : null;
   const name = run?.name || job?.title || "Search";
   const canShare = publicSite && !!run && run.own && run.has_map;
@@ -113,13 +137,13 @@ function SearchCard({card, runs, jobs, publicSite, highlight}:
                                                    (e) => setError(e.message));
   const cancel = () => api.cancel(job!.id).then(() => jobs.refresh(), (e) => setError(e.message));
   const items = [
-    open && <a key="open" class="c-menu-item" href={open}><Icon name="layers" />Open the result</a>,
-    job && <a key="edit" class="c-menu-item" href={editHash(job.id)}><Icon name="edit" />Edit &amp; run again</a>,
-    canShare && <button key="share" type="button" class="c-menu-item" onClick={act(() => setPanel("share"))}>
+    open && <a key="open" role="menuitem" class="c-menu-item" href={open}><Icon name="layers" />Open the result</a>,
+    job && <a key="edit" role="menuitem" class="c-menu-item" href={editHash(job.id)}><Icon name="edit" />Edit &amp; run again</a>,
+    canShare && <button key="share" type="button" role="menuitem" class="c-menu-item" onClick={act(() => setPanel("share"))}>
       <Icon name="share" />Share…</button>,
-    job && st.unfinished && <button key="cancel" type="button" class="c-menu-item" onClick={act(cancel)}>
+    job && st.unfinished && <button key="cancel" type="button" role="menuitem" class="c-menu-item" onClick={act(cancel)}>
       <Icon name="close" />Cancel the search</button>,
-    canDelete && <button key="delete" type="button" class="c-menu-item c-danger" onClick={act(() => setPanel("delete"))}>
+    canDelete && <button key="delete" type="button" role="menuitem" class="c-menu-item c-danger" onClick={act(() => setPanel("delete"))}>
       <Icon name="close" />Delete…</button>,
   ].filter(Boolean);
 
@@ -137,28 +161,29 @@ function SearchCard({card, runs, jobs, publicSite, highlight}:
         {run?.demo && <span class="u-badge u-n" title="an example: its map is open to everyone">example</span>}
         <span class="u-grow" />
         {items.length > 0 && <Popover label="Search actions" align="right" open={menu} onOpen={setMenu}
-                                      button={(on, toggle) => <IconButton icon="more" label="Actions" plain on={on}
+                                      button={(on, toggle) => <IconButton icon="more" label="Actions" plain expanded={on}
                                                                           class="c-card-menu" onClick={toggle} />}>
-          <div class="c-menu" role="menu">{items}</div>
+          <div class="c-menu" role="menu" onKeyDown={menuKeys}>{items}</div>
         </Popover>}
       </div>
       {open ? <a class="c-card-open" href={open}>{body}</a> : <div class="c-card-open">{body}</div>}
       {st.unfinished && <Progress value={st.status === "running" ? st.fraction : null} label={st.step || undefined} />}
-      {panel === "share" && run && <div class="c-card-panel">
+      {panel === "share" && run && <div class="c-card-panel" role="dialog" aria-label="Share the run" onKeyDown={panelKeys}>
         <span class="u-small">A link opens this run's map for anyone who has it. It is shown once: copy it now.</span>
         {url && <LinkField text={url} />}
         <div class="u-row">
-          <Button kind={run.shared ? "default" : "primary"} icon="link" onClick={share}>
+          <Button kind={run.shared ? "default" : "primary"} icon="link" class="c-panel-first" onClick={share}>
             {run.shared ? "New link" : "Make a link"}</Button>
           {run.shared && <Button kind="danger" onClick={unshare}>Stop sharing</Button>}
           <Button kind="ghost" onClick={() => { setPanel(""); setUrl(""); }}>Close</Button>
         </div>
       </div>}
-      {panel === "delete" && run && <div class="c-card-panel c-confirm" role="alertdialog" aria-label="Delete the run">
+      {panel === "delete" && run && <div class="c-card-panel c-confirm" role="alertdialog" aria-label="Delete the run"
+                                         onKeyDown={panelKeys}>
         <span>Delete “{run.name}” and its files? This cannot be undone.</span>
         <div class="u-row">
           <Button kind="danger" class="c-confirm-delete" onClick={remove}>Delete</Button>
-          <Button kind="ghost" onClick={() => setPanel("")}>Keep it</Button>
+          <Button kind="ghost" class="c-panel-first" onClick={() => setPanel("")}>Keep it</Button>
         </div>
       </div>}
       {error && <p class="c-error u-small" role="alert">{error}</p>}

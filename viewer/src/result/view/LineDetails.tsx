@@ -1,5 +1,6 @@
-// The selected line of a result (model.selected): "Spot k of N" with ‹ ›, its numbers (the facts of
-// lineInfo in main.tsx), the other lines of its spot, and its actions: favourite, copy link, zoom.
+// The selected line of a result (model.selected): "Spot k of N" with ‹ › and × (ends the selection), its
+// numbers (the facts of lineInfo in main.tsx), the other lines of its spot, and its actions: favourite,
+// copy link, zoom, and the profile again after it was closed.
 
 import { Fragment } from "preact";
 import { useEffect, useRef, useState } from "preact/hooks";
@@ -8,6 +9,7 @@ import { Icon } from "../../ui/icons";
 import { dh } from "../../filters";
 import type { Line } from "../../types";
 import type { ResultModel } from "../model";
+import { FavouritePicker } from "./FavouritePicker";
 import { ResultNote } from "./ResultSummary";
 import { cx, num, Swatch, useModel } from "./common";
 
@@ -75,16 +77,38 @@ export function lineFacts(l: Line, highAbove: number): [string, string][] {
   return facts;
 }
 
+// The button pressed for ‹ ›: its details are drawn again under the next row (another component), which
+// gives the same button the focus; a button disabled at the end hands it to its pair
+let refocus: string | null = null;
+const PAIRS: Record<string, string> = {"Previous spot": "Next spot", "Next spot": "Previous spot",
+                                       "Previous line of the spot": "Next line of the spot",
+                                       "Next line of the spot": "Previous line of the spot"};
+
 export function LineDetails({model, linkOf, onZoom, onStep, part = "all", note = false}: LineDetailsProps) {
   useModel(model);
   const [copied, setCopied] = useState<{line: Line; ok: boolean; text: string} | null>(null);
+  const root = useRef<HTMLDivElement>(null);
   const sel = model.selected;
+  useEffect(() => {
+    if (!refocus || !root.current) return;
+    const find = (label: string) => root.current!.querySelector<HTMLButtonElement>(`button[aria-label="${label}"]`);
+    const button = find(refocus), pair = find(PAIRS[refocus]);
+    const target = button && !button.disabled ? button : pair && !pair.disabled ? pair : null;
+    if (target) { target.focus(); refocus = null; }
+  });
   if (!sel) return note ? <ResultNote model={model} /> : null;
   const {group, line: l} = sel;
   const k = model.position, n = model.rows.length, size = group.members.length, at = model.variantIndex();
-  const step = (by: 1 | -1) => { if (by > 0 ? model.next() : model.prev()) onStep?.(model.selected!.line); };
-  const variant = (to: number) => { model.choose(group, group.members[to]); onStep?.(group.members[to]); };
-  const favourite = model.favouritesOn && model.isFavourite(l);
+  const pressed = (e: Event) => { refocus = (e.currentTarget as HTMLElement).getAttribute("aria-label"); };
+  const step = (by: 1 | -1, e: Event) => {
+    pressed(e);
+    if (by > 0 ? model.next() : model.prev()) onStep?.(model.selected!.line);
+  };
+  const variant = (to: number, e?: Event) => {
+    if (e) pressed(e);
+    model.choose(group, group.members[to]);
+    onStep?.(group.members[to]);
+  };
   const link = () => {
     const text = (linkOf || ((x: Line) => appLink(model, x)))(l);
     copy(text).then((ok) => setCopied({line: l, ok, text}));
@@ -97,13 +121,14 @@ export function LineDetails({model, linkOf, onZoom, onStep, part = "all", note =
       <div class="r-dtitle">{l.run && <Swatch color={l.run.color} />}{num(l.len)} m · {num(l.clr, 1)} m clear</div>
     </div>
     <div class="r-pager">
-      <IconButton icon="back" label="Previous spot" disabled={k <= 0 && k !== -1} onClick={() => step(-1)} />
-      <IconButton icon="next" label="Next spot" disabled={k >= n - 1} onClick={() => step(1)} />
+      <IconButton icon="back" label="Previous spot" disabled={k <= 0 && k !== -1} onClick={(e) => step(-1, e)} />
+      <IconButton icon="next" label="Next spot" disabled={k >= n - 1} onClick={(e) => step(1, e)} />
+      <IconButton icon="close" label="Close the spot" class="r-dclose" onClick={() => model.select(null)} />
     </div>
   </div>;
-  if (part === "head") return <div class="r-details">{head}</div>;
+  if (part === "head") return <div class="r-details" ref={root}>{head}</div>;
 
-  return <div class={cx("r-details", l.over && "r-over")}>
+  return <div class={cx("r-details", l.over && "r-over")} ref={root}>
     {part === "all" && head}
     {note && <ResultNote model={model} />}
     <Stats>
@@ -114,20 +139,21 @@ export function LineDetails({model, linkOf, onZoom, onStep, part = "all", note =
     </Stats>
     {l.over && <p class="r-warn"><Icon name="warn" />Passes over trees or buildings: check it on the photo.</p>}
     {size > 1 && <div class="r-var">
-      <IconButton icon="back" label="Previous line of the spot" plain disabled={at <= 0} onClick={() => variant(at - 1)} />
+      <IconButton icon="back" label="Previous line of the spot" plain disabled={at <= 0}
+                  onClick={(e) => variant(at - 1, e)} />
       {size <= DOTS && <span class="r-dots" aria-hidden="true">{group.members.map((_, i) =>
         <i key={i} class={i === at ? "r-on" : ""} />)}</span>}
       <span class="u-grow"><b>{at + 1} of {size}</b> similar lines
         {at === 0 ? ` · ${BY_LABEL[model.state.by] || BY_LABEL.clearance}`
           : <> · <button type="button" class="r-link" onClick={() => variant(0)}>back to the first</button></>}</span>
-      <IconButton icon="next" label="Next line of the spot" plain disabled={at >= size - 1} onClick={() => variant(at + 1)} />
+      <IconButton icon="next" label="Next line of the spot" plain disabled={at >= size - 1}
+                  onClick={(e) => variant(at + 1, e)} />
     </div>}
     <div class="r-acts">
-      {model.favouritesOn && <Button class={cx("r-fav", favourite && "r-on")} aria-pressed={favourite}
-                                     onClick={() => model.toggleFavourite(l)}>
-        <Icon name="star" fav={favourite} />{favourite ? "Favourite" : "Add to favourites"}</Button>}
+      {model.favouritesOn && <FavouritePicker model={model} line={l} />}
       <Button icon="link" class="r-copy" onClick={link}>{shownCopy?.ok ? "Link copied" : "Copy link"}</Button>
       {onZoom && <Button icon="zoom" onClick={() => onZoom(l)}>Zoom</Button>}
+      {model.profileClosed && <Button icon="ruler" class="r-reprofile" onClick={() => model.showProfile()}>Profile</Button>}
     </div>
     {shownCopy && !shownCopy.ok && <LinkField text={shownCopy.text} />}
     {shownCopy?.ok && <input type="hidden" class="r-copied" value={shownCopy.text} />}

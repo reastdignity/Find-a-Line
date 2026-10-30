@@ -15,7 +15,8 @@ type FavouriteRow = Row & {fav: Favourite};
 
 export function Trip({full = false, limit}: {full?: boolean; limit?: number}) {
   const [items, setItems] = useState<Favourite[] | null>(null);
-  const [error, setError] = useState("");
+  const [error, setError] = useState("");          // the list could not be loaded
+  const [failed, setFailed] = useState("");        // an action failed: said beside the list, which stays
   const [sort, setSort] = useState({key: ADDED, desc: true});
   const [all, setAll] = useState(false);
   useEffect(() => { api.favourites().then((r) => setItems(r.favourites), (e) => setError(e.message)); }, []);
@@ -29,11 +30,13 @@ export function Trip({full = false, limit}: {full?: boolean; limit?: number}) {
   const sorted = key ? sortRows(rows, key, sort.desc) : sort.desc ? rows : rows.slice().reverse();
   const shown = limit && !all ? sorted.slice(0, limit) : sorted;
   const remove = (r: FavouriteRow) => api.unfavourite(r.fav.run_id, r.fav.line)
-    .then(() => setItems((now) => (now || []).filter((f) => f !== r.fav)), (e) => setError(e.message));
+    .then(() => { setFailed(""); setItems((now) => (now || []).filter((f) => f !== r.fav)); },
+          (e) => setFailed(e.message));
   const exported = () => sorted.map((r) => ({line: r.line, runId: r.fav.run_id, runName: r.fav.run_name}));
   const extra = key && !["len", "clr"].includes(key.key) ? key : full ? sortKey("hmax") : null;
 
   return <div class="c-trip">
+    {failed && <p class="c-error u-small" role="alert">{failed}</p>}
     <div class="c-trip-tools">
       <label class="c-trip-sort"><span class="u-small">Sort</span>
         <select class="u-input" value={sort.key} onChange={(e) => {

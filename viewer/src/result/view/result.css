@@ -47,7 +47,8 @@
 /* Filters */
 .ui .r-filters { display: flex; flex-direction: column; gap: 10px; }
 .ui .r-filters .u-chip .u-badge { margin-left: 2px; }
-.ui .r-editor { display: flex; flex-direction: column; gap: 10px; padding: 10px 12px; border-radius: 10px; background: var(--surface-2); }
+.ui .r-editor-x { position: absolute; top: 6px; right: 6px; }
+.ui .r-editor { position: relative; display: flex; flex-direction: column; gap: 10px; padding: 10px 12px; border-radius: 10px; background: var(--surface-2); }
 .ui .r-limit { display: flex; flex-direction: column; gap: 2px; }
 .ui .r-limit-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 13px; color: var(--ink-2); }
 .ui .r-limit.r-set .r-limit-head label { color: var(--accent); font-weight: 500; }
@@ -193,3 +194,14 @@
   .ui.r-kit .r-kit-top .r-pill { flex: 1; max-width: none; }
   .ui.r-kit .leaflet-top.leaflet-left { top: 60px; }
 }
+
+/* The favourite button's folders (FavouritePicker) */
+.ui .r-picker { display: flex; flex-direction: column; gap: 8px; width: 280px; max-width: calc(100vw - 32px); }
+.ui .r-folders { list-style: none; margin: 0; padding: 0; max-height: 260px; overflow-y: auto; display: flex; flex-direction: column; }
+.ui .r-folder { display: flex; align-items: center; gap: 8px; width: 100%; min-height: 34px; padding: 4px 8px; border: 0;
+  border-radius: 8px; background: none; color: var(--ink); text-align: left; cursor: pointer; }
+.ui .r-folder:hover { background: var(--surface-2); }
+.ui .r-folder.u-on { background: var(--accent-soft); }
+.ui .r-folder span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ui .r-newfolder { display: flex; gap: 6px; }
+.ui .r-newfolder .u-input { flex: 1; min-width: 0; }

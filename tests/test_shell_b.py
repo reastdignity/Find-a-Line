@@ -156,9 +156,9 @@ play({
   favourite(next) {
     if (!model().selected) rows()[0].click();
     favourite = model().lineLink(model().selected.line);
-    $(".r-details .r-fav").click();
+    $(".r-details .r-fav").click();  // its folders: the top level
     const until = (tries) => saved().then((body) => body.lines.length || !tries ? next() : later(() => until(tries - 1)));
-    until(30);
+    later(() => { $(".r-pop .r-folder").click(); until(30); });
   },
   favourites(next) {
     button("Favourites").click();

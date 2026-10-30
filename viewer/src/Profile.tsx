@@ -67,7 +67,12 @@ export function ProfilePanel(props: ProfileProps) {
     if (observer) observer.observe(chartRef.current!);
     return () => { window.removeEventListener("resize", measure); observer?.disconnect(); };
   }, []);
-  useEffect(() => setHover(null), [l]);
+  // A new line (or none: unmounted) takes the point off the map too: a tap's readout stays after
+  // lifting the finger, and no mouseleave would ever clear it
+  const onHoverRef = useRef(props.onHover);
+  onHoverRef.current = props.onHover;
+  useEffect(() => { setHover(null); onHoverRef.current(null); }, [l]);
+  useEffect(() => () => onHoverRef.current(null), []);
 
   const est = useMemo(() => Sag.estimate(l.len, l.e1 - l.e2, rigging), [l, rigging]);
   const W = width, pw = W - M.l - M.r, ph = HEIGHT - M.t - M.b;
@@ -224,6 +229,21 @@ export function ProfilePanel(props: ProfileProps) {
     props.onHover([l.lat1 + (l.lat2 - l.lat1) * t, l.lon1 + (l.lon2 - l.lon1) * t]);
   };
   const onLeave = () => { setHover(null); props.onHover(null); };
+  // The keyboard: ← → move the readout by a fiftieth of the line (Shift: a tenth), Home/End to the anchors
+  const hoverTo = (d: number) => {
+    d = Math.max(0, Math.min(l.len, d));
+    setHover(d);
+    const t = d / l.len;
+    props.onHover([l.lat1 + (l.lat2 - l.lat1) * t, l.lon1 + (l.lon2 - l.lon1) * t]);
+  };
+  const onKey = (e: KeyboardEvent) => {
+    const by = l.len / (e.shiftKey ? 10 : 50), at = hover ?? 0;
+    const to = e.key === "ArrowRight" ? at + by : e.key === "ArrowLeft" ? at - by
+      : e.key === "Home" ? 0 : e.key === "End" ? l.len : null;
+    if (to === null) return;
+    e.preventDefault();
+    hoverTo(to);
+  };
   // Touch and pens: a tap reads a point, a drag along the chart moves it; the readout stays after lifting
   // (the mouse has its own events above, which leave clears)
   const onPointer = (e: PointerEvent) => {
@@ -272,7 +292,7 @@ export function ProfilePanel(props: ProfileProps) {
       <div>
         <button class="fal-scale" onClick={() => setEqual(!equal)}>
           {equal ? "Auto scale" : "1:1 scale (now vertical ×" + (sy / sx).toFixed(1) + ")"}</button>{" "}
-        <button class="fal-close" title="Close" onClick={props.onClose}>×</button>
+        <button class="fal-close" title="Close" aria-label="Close the profile" onClick={props.onClose}>×</button>
       </div>
     </div>
     <div class="fal-profile-controls">
@@ -321,8 +341,12 @@ export function ProfilePanel(props: ProfileProps) {
           </g>)}
         {hover !== null && <line class="fal-cursor" x1={X(hover)} x2={X(hover)} y1={M.t} y2={HEIGHT - M.b}
                                  stroke="#333" stroke-dasharray="2 2" />}
-        <rect class="fal-hover" x={M.l} y={M.t} width={pw} height={ph} fill="transparent"
-              onMouseMove={onMove} onMouseLeave={onLeave} onPointerDown={onPointer} onPointerMove={onPointer} />
+        <rect class="fal-hover" x={M.l} y={M.t} width={pw} height={ph} fill="transparent" tabIndex={0}
+              role="slider" aria-label="Point along the line (← →, Home, End)" aria-valuemin={0}
+              aria-valuemax={Math.round(l.len)} aria-valuenow={hover === null ? undefined : Math.round(hover)}
+              aria-valuetext={readout || undefined}
+              onMouseMove={onMove} onMouseLeave={onLeave} onPointerDown={onPointer} onPointerMove={onPointer}
+              onKeyDown={onKey} onBlur={onLeave} />
       </svg>
     </div>
     <div class="fal-profile-readout">{readout}</div>

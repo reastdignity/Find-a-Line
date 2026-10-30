@@ -1,6 +1,7 @@
 // The place box of the search panel: a name looked up on Enter (/api/place: Nominatim through the
 // worker, whose usage policy allows no lookups while typing), up to five matches listed; picking one
-// moves the map there (the centre of a search is still set by a click). An own component rather than
+// moves the map there (the centre of a search is still set by a click); the list closes when the box
+// loses the focus (a click elsewhere), on Esc or by typing. An own component rather than
 // leaflet-control-geocoder: that one would need an adapter to /api/place all the same, brings its own
 // light styles and sits on the map, not in the panel (docs/roadmap.md, UI prototypes).
 
@@ -64,7 +65,8 @@ export function PlaceBox({place}: {place: PlaceMap}) {
              aria-label="Go to a place" role="combobox" list={undefined} aria-expanded={open}
              aria-controls={`${id}-list`}
              aria-activedescendant={open ? `${id}-${active}` : undefined} autocomplete="off"
-             onInput={(e) => { setText(e.currentTarget.value); setFound(null); }} onKeyDown={onKey} />
+             onInput={(e) => { setText(e.currentTarget.value); setFound(null); }} onKeyDown={onKey}
+             onBlur={() => setFound(null)} />
     </div>
     {busy && <p class="s-hint">Looking up…</p>}
     {error && <p class="s-hint s-placebox-error" role="alert">{error}</p>}

@@ -1,5 +1,6 @@
 // C's pages in the address's hash, so the server needs no routes and Back and Forward work:
-// #home (the default), #new (#new&edit=<job>: edit & run again), #favourites, #account, #admin, #osm and
+// #home (the default), #new (#new&edit=<job>: edit & run again), #favourites (#favourites&folder=<id>: a
+// folder of them), #account, #admin, #osm and
 // #run=<id>&line=<lat1,lon1,lat2,lon2> (the line optional; the link LineDetails copies, appLink).
 
 export type Route =
@@ -28,6 +29,17 @@ export function parseRoute(hash: string): Route {
 /** The hash of a run's page, with a selected line (its coordinates, ResultModel.lineLink). */
 export function runHash(id: string, line?: string | null): string {
   return `#run=${encodeURIComponent(id)}` + (line ? `&line=${encodeURIComponent(line)}` : "");
+}
+
+/** The favourites page with a folder chosen (null: the top level). */
+export function favouritesHash(folder: number | null): string {
+  return folder === null ? "#favourites" : `#favourites&folder=${folder}`;
+}
+
+/** The folder of a favourites hash; null: the top level (or none given). */
+export function folderOfHash(hash: string): number | null {
+  const value = new URLSearchParams(hash.replace(/^#/, "")).get("folder");
+  return value && /^\d+$/.test(value) ? Number(value) : null;
 }
 
 export function editHash(job: string): string {

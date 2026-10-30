@@ -203,13 +203,31 @@ function Setting({s, field}: {s: SearchState; field: SchemaField}) {
   return <div class={cx("s-setting", changed && "s-is-changed")} data-field={field.name}>
     <Field htmlFor={id} label={<span class={cx(changed && "s-changed")}>{labelOf(field)}</span>}
            value={changed ? <button type="button" class="s-reset" title="Back to the default"
-                                    onClick={() => { const next = {...s.values}; delete next[field.name]; s.setValues(next); }}>
+                                    onClick={() => {
+                                      const next = {...s.values};
+                                      delete next[field.name];
+                                      s.setValues(next);
+                                      // the button goes with the change: the focus to the field
+                                      setTimeout(() => document.getElementById(id)?.focus());
+                                    }}>
              reset</button> : undefined}
            help={<>{problem && <span class="s-problem">{problem}. </span>}{field.help}</>}>
       <ParamInput id={id} field={field} value={s.values[field.name]} invalid={!!problem}
                   onChange={(v) => s.setValue(field.name, v)} />
     </Field>
   </div>;
+}
+
+/** A topic of More settings: open at first when it is "lines" or has changed values, then as the user
+ *  leaves it (a reset does not fold it under the pointer). */
+function Topic({s, topic, title, fields}: {s: SearchState; topic: string; title: string; fields: SchemaField[]}) {
+  const count = fields.filter((f) => f.name in s.values).length;
+  const [open, setOpen] = useState(() => topic === "lines" || count > 0);
+  return <details class="s-topic" open={open}
+                  onToggle={(e) => setOpen((e.currentTarget as HTMLDetailsElement).open)}>
+    <summary><span class="u-grow">{title}</span>{count > 0 && <span class="u-badge">{count}</span>}</summary>
+    <div class="s-topic-body">{fields.map((f) => <Setting key={f.name} s={s} field={f} />)}</div>
+  </details>;
 }
 
 function MoreSettings({s, first}: {s: SearchState; first?: ComponentChildren}) {
@@ -228,11 +246,7 @@ function MoreSettings({s, first}: {s: SearchState; first?: ComponentChildren}) {
       {topics.map(([topic, title]) => {
         const these = fields.filter((f) => f.topic === topic);
         if (!these.length) return null;
-        const count = these.filter((f) => f.name in s.values).length;
-        return <details class="s-topic" key={topic} open={topic === "lines" || count > 0}>
-          <summary><span class="u-grow">{title}</span>{count > 0 && <span class="u-badge">{count}</span>}</summary>
-          <div class="s-topic-body">{these.map((f) => <Setting key={f.name} s={s} field={f} />)}</div>
-        </details>;
+        return <Topic key={topic} s={s} topic={topic} title={title} fields={these} />;
       })}
     </div>}
   </div>;

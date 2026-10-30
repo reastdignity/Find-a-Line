@@ -252,17 +252,40 @@ class FavouriteLine(pydantic.BaseModel):
     drop2: Optional[pydantic.FiniteFloat]
 
 
-def checked_favourite(body) -> Tuple[str, Optional[Dict]]:
-    """(line, its values; None: unmark it) of a request {"line": "lat1,lon1,lat2,lon2", "favourite":
-    true|false, "data": FavouriteLine (when true)}; ValueError for anything else."""
-    if not isinstance(body, dict) or not isinstance(body.get("favourite"), bool):
-        raise ValueError("favourite: true or false")
-    line = body.get("line")
+def checked_line(line) -> str:
+    """A line of a run as its map knows it ("lat1,lon1,lat2,lon2"); ValueError for anything else."""
     if not isinstance(line, str) or len(line) > 100 or not LINE_KEY.fullmatch(line):
         raise ValueError("line: lat1,lon1,lat2,lon2")
     lat1, lon1, lat2, lon2 = (float(v) for v in line.split(","))
     if not (abs(lat1) <= 90 and abs(lat2) <= 90 and abs(lon1) <= 180 and abs(lon2) <= 180):
         raise ValueError("line: lat1,lon1,lat2,lon2")
+    return line
+
+
+def checked_folder(value, name: str = "folder") -> Optional[int]:
+    """A folder of favourites given by its id, or None (the top level); ValueError for anything else."""
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, int) or not 0 < value < 2 ** 62:
+        raise ValueError(f"{name}: a folder's id or null")
+    return value
+
+
+def checked_folder_name(value) -> str:
+    """A folder's name: 1 to jobs.FOLDER_NAME_MAX characters (stripped), no control characters."""
+    import jobs as jb
+    if not isinstance(value, str) or not value.strip() or len(value.strip()) > jb.FOLDER_NAME_MAX \
+            or any(ord(c) < 32 or 127 <= ord(c) < 160 for c in value):
+        raise ValueError(f"name: 1 to {jb.FOLDER_NAME_MAX} characters")
+    return value.strip()
+
+
+def checked_favourite(body) -> Tuple[str, Optional[Dict]]:
+    """(line, its values; None: unmark it) of a request {"line": "lat1,lon1,lat2,lon2", "favourite":
+    true|false, "data": FavouriteLine (when true)}; ValueError for anything else."""
+    if not isinstance(body, dict) or not isinstance(body.get("favourite"), bool):
+        raise ValueError("favourite: true or false")
+    line = checked_line(body.get("line"))
     if not body["favourite"]:
         return line, None
     try:
@@ -957,34 +980,100 @@ def create_app(data_dir: str, token: Optional[str] = None, port: int = PORT, sta
     def run_favourites(request: Request, run: str = Depends(run_access), user: ac.User = Depends(current_user)):
         """The user's favourite lines of a run (lat1,lon1,lat2,lon2), and the token the map's changes need:
         a map is a static page without one (an answer in JSON, which only a page of this site can read)."""
-        return {"lines": [f["line"] for f in jobs.favourites(user.id, run)],
-                "token": signed_in(request)[1] if public else token}
+        marked = jobs.favourites(user.id, run)
+        return {"lines": [f["line"] for f in marked], "in": {f["line"]: f["folder_id"] for f in marked},
+                "folders": jobs.folders(user.id), "token": signed_in(request)[1] if public else token}
 
     @app.post("/api/runs/{run}/favourites")
     def set_favourite(body: Dict, run: str = Depends(run_access), user: ac.User = Depends(current_user)):
         """Mark a line of a run as a favourite or unmark it: {"line": "lat1,lon1,lat2,lon2", "favourite":
-        true|false, "data": its values (FavouriteLine) when true}; at most jobs.FAVOURITES_MAX per user."""
+        true|false, "data": its values (FavouriteLine) when true, "folder": the user's folder (null or none:
+        the top level)}; at most jobs.FAVOURITES_MAX per user."""
         try:
             line, data = checked_favourite(body)
+            folder = checked_folder(body.get("folder"))
         except ValueError as e:
             raise HTTPException(400, str(e))
         try:
-            jobs.set_favourite(user.id, run, line, data)
+            jobs.set_favourite(user.id, run, line, data, folder)
+        except KeyError:
+            raise HTTPException(404, "no such folder")
         except QuotaExceeded as e:
             refused(user, "favourites", str(e), e.status)
             raise HTTPException(e.status, str(e))
-        record("favourite", user, run, {"line": line, "favourite": data is not None})
+        record("favourite", user, run, {"line": line, "favourite": data is not None,
+                                        **({"folder": folder} if data is not None and folder else {})})
         return {"ok": True}
+
+    @app.post("/api/runs/{run}/favourites/folder")
+    def move_favourite(body: Dict, run: str = Depends(run_access), user: ac.User = Depends(current_user)):
+        """Move a favourite line of a run into a folder of the user: {"line", "folder": id or null}."""
+        try:
+            line = checked_line(body.get("line") if isinstance(body, dict) else None)
+            folder = checked_folder(body.get("folder"))
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+        try:
+            jobs.move_favourite(user.id, run, line, folder)
+        except KeyError:
+            raise HTTPException(404, "no such favourite or folder")
+        record("favourite", user, run, {"line": line, "folder": folder})
+        return {"ok": True}
+
+    @app.post("/api/favourites/folders")
+    def add_folder(body: Dict, user: ac.User = Depends(current_user)):
+        """A new folder of favourites: {"name", "parent": id or null (the top level)}; its id."""
+        try:
+            name = checked_folder_name(body.get("name") if isinstance(body, dict) else None)
+            parent = checked_folder(body.get("parent"), "parent")
+            folder = jobs.add_folder(user.id, name, parent)
+        except KeyError:
+            raise HTTPException(404, "no such folder")
+        except QuotaExceeded as e:  # a ValueError too
+            refused(user, "folders", str(e), e.status)
+            raise HTTPException(e.status, str(e))
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+        record("favourite_folder", user, str(folder), {"do": "add", "parent": parent})
+        return {"id": folder}
+
+    @app.post("/api/favourites/folders/{folder}")
+    def change_folder(folder: int, body: Dict, user: ac.User = Depends(current_user)):
+        """Rename a folder ({"name"}) and/or move it ({"parent": id or null, the top level})."""
+        if not isinstance(body, dict) or not ({"name", "parent"} & body.keys()):
+            raise HTTPException(400, "name and/or parent")
+        try:
+            name = checked_folder_name(body["name"]) if "name" in body else None
+            parent = checked_folder(body.get("parent"), "parent")
+            jobs.change_folder(user.id, folder, name, parent, move="parent" in body)
+        except KeyError:
+            raise HTTPException(404, "no such folder")
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+        record("favourite_folder", user, str(folder), {"do": "change", **({"rename": True} if name else {}),
+                                                       **({"parent": parent} if "parent" in body else {})})
+        return {"ok": True}
+
+    @app.delete("/api/favourites/folders/{folder}")
+    def delete_folder(folder: int, user: ac.User = Depends(current_user)):
+        """Delete a folder with the folders and favourite lines in it; how many of each went."""
+        try:
+            gone = jobs.delete_folder(user.id, folder)
+        except KeyError:
+            raise HTTPException(404, "no such folder")
+        record("favourite_folder", user, str(folder), {"do": "delete", **gone})
+        return gone
 
     @app.get("/api/favourites")
     def all_favourites(user: ac.User = Depends(current_user)):
         """The user's favourite lines in every run they may still open (a run that is no longer a demo
-        drops out), with the run's name and date, newest first."""
+        drops out), with the run's name and date, newest first, and the user's folders."""
         found = [f for f in jobs.favourites(user.id) if may_open(user, f["run_id"])]
         meta = {r["id"]: r for r in rn.list_runs(runs_dir, {f["run_id"] for f in found})}
         return {"favourites": [{**f, "run_name": meta[f["run_id"]].get("name", f["run_id"]),
                                 "run_created": meta[f["run_id"]].get("created", "")}
-                               for f in found if f["run_id"] in meta]}
+                               for f in found if f["run_id"] in meta],
+                "folders": jobs.folders(user.id)}
 
     # --- The admin tab (the public site; every route Depends(require_admin)) ---
 
@@ -1253,12 +1342,16 @@ def privacy_page(contact: str, keep_events_days: Optional[float]) -> str:
          "their size. Kept until you delete them in Runs. A share link is stored as a SHA-256 hash only; it can be "
          "renewed or revoked."),
         ("Favourite lines", f"The lines you mark as favourites on a map: the run, the line's anchors and its values "
-         f"(length, clearances, heights, angles, prominence), and when you marked it; at most {jb.FAVOURITES_MAX}. "
-         f"Why: to list them for you. Kept until you unmark them or the run is deleted."),
+         f"(length, clearances, heights, angles, prominence), when you marked it and its folder; at most "
+         f"{jb.FAVOURITES_MAX}. Why: to list them for you. Kept until you unmark them, delete their folder or the "
+         f"run is deleted."),
+        ("Folders of favourites", f"The names you give them, which folder each is in and when you made it; at most "
+         f"{jb.FOLDERS_MAX}. Kept until you delete them (with what is in them)."),
         ("Quotas", f"How many km² your searches covered and how many uncached Nominatim requests they made, with the "
          f"time; deleted after {2 * jb.DAY / 86400:g} days. Request rates are counted in memory only."),
         ("Audit log", f"Sign-ins and sign-ups, approvals and blocks, searches started and cancelled, share links "
-         f"made, renewed and revoked, deleted runs, the demo flag, favourite lines marked and unmarked, other "
+         f"made, renewed and revoked, deleted runs, the demo flag, favourite lines marked, unmarked and moved, "
+         f"folders of favourites made, changed and deleted (not their names), other "
          f"administrators' actions and refusals by a "
          f"limit: the time, the action, the user id and what it concerned. Why: to find abuse and mistakes. "
          f"Deleted after {AUDIT_DAYS} days."),

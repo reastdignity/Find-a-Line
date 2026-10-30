@@ -1289,8 +1289,13 @@ FAVOURITES_SCRIPT = """
                       document.querySelector(".leaflet-popup-content .fal-fav").click();
                       until(1, (body) => {
                         result.left = body.lines;
-                        result.unmarked = document.querySelector(".leaflet-popup-content .fal-fav").textContent;
-                        out.textContent = JSON.stringify(result);
+                        // the popup is drawn again with the map's lines, maybe a frame after the answer
+                        const label = () => (document.querySelector(".leaflet-popup-content .fal-fav") || {}).textContent;
+                        const shown = (tries) => label() !== "★ favourite (remove)" || !tries ? (() => {
+                          result.unmarked = label();
+                          out.textContent = JSON.stringify(result);
+                        })() : later(() => shown(tries - 1), 200);
+                        shown(20);
                       });
                     });
                   });
@@ -1361,7 +1366,7 @@ def test_favourites_in_the_map_and_the_app(tmp_path, monkeypatch):
     assert result["groupLength"] == result["memberLength"] and result["popupFavourite"], result
     assert result["onlyFavourites"] == 2, result
     assert result["download"] == "favourites.csv" and len(result["csv"]) == 3, result
-    assert result["csv"][0].startswith("run_id,run_name,length_m,clearance_m,"), result
+    assert result["csv"][0].startswith("run_id,run_name,folder,length_m,clearance_m,"), result
     assert result["unmarked"] == "☆ add to favourites" and len(result["left"]) == 1, result
     assert _violations(dom) == []
 
@@ -1586,15 +1591,15 @@ RESULTS_SCRIPT = """
       const model = window.FINDALINE_RESULT.model;
       if (!model.selected) rows()[0].click();  // the filter may have hidden the selected line
       result.favouritesOn = model.favouritesOn;
-      $(".r-details .r-fav").click();
-      until(1, (body) => {
+      $(".r-details .r-fav").click();  // its folders: the top level
+      later(() => { $(".r-pop .r-folder").click(); until(1, (body) => {
         result.favourites = body.lines.length;
         result.favLine = body.lines[0] === model.lineLink(model.selected.line);
         result.stars = $$(".r-star.r-on").length;
         result.favButton = text(".r-details .r-fav");
         $(".r-details .r-fav").click();
-        until(0, (after) => { result.unmarked = after.lines.length; next(); });
-      });
+        later(() => { $(".r-pop .r-unfav").click(); until(0, (after) => { result.unmarked = after.lines.length; next(); }); });
+      }); });
     },
     copy(next) {
       const model = window.FINDALINE_RESULT.model;

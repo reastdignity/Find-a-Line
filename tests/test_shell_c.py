@@ -265,7 +265,8 @@ run({
   favourite(next) {
     const model = window.FINDALINE_RESULT.model;
     wait(() => $(".c-col-details .r-fav"), () => {
-    $(".c-col-details .r-fav").click();
+    $(".c-col-details .r-fav").click();  // its folders: the top level
+    later(() => $(".r-pop .r-folder").click());
     const saved = () => fetch("/api/favourites").then((r) => r.json());
     const until = (tries) => saved().then((body) => body.favourites.length || !tries ? body : new Promise((r) =>
       later(() => r(until(tries - 1)))));

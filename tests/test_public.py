@@ -1115,7 +1115,8 @@ def test_favourites(run_people, tmp_path, monkeypatch):
     a, b, admin, anonymous = run_people["a"], run_people["b"], run_people["admin"], run_people["anonymous"]
     ids, jobs = run_people["ids"], run_people["jobs"]
     lines = lambda client, run=RUN_A: client.get(f"/api/runs/{run}/favourites").json()["lines"]  # noqa: E731
-    assert a.get(f"/api/runs/{RUN_A}/favourites").json() == {"lines": [], "token": a.headers["x-findaline-token"]}
+    assert a.get(f"/api/runs/{RUN_A}/favourites").json() == {"lines": [], "in": {}, "folders": [],
+                                                              "token": a.headers["x-findaline-token"]}
     assert mark(a, RUN_A, LINE).status_code == 200 and mark(a, RUN_A, LINE).status_code == 200  # once
     assert mark(a, RUN_A, OTHER_LINE).status_code == 200
     assert lines(a) == [OTHER_LINE, LINE]  # newest first
@@ -1140,7 +1141,7 @@ def test_favourites(run_people, tmp_path, monkeypatch):
                                                                                       FAVOURITE)]
     assert listed[0]["run_created"] and listed[0]["created"]
     assert admin.post(f"/api/runs/{RUN_A}/demo", json={"demo": False}).status_code == 200
-    assert b.get("/api/favourites").json() == {"favourites": []}  # no longer a run b may open
+    assert b.get("/api/favourites").json() == {"favourites": [], "folders": []}  # no longer a run b may open
     assert [f["line"] for f in a.get("/api/favourites").json()["favourites"]] == [LINE]
 
     monkeypatch.setattr(jb, "FAVOURITES_MAX", 1)
@@ -1156,12 +1157,79 @@ def test_favourites(run_people, tmp_path, monkeypatch):
     assert jobs.favourites(ids["a"]) == [] and jobs.favourites(ids["b"]) == []
 
 
+def test_favourite_folders(run_people, tmp_path, monkeypatch):
+    """Folders of favourites (as a browser's bookmarks): nested, a user's own (another's answers 404),
+    renamed and moved (never into themselves, at most FOLDER_DEPTH_MAX deep), deleted with the folders
+    and favourites in them; a favourite is marked into a folder and moved, marking it again keeps its
+    folder; names are checked, a user has at most FOLDERS_MAX; the audit log records them."""
+    import audit
+    import jobs as jb
+    a, b, ids = run_people["a"], run_people["b"], run_people["ids"]
+    add = lambda client, name, parent=None: client.post("/api/favourites/folders",  # noqa: E731
+                                                        json={"name": name, "parent": parent})
+    folders = lambda client: {f["name"]: f for f in client.get("/api/favourites").json()["folders"]}  # noqa: E731
+    trips = add(a, "  Trips ").json()["id"]
+    tatras = add(a, "Tatras", trips).json()["id"]
+    later = add(a, "Later").json()["id"]
+    assert {n: f["parent_id"] for n, f in folders(a).items()} == {"Trips": None, "Tatras": trips, "Later": None}
+    assert folders(b) == {} and add(b, "Mine", trips).status_code == 404
+    for name in ("", "   ", "x" * (jb.FOLDER_NAME_MAX + 1), "a\nb", 5, None):
+        assert add(a, name).status_code == 400, name
+    assert a.post("/api/favourites/folders", json={"name": "X", "parent": True}).status_code == 400
+    assert a.post("/api/favourites/folders", json={"name": "X", "parent": "1"}).status_code == 400
+
+    # Marked into a folder, again keeps it, moved; another user's folder is not found
+    body = {"line": LINE, "favourite": True, "data": FAVOURITE, "folder": tatras}
+    assert a.post(f"/api/runs/{RUN_A}/favourites", json=body).status_code == 200
+    assert a.post(f"/api/runs/{RUN_A}/favourites", json={**body, "folder": later}).status_code == 200
+    run_favourites = a.get(f"/api/runs/{RUN_A}/favourites").json()
+    assert run_favourites["in"] == {LINE: tatras} and len(run_favourites["folders"]) == 3
+    assert a.post(f"/api/runs/{RUN_A}/favourites", json={**body, "line": OTHER_LINE, "folder": 999}).status_code == 404
+    move = lambda client, line, folder: client.post(f"/api/runs/{RUN_A}/favourites/folder",  # noqa: E731
+                                                    json={"line": line, "folder": folder})
+    assert move(a, LINE, later).status_code == 200 and jb.Jobs(str(tmp_path)).favourites(ids["a"])[0]["folder_id"] == later
+    assert move(a, LINE, None).status_code == 200 and move(a, LINE, tatras).status_code == 200
+    assert move(a, OTHER_LINE, None).status_code == 404 and move(a, LINE, 999).status_code == 404
+    assert move(b, LINE, None).status_code == 404  # not b's run
+    assert move(a, "1,2,3", None).status_code == 400
+
+    # Renamed and moved; never into itself or deeper than the limit
+    change = lambda client, folder, body: client.post(f"/api/favourites/folders/{folder}", json=body)  # noqa: E731
+    assert change(a, tatras, {"name": "High Tatras"}).status_code == 200
+    assert change(a, trips, {"parent": tatras}).status_code == 400 and change(a, trips, {"parent": trips}).status_code == 400
+    assert change(a, tatras, {"parent": later}).status_code == 200 and folders(a)["High Tatras"]["parent_id"] == later
+    assert change(a, tatras, {"parent": None}).status_code == 200 and folders(a)["High Tatras"]["parent_id"] is None
+    assert change(a, tatras, {}).status_code == 400 and change(b, tatras, {"name": "B"}).status_code == 404
+    deep = later
+    for k in range(jb.FOLDER_DEPTH_MAX - 1):
+        deep = add(a, f"level {k + 2}", deep).json()["id"]
+    assert add(a, "too deep", deep).status_code == 400
+    assert change(a, tatras, {"parent": deep}).status_code == 400  # depth 8 + 1
+
+    # Deleted with what is in it
+    assert change(a, tatras, {"parent": later}).status_code == 200
+    assert b.delete(f"/api/favourites/folders/{later}").status_code == 404
+    gone = a.delete(f"/api/favourites/folders/{later}")
+    assert gone.json() == {"folders": jb.FOLDER_DEPTH_MAX + 1, "favourites": 1}, gone.text
+    assert set(folders(a)) == {"Trips"} and a.get("/api/favourites").json()["favourites"] == []
+    assert a.delete(f"/api/favourites/folders/{later}").status_code == 404
+
+    monkeypatch.setattr(jb, "FOLDERS_MAX", 1)
+    refused = add(a, "One more")
+    assert refused.status_code == 409 and "at most 1 folders" in refused.text
+    log = [e for e in audit.Audit(str(tmp_path)).entries(ids["a"]) if e["action"] == "favourite_folder"]
+    assert [e["detail"]["do"] for e in log].count("add") == 3 + jb.FOLDER_DEPTH_MAX - 1
+    assert {"do": "delete", "folders": jb.FOLDER_DEPTH_MAX + 1, "favourites": 1} in [e["detail"] for e in log]
+    assert not any("name" in e["detail"] for e in log)  # the names stay out of the log
+
+
 def test_local_favourites(tmp_path, clip_run, settings, account_settings, providers):
     """The local app: its one user's favourites (user_id NULL), its token for the map; when the data
     folder goes public, they go to the first administrator with the runs."""
     copy_run(clip_run, tmp_path, RUN_A, "A's run")
     with TestClient(web.create_app(str(tmp_path), token=TOKEN, start_scheduler=False), base_url=LOCAL) as local:
-        assert local.get(f"/api/runs/{RUN_A}/favourites").json() == {"lines": [], "token": TOKEN}
+        assert local.get(f"/api/runs/{RUN_A}/favourites").json() == {"lines": [], "in": {}, "folders": [],
+                                                                     "token": TOKEN}
         assert mark(local, RUN_A, LINE).status_code == 403  # without the token
         local.headers["x-findaline-token"] = TOKEN
         assert mark(local, RUN_A, LINE).status_code == 200
@@ -1536,6 +1604,29 @@ def test_jobs_database_gets_favourites(tmp_path):
     assert [f["data"] for f in jobs.favourites(11)] == [{"len": 1}] and len(jobs.favourites(None)) == 1
     db = sqlite3.connect(tmp_path / "jobs.sqlite")
     assert db.execute("PRAGMA user_version").fetchone()[0] == len(jb.MIGRATIONS) >= 8
+    db.close()
+
+
+def test_jobs_database_gets_folders(tmp_path):
+    """jobs.sqlite of version 8 gets the folders of favourites; its favourites stay, at the top level; the
+    local user's folders go to the first administrator with its favourites (adopt_runs)."""
+    import sqlite3
+
+    import cache
+    import jobs as jb
+    db = sqlite3.connect(tmp_path / "jobs.sqlite")
+    cache.migrate(db, jb.MIGRATIONS[:8])
+    db.execute("INSERT INTO favourites (user_id, run_id, line, data, created) VALUES (NULL, 'old', '1,2,3,4', '{}', '')")
+    db.commit()
+    db.close()
+    jobs = jb.Jobs(str(tmp_path))
+    assert [(f["line"], f["folder_id"]) for f in jobs.favourites(None)] == [("1,2,3,4", None)]
+    folder = jobs.add_folder(None, "Local")
+    jobs.move_favourite(None, "old", "1,2,3,4", folder)
+    jobs.adopt_runs(str(tmp_path / "runs"), 7)
+    assert [f["name"] for f in jobs.folders(7)] == ["Local"] and jobs.favourites(7)[0]["folder_id"] == folder
+    db = sqlite3.connect(tmp_path / "jobs.sqlite")
+    assert db.execute("PRAGMA user_version").fetchone()[0] == len(jb.MIGRATIONS) == 9
     db.close()
 
 

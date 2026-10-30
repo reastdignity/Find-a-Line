@@ -75,7 +75,7 @@ export function AppB() {
   const seen = useRef(new Map<string, string>());  // the jobs' statuses seen
   const [following, setFollowing] = useState("");  // the job the search panel follows
 
-  const refreshRuns = () => api.runs().then((r) => { setRuns(r.runs); setSharing(r.public); return r.runs; },
+  const refreshRuns = () => api.runs().then((r) => { setRuns(r.runs); setSharing(r.public); setError(""); return r.runs; },
                                             (e) => { setError(e.message); return [] as RunListed[]; });
 
   useEffect(() => {
@@ -125,6 +125,37 @@ export function AppB() {
     }
   }, [jobs.jobs]);
   useJobAreas(place, schema, jobs.jobs, route.section === "searches");
+  // The toast of a ready run goes once its run is open, whichever way it was opened (a link, Back)
+  useEffect(() => { if (route.section === "run" && ready?.runId === route.run) setReady(null); }, [route, ready]);
+
+  // The menu (phones) or the account panel (the rail): Esc and a click outside close it; the focus goes
+  // into it when it opens and back to its button when it closes
+  const popRef = useRef<HTMLDivElement>(null);
+  const opened = useRef(false);
+  useEffect(() => {
+    const button = () => document.querySelector<HTMLElement>(wide ? ".b-account-button" : ".b-menu-button");
+    if (!menu) {
+      if (opened.current && (!document.activeElement || document.activeElement === document.body)) button()?.focus();
+      opened.current = false;
+      return;
+    }
+    opened.current = true;
+    popRef.current?.querySelector<HTMLElement>("button, a, input, select")?.focus();
+    const outside = (e: Event) => {
+      const t = e.target as Element;
+      if (popRef.current?.contains(t) || t.closest?.(".b-account-button, .b-menu-button")) return;
+      setMenu(false);
+    };
+    const key = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      e.preventDefault();
+      setMenu(false);
+      button()?.focus();
+    };
+    document.addEventListener("pointerdown", outside);
+    document.addEventListener("keydown", key);
+    return () => { document.removeEventListener("pointerdown", outside); document.removeEventListener("keydown", key); };
+  }, [menu]);
 
   const go = (next: Route) => {
     const hash = routeHash(next);
@@ -154,7 +185,7 @@ export function AppB() {
   const section = route.section;
   const current: Section | null = section === "run" ? "searches" : section;
 
-  const menuButton = <IconButton icon="menu" label="Menu" round on={menu} class="b-menu-button"
+  const menuButton = <IconButton icon="menu" label="Menu" round expanded={menu} class="b-menu-button"
                                  onClick={() => setMenu(!menu)} />;
   const panel = (title: string, body: ComponentChildren, cls = "") =>
     <Sheet label={title} desktop="float" initial="half" peek={150} top={64}
@@ -195,14 +226,16 @@ export function AppB() {
           <button type="button" class="b-top-jobs" onClick={() => go({section: "searches"})}>
             <span class="r-spin" />{jobs.active} running</button>}
       </div>}
-      {error && <p class="b-error" role="alert">{error}</p>}
+      {error && <p class="b-error" role="alert">{error}
+        <button type="button" class="r-note-x" aria-label="Close the message" onClick={() => setError("")}>
+          <Icon name="close" /></button></p>}
       {ready && !(section === "run" && route.run === ready.runId) && <div class="b-toast">
         <Toast action={ready.failed ? {label: "Details", onClick: () => { setReady(null); go({section: "searches"}); }}
                  : ready.runId ? {label: "Show results", onClick: () => show(ready.runId!)} : undefined}
                onClose={() => setReady(null)}>
           <Icon name={ready.failed ? "warn" : "check"} /> {ready.text}</Toast>
       </div>}
-      {menu && <div class="b-pop u-panel" role="dialog" aria-label={wide ? "Account" : "Menu"}>
+      {menu && <div class="b-pop u-panel" role="dialog" aria-label={wide ? "Account" : "Menu"} ref={popRef}>
         {!wide && <nav class="b-menu" aria-label="Main">{items.map((it) =>
           <button type="button" key={it.value} class={it.value === current ? "u-on" : ""}
                   aria-current={it.value === current ? "page" : undefined} onClick={() => go({section: it.value})}>

@@ -38,6 +38,13 @@ run({
           const c = window.FINDALINE_PLACE.map.getCenter();
           result.went = [Math.abs(c.lat - 49.2508) < 1e-3 && Math.abs(c.lng - 19.9339) < 1e-3,
                          window.FINDALINE_PLACE.map.getZoom(), box.value, !$(".s-placebox-list")];
+          // Leaving draw mode ends an unfinished polygon (its shape would join the search unseen)
+          const place = window.FINDALINE_PLACE;
+          place.setMode("draw");
+          place.map.pm.enableDraw("Polygon");
+          const drawing = place.map.pm.globalDrawModeEnabled();
+          place.setMode("point");
+          result.draw = [drawing, place.map.pm.globalDrawModeEnabled()];
           window.FINDALINE_PLACE.map.fire("click", {latlng: POINT});
           wait(() => text(".c-bar .s-bar-line").startsWith("Ready"), () => {
             $(".c-bar .s-start").click();
@@ -102,6 +109,70 @@ run({
       });
     });
   },
+  leave(next) {
+    // The profile closed with × comes back with "Profile" and when the spot is selected again; Escape, a
+    // click beside the lines and × of the details end the selection; › keeps the focus on itself
+    const m = model(), dock = () => !!$(".b-dock .fal-profile-title");
+    $(".b-dock .fal-close").click();
+    later(() => {
+      const closed = [dock(), !!$(".r-reprofile")];
+      $(".r-reprofile").click();
+      later(() => {
+        const shownAgain = dock();
+        $(".b-dock .fal-close").click();
+        later(() => {
+          const rows = () => $$(".b-results .r-rows > .r-spot > .r-row");
+          const k = rows().indexOf($(".b-results .r-row.r-sel")), row = () => rows()[k];
+          row().click();  // the selected row: unselects
+          later(() => { row().click(); later(() => {  // the same spot again: its profile is back
+            const reselected = [!!m.selected, dock()];
+            document.activeElement.blur();
+            document.dispatchEvent(new KeyboardEvent("keydown", {key: "Escape", bubbles: true}));
+            const escaped = !m.selected;
+            later(() => { row().click(); later(() => {
+              window.FINDALINE_MAP.fire("click", {latlng: window.FINDALINE_MAP.getCenter()});
+              const clicked = !m.selected;
+              later(() => { row().click(); later(() => {
+                button("Close the spot").click();
+                const closedSpot = !m.selected;
+                later(() => { row().click(); later(() => {
+                  const nextButton = $(".b-results .r-details button[aria-label='Next spot']");
+                  nextButton.focus();
+                  nextButton.click();
+                  later(() => {
+                    result.leave = {closed, shownAgain, reselected, escaped, clicked, closedSpot,
+                                    focus: (document.activeElement || {}).getAttribute?.("aria-label") || "",
+                                    stepped: m.position === k + 1};
+                    next();
+                  });
+                }); });
+              }); });
+            }); });
+          }); });
+        });
+      });
+    });
+  },
+  audit(next) {
+    // The profile's point goes with its line; a popover closed with Esc gives the focus back to its button
+    const view = window.FINDALINE_RESULT.view, chart = $(".b-dock .fal-hover"), box = chart.getBoundingClientRect();
+    chart.dispatchEvent(new PointerEvent("pointerdown", {pointerType: "touch", pointerId: 7, bubbles: true,
+                                                        clientX: box.left + box.width / 2, clientY: box.top + 5}));
+    const dot = !!view.marker;
+    button("Next spot").click();
+    later(() => {
+      const dotGone = !view.marker;
+      button("Compare").click();
+      later(() => {
+        const inside = !!document.activeElement.closest(".r-pop");
+        document.dispatchEvent(new KeyboardEvent("keydown", {key: "Escape", bubbles: true}));
+        later(() => {
+          result.audit = {dot, dotGone, inside, closed: !$(".r-pop"), back: document.activeElement.textContent.trim()};
+          next();
+        });
+      });
+    });
+  },
   filter(next) {
     const m = model(), before = m.shown.spots;
     button("Clearance").click();
@@ -145,6 +216,90 @@ run({
       next();
     });
   },
+  folders(next) {
+    // The favourite button's folders: a new folder, the line saved into it
+    const favs = () => fetch("/api/favourites").then((r) => r.json());
+    const poll = (ok, then, tries = 30) => favs().then((b) => ok(b) || !tries ? then(b) : later(() => poll(ok, then, tries - 1)));
+    const type = (input, value) => { input.value = value; input.dispatchEvent(new Event("input", {bubbles: true})); };
+    $(".b-results .r-details .r-fav").click();
+    later(() => {
+      result.picker = $$(".r-pop .r-folder").map((b) => b.textContent.trim());
+      $$(".r-pop button").find((b) => b.textContent.trim().startsWith("New folder")).click();
+      later(() => {
+        type($(".r-newfolder input"), "Trip");
+        later(() => { $(".r-newfolder button[type=submit]").click(); poll((b) => b.favourites.length === 1, (b) => {
+          const trip = b.folders[0];
+          result.saved = [b.folders.map((f) => f.name), b.favourites[0].folder_id === trip.id, text(".b-results .r-fav")];
+          location.hash = "#favourites";
+          wait(() => $(".c-shelf .c-folder-row"), () => {
+            result.shelf = {tree: $$(".c-tree-name").map((b) => b.textContent.replace(/\\d+$/, "").trim()),
+                            top: $$(".c-shelf-main .c-folder-row b").map((b) => b.textContent)};
+            $(".c-folder-row .c-folder-open").click();
+            wait(() => location.hash === `#favourites&folder=${trip.id}` && $(".c-shelf-main .c-fav[data-line]"), () => {
+              $(".c-new-folder").click();
+              later(() => { type($(".c-folder-name input"), "Day 1"); later(() => {
+                $(".c-folder-name button[type=submit]").click();
+                poll((b) => b.folders.length === 2, (b) => {
+                  const day = b.folders.find((f) => f.name === "Day 1");
+                  result.sub = [day && day.parent_id === trip.id];
+                  // Move to… of the line's menu
+                  wait(() => $(".c-shelf-main .c-folder-row"), () => {
+                    $(".c-fav[data-line] .c-row-menu").click();
+                    later(() => {
+                      $$(".r-pop .c-menu-item").find((b) => b.textContent.includes("Move to")).click();
+                      later(() => {
+                        const targets = $$(".r-pop .c-move-target");
+                        result.targets = targets.map((b) => [b.textContent.trim(), b.disabled]);
+                        targets.find((b) => b.textContent.trim() === "Day 1").click();
+                        poll((b) => b.favourites[0].folder_id === day.id, (b) => {
+                          result.moved = b.favourites[0].folder_id === day.id;
+                          // Dragged: Day 1 onto the top level of the tree (native drag events)
+                          const source = $(`.c-folder-row[data-folder="${day.id}"]`), top = $(".c-shelf-tree .c-tree-row");
+                          const dt = new DataTransfer(), box = top.getBoundingClientRect();
+                          const at = {bubbles: true, cancelable: true, dataTransfer: dt, clientX: box.left + 20, clientY: box.top + 10};
+                          source.dispatchEvent(new DragEvent("dragstart", at));
+                          later(() => {
+                            top.dispatchEvent(new DragEvent("dragenter", at));
+                            top.dispatchEvent(new DragEvent("dragover", at));
+                            later(() => {
+                              result.over = top.classList.contains("c-drop-over");
+                              top.dispatchEvent(new DragEvent("drop", at));
+                              source.dispatchEvent(new DragEvent("dragend", at));
+                              poll((b) => b.folders.find((f) => f.id === day.id).parent_id === null, (b) => {
+                                result.dragged = b.folders.find((f) => f.id === day.id).parent_id === null;
+                                // Trip deleted with what is in it (Day 1 is not in it any more)
+                                location.replace("#favourites");
+                                wait(() => $$(".c-shelf-main .c-folder-row").length === 2, () => {
+                                  $(`.c-folder-row[data-folder="${day.id}"] .c-row-menu`).click();
+                                  later(() => {
+                                    $$(".r-pop .c-menu-item").find((b) => b.textContent.includes("Delete")).click();
+                                    wait(() => $(".c-confirm-delete"), () => {
+                                      result.confirm = [text(".c-shelf .c-confirm span"),
+                                                        document.activeElement.textContent.trim()];
+                                      $(".c-confirm-delete").click();
+                                      // (a listing during the deletion may see its folders gone, its lines not yet)
+                                      poll((b) => b.folders.length === 1 && !b.favourites.length, (b) => {
+                                        result.deleted = [b.folders.map((f) => f.name), b.favourites.length];
+                                        next();
+                                      });
+                                    });
+                                  });
+                                });
+                              });
+                            }, 300);
+                          }, 300);
+                        });
+                      });
+                    });
+                  });
+                });
+              }); });
+            });
+          });
+        }); });
+      });
+    });
+  },
 });
 """
 
@@ -164,6 +319,10 @@ def test_shell_d_desktop(data, tmp_path):
     assert set(r["home"][0]) == {SMALL, BIG} and r["home"][1] and r["home"][2], r
     assert all(t in r["account"] for t in ("Old interface", "Try B", "Try C")) and "Try D" not in r["account"], r
     assert r["newPage"] == ["#new", "Typical highline"] and r["started"][1] == "waiting" and r["done"] == 1, r
+    assert r["leave"] == {"closed": [False, True], "shownAgain": True, "reselected": [True, True], "escaped": True,
+                          "clicked": True, "closedSpot": True, "focus": "Next spot", "stepped": True}, r
+    assert r["audit"] == {"dot": True, "dotGone": True, "inside": True, "closed": True, "back": "Compare"}, r
+    assert r["draw"] == [True, False], r
     assert r["places"] == [["Giewont"], ["Kraków", "Giewont"]] and r["went"] == [True, 15, "Giewont", True], r
     layout = r["layout"]
     assert layout["hash"] == f"#run={SMALL}" and not layout["header"] and layout["name"] == "Small run", r
@@ -184,6 +343,12 @@ def test_shell_d_desktop(data, tmp_path):
     assert r["home2"] == "#home", r
     assert r["back"] == [f"#run={SMALL}&line={r['line']}", r["line"]], r
     assert r["forward"] == "#home" and r["linked"] == [r["line"], True], r
+    assert r["picker"] == ["Favourites (top level)"] and r["saved"] == [["Trip"], True, "Favourite"], r
+    assert r["shelf"] == {"tree": ["Favourites", "Trip"], "top": ["Trip"]} and r["sub"] == [True], r
+    assert r["targets"] == [["Favourites (top level)", False], ["Trip", True], ["Day 1", False]] and r["moved"], r
+    assert r["over"] and r["dragged"], r
+    assert r["confirm"] == ["Delete “Day 1” and 1 favourite line? This cannot be undone.", "Keep it"], r
+    assert r["deleted"] == [["Trip"], 0], r
     assert r["csp"] == []
 
 

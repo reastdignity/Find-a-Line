@@ -1,8 +1,8 @@
 """
 The audit log of the public site: audit.sqlite in the data folder, one row per event that
 matters for security or abuse (ACTIONS): sign-ins and sign-ups, approvals and blocks, searches
-started and cancelled, share links, deletions, the demo flag, favourite lines marked and
-unmarked, other administrators' actions, and refusals by a quota, a rate or a safeguard.
+started and cancelled, share links, deletions, the demo flag, favourite lines marked, unmarked
+and moved, folders of favourites made, changed and deleted, other administrators' actions, and refusals by a quota, a rate or a safeguard.
 
 - Its own database, not jobs.sqlite or accounts.sqlite: both the web server and the worker
   write it (the worker never opens accounts.sqlite), it is kept, backed up and purged on
@@ -28,7 +28,7 @@ import cache
 KEEP_DAYS = 90
 ACTIONS = ("sign_in", "sign_up", "sign_up_refused", "sign_out", "user_status", "user_unlimited", "user_revoke",
            "job_add", "job_cancel", "share_create", "share_renew", "share_revoke", "run_delete", "run_demo",
-           "favourite", "refused")
+           "favourite", "favourite_folder", "refused")
 # The schema of audit.sqlite, one step per version (cache.migrate; never change a released step)
 MIGRATIONS = [
     """CREATE TABLE audit (id INTEGER PRIMARY KEY AUTOINCREMENT, at TEXT NOT NULL, action TEXT NOT NULL,

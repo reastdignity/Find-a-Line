@@ -18,7 +18,7 @@
 .ui.b-app.b-phone .leaflet-top { top: 60px; }
 
 /* Errors and the toast */
-.ui.b-app .b-error { position: absolute; top: 12px; left: 50%; transform: translateX(-50%); z-index: 1003; margin: 0; padding: 8px 12px;
+.ui.b-app .b-error { display: flex; align-items: center; gap: 8px; position: absolute; top: 12px; left: 50%; transform: translateX(-50%); z-index: 1003; margin: 0; padding: 8px 12px;
   border-radius: 10px; background: var(--bad-soft); color: var(--bad); box-shadow: var(--shadow); max-width: calc(100% - 24px); }
 .ui.b-app .b-toast { position: absolute; left: 50%; bottom: 24px; transform: translateX(-50%); z-index: 1003; width: max-content;
   max-width: calc(100% - 24px); }

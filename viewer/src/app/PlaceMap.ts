@@ -48,7 +48,7 @@ export class PlaceMap {
     this.drawn.addTo(this.map);
     this.shown.addTo(this.map);
     this.preview.addTo(this.map);
-    this.map.pm.setGlobalOptions({layerGroup: this.drawn, pathOptions: {color: COLOR}} as any);
+    this.map.pm.setGlobalOptions({layerGroup: this.drawn, pathOptions: {color: COLOR}, exitModeOnEscape: true} as any);
     this.map.on("pm:create", (e: any) => {
       e.layer.on("pm:edit", () => this.onDrawn());
       this.onDrawn();
@@ -57,6 +57,19 @@ export class PlaceMap {
     this.map.on("click", (e: L.LeafletMouseEvent) => {
       if (this.mode === "point" && !this.hidden) this.onPoint(e.latlng.lat, e.latlng.lng);
     });
+  }
+
+  /** Removes the drawing tools and ends any of their modes: removing the toolbar alone leaves an
+   *  unfinished polygon drawing, whose shape would join the search unseen. */
+  private stopTools() {
+    const pm = this.map.pm;
+    pm.disableDraw();
+    pm.disableGlobalEditMode();
+    pm.disableGlobalDragMode();
+    pm.disableGlobalRemovalMode();
+    pm.disableGlobalCutMode();
+    pm.disableGlobalRotateMode();
+    pm.removeControls();
   }
 
   /** Shows or hides the search on the map: the point and circle, the drawn and uploaded areas, the
@@ -69,7 +82,7 @@ export class PlaceMap {
       this.setMode(this.mode);
       return;
     }
-    this.map.pm.removeControls();
+    this.stopTools();
     for (const layer of [this.marker, this.circle, this.drawn, this.shown, this.preview]) layer?.remove();
     this.map.getContainer().style.cursor = "";
   }
@@ -85,7 +98,7 @@ export class PlaceMap {
       this.map.pm.addControls({position: this.controls, drawMarker: false, drawCircleMarker: false,
                                drawPolyline: false, drawText: false, drawCircle: false, cutPolygon: false,
                                rotateMode: false});
-    } else this.map.pm.removeControls();
+    } else this.stopTools();
     const point = mode === "point";
     for (const layer of [this.marker, this.circle]) {
       if (layer && point) layer.addTo(this.map); else if (layer) layer.remove();

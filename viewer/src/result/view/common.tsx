@@ -32,7 +32,11 @@ export function Swatch({color, class: cls}: {color: string; class?: string}) {
 const cx = (...names: (string | false | null | undefined)[]) => names.filter(Boolean).join(" ");
 export { cx };
 
-/** A button that opens a panel under it; Esc or a click outside closes it. */
+const FOCUSABLE = "button:not([disabled]), [href], input:not([disabled]), select, textarea, [tabindex]:not([tabindex='-1'])";
+
+/** A button that opens a panel under it; Esc, a click outside or the focus leaving closes it. The focus
+ *  goes to the panel's first control when it opens, and back to the button when it closes while the
+ *  focus was in it (Esc, a choice that closes it). */
 export function Popover({button, label, align = "left", children, open: openProp, onOpen}:
                         {button: (open: boolean, toggle: () => void) => ComponentChildren; label: string;
                          align?: "left" | "right"; children: ComponentChildren | (() => ComponentChildren);
@@ -41,17 +45,32 @@ export function Popover({button, label, align = "left", children, open: openProp
   const open = openProp ?? own;
   const set = (v: boolean) => { setOwn(v); onOpen?.(v); };
   const ref = useRef<HTMLDivElement>(null);
+  const panel = useRef<HTMLDivElement>(null);
+  const trigger = () => ref.current?.querySelector<HTMLElement>(FOCUSABLE);  // the button comes before the panel
   useEffect(() => {
     if (!open) return;
+    panel.current?.querySelector<HTMLElement>(FOCUSABLE)?.focus();
     const outside = (e: Event) => { if (ref.current && !ref.current.contains(e.target as Node)) set(false); };
-    const key = (e: KeyboardEvent) => { if (e.key === "Escape") set(false); };
+    const key = (e: KeyboardEvent) => { if (e.key === "Escape") { e.preventDefault(); set(false); trigger()?.focus(); } };
     document.addEventListener("pointerdown", outside);
     document.addEventListener("keydown", key);
-    return () => { document.removeEventListener("pointerdown", outside); document.removeEventListener("keydown", key); };
+    return () => {
+      document.removeEventListener("pointerdown", outside);
+      document.removeEventListener("keydown", key);
+      // Closed with the focus inside (now gone with the panel): back to the button
+      const at = document.activeElement;
+      if (!at || at === document.body || (panel.current && panel.current.contains(at))) {
+        setTimeout(() => { if (document.activeElement === document.body) trigger()?.focus(); });
+      }
+    };
   }, [open]);
-  return <div class="r-popwrap" ref={ref}>
+  const left = (e: FocusEvent) => {
+    const to = e.relatedTarget as Node | null;
+    if (open && to && ref.current && !ref.current.contains(to)) set(false);
+  };
+  return <div class="r-popwrap" ref={ref} onFocusOut={left}>
     {button(open, () => set(!open))}
-    {open && <div class={cx("u-panel r-pop", align === "right" && "r-pop-right")} role="dialog" aria-label={label}>
+    {open && <div ref={panel} class={cx("u-panel r-pop", align === "right" && "r-pop-right")} role="dialog" aria-label={label}>
       {typeof children === "function" ? children() : children}</div>}
   </div>;
 }

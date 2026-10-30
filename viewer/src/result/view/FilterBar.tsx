@@ -62,23 +62,35 @@ export function FilterBar({model, onMore}: FilterBarProps) {
   useModel(model);
   const [editing, setEditing] = useState<Main | null>(null);
   const [more, setMore] = useState(false);
+  const bar = useRef<HTMLDivElement>(null);
+  /** Close the editor; the focus back to its chip when it was in the editor (Esc, ×). */
+  const closeEditor = () => {
+    const chip = bar.current?.querySelector<HTMLElement>("[aria-expanded=true]");
+    const inside = bar.current?.querySelector(".r-editor")?.contains(document.activeElement);
+    setEditing(null);
+    if (inside) chip?.focus();
+  };
+  const removed = (which: Main, change: Partial<Filters>) => {
+    set(model, change);
+    if (editing === which) setEditing(null);
+  };
   const f = model.filters, r = model.ranges, s = model.state;
   const onlyClear = !s.showOver && s.showClean;
   const anything = active(f) > 0 || !s.showOver || !s.showClean;
   const toggle = (which: Main) => setEditing(editing === which ? null : which);
   const extra = moreActive(model);
-  return <div class="r-filters">
+  return <div class="r-filters" ref={bar}>
     <Chips>
-      {r.len && <Chip on={f.lenMin !== null || f.lenMax !== null} onClick={() => toggle("len")}
+      {r.len && <Chip on={f.lenMin !== null || f.lenMax !== null} onClick={() => toggle("len")} expanded={editing === "len"}
                       onRemove={f.lenMin !== null || f.lenMax !== null
-                        ? () => set(model, {lenMin: null, lenMax: null}) : undefined}
+                        ? () => removed("len", {lenMin: null, lenMax: null}) : undefined}
                       removeLabel="Remove the length filter">{lengthLabel(f)}</Chip>}
-      {r.clr && <Chip on={f.clrMin !== null} onClick={() => toggle("clr")}
-                      onRemove={f.clrMin !== null ? () => set(model, {clrMin: null}) : undefined}
+      {r.clr && <Chip on={f.clrMin !== null} onClick={() => toggle("clr")} expanded={editing === "clr"}
+                      onRemove={f.clrMin !== null ? () => removed("clr", {clrMin: null}) : undefined}
                       removeLabel="Remove the clearance filter">
         {f.clrMin !== null ? `Clearance ≥ ${num(f.clrMin, 1)} m` : "Clearance"}</Chip>}
-      {r.hmax && <Chip on={f.heightMin !== null} onClick={() => toggle("height")}
-                       onRemove={f.heightMin !== null ? () => set(model, {heightMin: null}) : undefined}
+      {r.hmax && <Chip on={f.heightMin !== null} onClick={() => toggle("height")} expanded={editing === "height"}
+                       onRemove={f.heightMin !== null ? () => removed("height", {heightMin: null}) : undefined}
                        removeLabel="Remove the height filter">
         {f.heightMin !== null ? `Height ≥ ${num(f.heightMin)} m` : "Height"}</Chip>}
       {model.nOver > 0 && <Chip on={onlyClear} onClick={() => model.setState({...s, showClean: true, showOver: onlyClear})}>
@@ -92,7 +104,11 @@ export function FilterBar({model, onMore}: FilterBarProps) {
         setEditing(null);
       }}>Clear all</button>}
     </Chips>
-    {editing && <div class="r-editor"><MainEditor model={model} which={editing} /></div>}
+    {editing && <div class="r-editor" role="group" aria-label="Filter"
+                     onKeyDown={(e) => { if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); closeEditor(); } }}>
+      <MainEditor model={model} which={editing} />
+      <button type="button" class="r-note-x r-editor-x" aria-label="Close the filter" onClick={closeEditor}>
+        <Icon name="close" /></button></div>}
     {more && !onMore && <MoreFilters model={model} onClose={() => setMore(false)} />}
   </div>;
 }

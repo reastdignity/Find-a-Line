@@ -1,7 +1,8 @@
 // The sortable list of the spots of a result (model.rows): length, clearance, height, lines in the
 // spot and the favourite star; the selected row highlighted with the shell's details under it, a
-// spot's lines unfolded under its row (the shown one marked), "only in the map's view", the first
-// 100 rows and then more. Rows take the focus; Enter selects. Sorting is model.list (list.ts).
+// spot's lines unfolded under its row (the shown one marked), "only in the map's view" (the selected
+// spot stays, marked outside the view), the first 100 rows and then more. Rows take the focus; Enter
+// selects. Sorting is model.list (list.ts).
 
 import type { ComponentChildren } from "preact";
 import { useEffect, useRef, useState } from "preact/hooks";
@@ -54,7 +55,9 @@ function scrollToRow(row: HTMLElement) {
 export function LinesTable({model, view, details, onSelect, page = PAGE, follow = true}: LinesTableProps) {
   useModel(model);
   const [limit, setLimit] = useState(page);
-  const [unfolded, setUnfolded] = useState<Group<Line> | null>(null);
+  // The unfolded spot by the key of its first line: compute() makes new groups on every filter or star
+  const [unfolded, setUnfolded] = useState<string | null>(null);
+  const hovered = useRef<Line | null>(null);  // the line highlighted on the map by the pointer
   const [, setMoved] = useState(0);
   const canHover = useMedia("(hover: hover)");
   const listRef = useRef<HTMLDivElement>(null);
@@ -62,8 +65,9 @@ export function LinesTable({model, view, details, onSelect, page = PAGE, follow 
 
   useEffect(() => view ? view.onMove(() => setMoved((n) => n + 1)) : undefined, [view]);
 
-  const rows: Spot[] = inView ? model.rows.filter((r) => view!.inView(r.line)) : model.rows;
   const selected = model.selected;
+  const rows: Spot[] = inView ? model.rows.filter((r) => view!.inView(r.line) || r.group === selected?.group)
+    : model.rows;
   const at = selected ? rows.findIndex((r) => r.group === selected.group) : -1;
   // The selected spot is always among the rows shown
   useEffect(() => { if (at >= limit) setLimit(Math.ceil((at + 1) / page) * page); }, [at]);
@@ -83,7 +87,17 @@ export function LinesTable({model, view, details, onSelect, page = PAGE, follow 
     model.select(target);
     if (model.selected) onSelect?.(model.selected.line);
   };
-  const hover = (l: Line | null) => { if (canHover) view?.highlight(l); };
+  const hover = (l: Line | null) => {
+    if (!canHover) return;
+    hovered.current = l;
+    view?.highlight(l);
+  };
+  // A row that goes (a filter, a star with "only favourites") never sees the pointer leave: its line
+  // would stay highlighted
+  useEffect(() => {
+    const l = hovered.current;
+    if (l && !rows.slice(0, limit).some((r) => r.line === l || (r.members || []).includes(l))) hover(null);
+  });
   const keys = (e: KeyboardEvent, target: Group<Line> | Line) => {
     const el = e.currentTarget as HTMLElement;
     if (e.key === "Enter" || e.key === " ") { e.preventDefault(); pick(target); }
@@ -132,15 +146,17 @@ export function LinesTable({model, view, details, onSelect, page = PAGE, follow 
     <div class="r-rows" role="listbox" aria-label="Lines">
       {rows.length === 0 && <p class="u-small r-empty">{inView ? "No lines in the map's view." : "No lines pass the filters."}</p>}
       {rows.slice(0, limit).map((r) => {
-        const isSel = selected?.group === r.group, open = unfolded === r.group && r.n > 1;
+        const isSel = selected?.group === r.group, open = unfolded === model.keyOf(r.group.rep) && r.n > 1;
+        const outside = inView && isSel && !view!.inView(r.line);
         return <div class={cx("r-spot", isSel && "r-spot-sel")} key={model.keyOf(r.group.rep)}>
+          {outside && <p class="u-small r-outside">Selected, outside the map's view</p>}
           <div class={cx("r-row", isSel && "r-sel", r.line.over && "r-over")} role="option" aria-selected={isSel}
                tabIndex={0} onClick={() => pick(r.group)} onKeyDown={(e) => keys(e, r.group)}
                onPointerEnter={() => hover(r.line)} onPointerLeave={() => hover(null)}>
             {cells(r.line)}
             {r.n > 1 ? <button type="button" class={cx("r-unfold", open && "r-on")} aria-expanded={open}
                                aria-label={`${r.n} similar lines: ${open ? "fold" : "unfold"}`}
-                               onClick={(e) => { e.stopPropagation(); setUnfolded(open ? null : r.group); }}>
+                               onClick={(e) => { e.stopPropagation(); setUnfolded(open ? null : model.keyOf(r.group.rep)); }}>
                 {formatValue(sortKey("n"), r)}<Icon name="down" /></button>
               : <span class="r-muted">1</span>}
             {star(r.line)}

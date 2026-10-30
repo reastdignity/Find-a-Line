@@ -104,8 +104,8 @@ const line = m.favouriteLine(f), lines = [{line, runId: f.run_id, runName: f.run
 console.log(JSON.stringify({csv: m.favouritesCsv(lines), geojson: JSON.parse(m.favouritesGeoJSON(lines)),
                             data: m.favouriteData(line)}));""")
     head, row = found["csv"].split("\r\n")[:2]
-    assert head.split(",")[:4] == ["run_id", "run_name", "length_m", "clearance_m"]
-    assert row.startswith('"r1","\'=cmd ""x"", y",120.5,1.2,,true,0,0,15,,0,50.1,19.7,330,12,3,30,50.2,19.8,328.5,,,')
+    assert head.split(",")[:5] == ["run_id", "run_name", "folder", "length_m", "clearance_m"]
+    assert row.startswith('"r1","\'=cmd ""x"", y","",120.5,1.2,,true,0,0,15,,0,50.1,19.7,330,12,3,30,50.2,19.8,328.5,,,')
     feature = found["geojson"]["features"][0]
     assert feature["geometry"] == {"type": "LineString", "coordinates": [[19.7, 50.1], [19.8, 50.2]]}
     assert feature["properties"]["height_mean_m"] is None and feature["properties"]["over_trees_buildings"] is True
@@ -175,6 +175,29 @@ def _python_groups(rows, distance, by, keep=lambda r: True):
 
 
 # Run with model.ts bundled as `m`: the model over a run's data (argv[2]) with a fake server
+def test_folder_tree(tmp_path):
+    """folders.ts: children by name, paths, depth and height, the moves jobs.Jobs.change_folder allows (not into
+    itself or its own folders, not where it is, not deeper than FOLDER_DEPTH_MAX), counts with the folders inside."""
+    found = run_ts(tmp_path, "folders", """
+const f = (id, parent_id, name) => ({id, parent_id, name, created: ""});
+const t = new m.FolderTree([f(1, null, "trips"), f(2, 1, "Tatras"), f(3, 2, "West"), f(4, null, "Alps"), f(5, 99, "lost")]);
+const chain = new m.FolderTree(Array.from({length: 8}, (_, k) => f(k + 1, k ? k : null, "L" + (k + 1))));
+const extra = new m.FolderTree([...chain.byId.values(), f(20, null, "x")]);
+console.log(JSON.stringify({
+  top: t.children(null).map((x) => x.name), path: t.path(3), depth: [t.depth(null), t.depth(3)], height: t.height(1),
+  subtree: t.subtree(1).sort(), moves: [t.canMove(1, 3), t.canMove(1, 1), t.canMove(2, 1), t.canMove(2, 4), t.canMove(2, null)],
+  deep: [chain.canAdd(8), chain.canAdd(7), extra.canMove(20, 8), extra.canMove(20, 7)],
+  flat: t.flat().map(({folder, depth}) => folder.name + depth),
+  counts: [...t.counts([{folder_id: 3}, {folder_id: 2}, {folder_id: null}, {folder_id: 42}]).entries()],
+}));""")
+    assert found["top"] == ["Alps", "lost", "trips"] and found["path"] == "trips / Tatras / West"
+    assert found["depth"] == [0, 3] and found["height"] == 3 and found["subtree"] == [1, 2, 3]
+    assert found["moves"] == [False, False, False, True, True]
+    assert found["deep"] == [False, True, False, True]
+    assert found["flat"] == ["Alps1", "lost1", "trips1", "Tatras2", "West3"]
+    assert {k: v for k, v in found["counts"]} == {None: 4, 1: 2, 2: 2, 3: 1}
+
+
 MODEL_SCRIPT = r"""
 const data = JSON.parse(require("fs").readFileSync(process.argv[2], "utf-8"));
 const keys = (g) => g.members.map((l) => [l.lat1, l.lon1, l.lat2, l.lon2].join(","));
@@ -258,6 +281,30 @@ const out = {};
   refuse = false;
   await model.toggleFavourite(fav);
   out.unmarked = {fav: model.isFavourite(fav), stillShown: model.shownOf(model.groupOf(fav)) === fav};
+  // A profile closed with × comes back when the spot is selected again
+  model.select(model.rows[0].group);
+  model.closeProfile();
+  out.profileClosed = [model.profileClosed];
+  model.select(model.rows[0].group);
+  out.profileClosed.push(model.profileClosed);
+  // Folders: where a favourite is, a new folder, a line marked into it, a favourite moved to the top level
+  const changes = [], made = [];
+  const folderApi = {...api,
+    loadFavourites: async () => ({lines: [favourites[0]], in: {[favourites[0]]: 5},
+                                  folders: [{id: 5, parent_id: null, name: "Trips", created: ""}]}),
+    saveFavourite: async (run, l, on, folder) => { changes.push(["save", on, folder ?? null]); },
+    moveFavourite: async (run, line, folder) => { changes.push(["move", folder]); },
+    addFolder: async (name, parent) => { made.push([name, parent]); return 9; }};
+  model = new m.ResultModel(data, {favourites: true, api: folderApi});
+  await tick();
+  const inTrips = model.lines.find((l) => model.lineLink(l) === favourites[0]);
+  const plain = model.groups.find((g) => !g.members.includes(inTrips)).rep;
+  out.folders = {of: model.folderOf(inTrips), path: model.tree.path(5), plain: model.folderOf(plain) === undefined};
+  const nine = await model.newFolder(" Later ", 5);
+  await model.saveTo(plain, nine);
+  await model.saveTo(inTrips, null);
+  out.folders.after = {made, changes, plain: model.folderOf(plain), trips: model.folderOf(inTrips),
+                       path: model.tree.path(9)};
   // Profiles: saved ones as they are, others from the server
   const noProfile = model.lines.find((l) => !l.prof);
   out.profile = noProfile ? (await model.profile(noProfile)).min[1] : null;
@@ -312,6 +359,10 @@ def test_result_model(tmp_path, clip_data):
     assert out["optimistic"] is True
     assert out["rolledBack"] == {"fav": False, "note": "The favourite was not saved: refused"}
     assert out["unmarked"] == {"fav": False, "stillShown": True}
+    assert out["profileClosed"] == [True, False]
+    assert out["folders"] == {"of": 5, "path": "Trips", "plain": True,
+                              "after": {"made": [[" Later ", 5]], "changes": [["save", True, 9], ["move", None]],
+                                        "plain": 9, "trips": None, "path": "Trips / Later"}}
     assert out["profile"] in (None, 3)
     assert out["notified"] > 10
 

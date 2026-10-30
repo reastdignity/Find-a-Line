@@ -105,8 +105,17 @@ MIGRATIONS = [
                                 created TEXT);
        CREATE UNIQUE INDEX favourites_key ON favourites (IFNULL(user_id, 0), run_id, line);
        CREATE INDEX favourites_run ON favourites (run_id);""",
+    # 9: folders of favourite lines (as a browser's bookmarks: nested, each favourite in one folder or at
+    # the top level, NULL); the favourites of before stay at the top level
+    """CREATE TABLE favourite_folders (id INTEGER PRIMARY KEY, user_id INTEGER, parent_id INTEGER,
+                                       name TEXT NOT NULL, created TEXT);
+       CREATE INDEX favourite_folders_user ON favourite_folders (IFNULL(user_id, 0));
+       ALTER TABLE favourites ADD COLUMN folder_id INTEGER;""",
 ]
 FAVOURITES_MAX = 10000  # favourite lines of a user (a safeguard of the database, the same for everyone)
+FOLDERS_MAX = 1000      # folders of favourites of a user
+FOLDER_DEPTH_MAX = 8    # folders inside one another (a top-level folder is at depth 1)
+FOLDER_NAME_MAX = 100   # characters of a folder's name
 
 
 # An absolute path on the server: C:\... (or C:/...), or /dir/... not in a URL (http://host/...: the
@@ -469,8 +478,9 @@ class Jobs:
                            (run_id, user_id, rn.folder_bytes(os.path.join(runs_dir, run_id)), now))
             given = db.execute("UPDATE runs SET user_id = ? WHERE user_id IS NULL", (user_id,)).rowcount \
                 if user_id is not None else 0
-            if user_id is not None:  # the local app's favourites go with its runs
+            if user_id is not None:  # the local app's favourites and their folders go with its runs
                 db.execute("UPDATE OR IGNORE favourites SET user_id = ? WHERE user_id IS NULL", (user_id,))
+                db.execute("UPDATE favourite_folders SET user_id = ? WHERE user_id IS NULL", (user_id,))
         return len(new) + given
 
     def set_share(self, run_id: str, share_hash: Optional[str]):
@@ -506,8 +516,9 @@ class Jobs:
     # --- Favourite lines (the maps mark them, the app lists them) ---
 
     def favourites(self, user_id: Optional[int], run_id: Optional[str] = None) -> List[Dict]:
-        """A user's favourite lines (of one run), newest first: run_id, line, data (a dict), created."""
-        query, args = "SELECT run_id, line, data, created FROM favourites WHERE user_id IS ?", [user_id]
+        """A user's favourite lines (of one run), newest first: run_id, line, data (a dict), created and
+        folder_id (None: the top level)."""
+        query, args = "SELECT run_id, line, data, created, folder_id FROM favourites WHERE user_id IS ?", [user_id]
         if run_id is not None:
             query += " AND run_id = ?"
             args.append(run_id)
@@ -515,23 +526,122 @@ class Jobs:
             rows = db.execute(query + " ORDER BY created DESC, rowid DESC", args).fetchall()
         return [{**dict(r), "data": json.loads(r["data"])} for r in rows]
 
-    def set_favourite(self, user_id: Optional[int], run_id: str, line: str, data: Optional[Dict]):
-        """Mark a line of a run as a favourite of a user (with its values `data`), or unmark it (data
-        None). Marking one more than FAVOURITES_MAX raises QuotaExceeded (409); marking a line again
-        keeps the first values."""
+    def set_favourite(self, user_id: Optional[int], run_id: str, line: str, data: Optional[Dict],
+                      folder_id: Optional[int] = None):
+        """Mark a line of a run as a favourite of a user (with its values `data`, in the user's folder
+        `folder_id`, None: the top level), or unmark it (data None). Marking one more than FAVOURITES_MAX
+        raises QuotaExceeded (409), a folder not the user's KeyError; marking a line again keeps the first
+        values and its folder (move_favourite moves it)."""
         with self._write() as db:
             if data is None:
                 db.execute("DELETE FROM favourites WHERE user_id IS ? AND run_id = ? AND line = ?",
                            (user_id, run_id, line))
                 return
+            self._own_folder(db, user_id, folder_id)
             count = db.execute("SELECT COUNT(*) FROM favourites WHERE user_id IS ?", (user_id,)).fetchone()[0]
             known = db.execute("SELECT 1 FROM favourites WHERE user_id IS ? AND run_id = ? AND line = ?",
                                (user_id, run_id, line)).fetchone()
             if not known and count >= FAVOURITES_MAX:
                 raise QuotaExceeded(f"at most {FAVOURITES_MAX} favourite lines: remove some first", 409)
-            db.execute("INSERT INTO favourites (user_id, run_id, line, data, created) VALUES (?, ?, ?, ?, ?) "
-                       "ON CONFLICT DO NOTHING",
-                       (user_id, run_id, line, json.dumps(data), datetime.now().isoformat(timespec="seconds")))
+            db.execute("INSERT INTO favourites (user_id, run_id, line, data, created, folder_id) "
+                       "VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING",
+                       (user_id, run_id, line, json.dumps(data), datetime.now().isoformat(timespec="seconds"),
+                        folder_id))
+
+    def move_favourite(self, user_id: Optional[int], run_id: str, line: str, folder_id: Optional[int]):
+        """Move a favourite of a user into the user's folder `folder_id` (None: the top level); KeyError
+        when the favourite or the folder is not the user's."""
+        with self._write() as db:
+            self._own_folder(db, user_id, folder_id)
+            if not db.execute("UPDATE favourites SET folder_id = ? WHERE user_id IS ? AND run_id = ? AND line = ?",
+                              (folder_id, user_id, run_id, line)).rowcount:
+                raise KeyError(line)
+
+    # --- Folders of favourites (nested; deleting one deletes what is in it) ---
+
+    def folders(self, user_id: Optional[int]) -> List[Dict]:
+        """A user's folders of favourites: id, parent_id (None: the top level), name, created; by name."""
+        with self._db() as db:
+            rows = db.execute("SELECT id, parent_id, name, created FROM favourite_folders WHERE user_id IS ? "
+                              "ORDER BY name COLLATE NOCASE, id", (user_id,)).fetchall()
+        return [dict(r) for r in rows]
+
+    @staticmethod
+    def _tree(db, user_id: Optional[int]) -> Dict[int, Optional[int]]:
+        """The parent of each folder of a user."""
+        return {r[0]: r[1] for r in db.execute("SELECT id, parent_id FROM favourite_folders WHERE user_id IS ?",
+                                               (user_id,))}
+
+    @classmethod
+    def _own_folder(cls, db, user_id: Optional[int], folder_id: Optional[int]):
+        """KeyError unless `folder_id` is None (the top level) or a folder of the user."""
+        if folder_id is not None and not db.execute("SELECT 1 FROM favourite_folders WHERE id = ? AND user_id IS ?",
+                                                    (folder_id, user_id)).fetchone():
+            raise KeyError(folder_id)
+
+    @staticmethod
+    def _depth(parents: Dict[int, Optional[int]], folder_id: Optional[int]) -> int:
+        """How deep a folder is (the top level 0, a folder in it 1)."""
+        depth = 0
+        while folder_id is not None:
+            depth += 1
+            folder_id = parents.get(folder_id)
+        return depth
+
+    @staticmethod
+    def _subtree(parents: Dict[int, Optional[int]], folder_id: int) -> List[int]:
+        """A folder and every folder inside it, at any depth."""
+        found, todo = [], [folder_id]
+        while todo:
+            f = todo.pop()
+            found.append(f)
+            todo += [c for c, p in parents.items() if p == f]
+        return found
+
+    def add_folder(self, user_id: Optional[int], name: str, parent_id: Optional[int] = None) -> int:
+        """A new folder of a user in `parent_id` (None: the top level); its id. KeyError for a parent not
+        the user's, ValueError beyond FOLDER_DEPTH_MAX, QuotaExceeded (409) beyond FOLDERS_MAX."""
+        with self._write() as db:
+            self._own_folder(db, user_id, parent_id)
+            parents = self._tree(db, user_id)
+            if len(parents) >= FOLDERS_MAX:
+                raise QuotaExceeded(f"at most {FOLDERS_MAX} folders: delete some first", 409)
+            if self._depth(parents, parent_id) + 1 > FOLDER_DEPTH_MAX:
+                raise ValueError(f"folders go at most {FOLDER_DEPTH_MAX} deep")
+            return db.execute("INSERT INTO favourite_folders (user_id, parent_id, name, created) VALUES (?, ?, ?, ?)",
+                              (user_id, parent_id, name, datetime.now().isoformat(timespec="seconds"))).lastrowid
+
+    def change_folder(self, user_id: Optional[int], folder_id: int, name: Optional[str] = None,
+                      parent_id: Optional[int] = None, move: bool = False):
+        """Rename a user's folder (`name`) and/or move it into `parent_id` (`move`; None: the top level).
+        KeyError for a folder not the user's; ValueError for a move into itself or its own folders, or
+        beyond FOLDER_DEPTH_MAX."""
+        with self._write() as db:
+            self._own_folder(db, user_id, folder_id)
+            if move:
+                self._own_folder(db, user_id, parent_id)
+                parents = self._tree(db, user_id)
+                inside = self._subtree(parents, folder_id)
+                if parent_id in inside:
+                    raise ValueError("a folder cannot go into itself or one of its folders")
+                height = max(self._depth(parents, f) for f in inside) - self._depth(parents, folder_id) + 1
+                if self._depth(parents, parent_id) + height > FOLDER_DEPTH_MAX:
+                    raise ValueError(f"folders go at most {FOLDER_DEPTH_MAX} deep")
+                db.execute("UPDATE favourite_folders SET parent_id = ? WHERE id = ?", (parent_id, folder_id))
+            if name is not None:
+                db.execute("UPDATE favourite_folders SET name = ? WHERE id = ?", (name, folder_id))
+
+    def delete_folder(self, user_id: Optional[int], folder_id: int) -> Dict[str, int]:
+        """Delete a user's folder with the folders and favourite lines in it (as a browser's bookmarks);
+        how many of each went. KeyError for a folder not the user's."""
+        with self._write() as db:
+            self._own_folder(db, user_id, folder_id)
+            inside = self._subtree(self._tree(db, user_id), folder_id)
+            marks = ",".join("?" * len(inside))
+            lines = db.execute(f"DELETE FROM favourites WHERE user_id IS ? AND folder_id IN ({marks})",
+                               (user_id, *inside)).rowcount
+            db.execute(f"DELETE FROM favourite_folders WHERE id IN ({marks})", inside)
+        return {"folders": len(inside), "favourites": lines}
 
     def all_runs(self) -> List[Dict]:
         """Every run's row (the admin tab), newest first."""

@@ -22,7 +22,7 @@ export interface ProfileDockProps {
   measured?: Line | null;
   /** The measured profile was closed (the shell clears it and ResultMap.clearMeasure). */
   onCloseMeasured?(): void;
-  /** The line's profile was closed (it opens again for the next line). */
+  /** The line's profile was closed (model.closeProfile: it opens again when a line is selected). */
   onClose?(): void;
   class?: string;
 }
@@ -34,7 +34,6 @@ export function ProfileDock({model, view, line, measured, onCloseMeasured, onClo
   useModel(model);
   const target = line === undefined ? model.selected?.line || null : line;
   const [state, setState] = useState<State | null>(null);
-  const [closed, setClosed] = useState<Line | null>(null);
   const [rigging, setRigging] = useState(false);
   const touch = useMedia("(pointer: coarse)");
 
@@ -48,14 +47,19 @@ export function ProfileDock({model, view, line, measured, onCloseMeasured, onClo
     return () => { live = false; };
   }, [target]);
   useEffect(() => () => view?.hoverAt(null), [view]);
+  // The point of the chart goes with its line (a new line, none, closed)
+  useEffect(() => { view?.hoverAt(null); }, [target, measured, model.profileClosed]);
 
-  const shown = measured || (target && closed !== target ? target : null);
+  // The selected line's profile follows model.profileClosed; a line given by the shell is always shown
+  const shown = measured || (target && !(line === undefined && model.profileClosed) ? target : null);
   if (!shown) return null;
   const hover = (at: [number, number] | null) => view?.hoverAt(at);
   const close = () => {
     view?.hoverAt(null);
     if (measured) onCloseMeasured?.();
-    else { setClosed(target); onClose?.(); }
+    else { if (line === undefined) model.closeProfile(); onClose?.(); }
+    // The focus was on the profile's ×, which is gone: to the details' "Profile", which shows it again
+    setTimeout(() => document.querySelector<HTMLElement>(".r-reprofile")?.focus());
   };
   const ready = measured || (state && state.line === target && state.status === "ready");
   return <section class={cx("r-dock", rigging && "r-rigging", cls)} aria-label="Profile">
@@ -63,7 +67,7 @@ export function ProfileDock({model, view, line, measured, onCloseMeasured, onClo
       <b>{measured ? "Measured profile" : `Profile · ${num(shown.len)} m`}</b>
       <span class="u-small r-hint">{touch ? "tap or drag along the chart" : "move the mouse along the chart"}</span>
       <span class="u-grow" />
-      {ready && <button type="button" class={cx("u-chip", rigging && "u-on")} aria-pressed={rigging}
+      {ready && <button type="button" class={cx("u-chip", rigging && "u-on")} aria-expanded={rigging}
                         onClick={() => setRigging(!rigging)}>Rigging and layers<Icon name="down" /></button>}
       {!ready && <button type="button" class="r-note-x" aria-label="Close the profile" onClick={close}>
         <Icon name="close" /></button>}

@@ -64,14 +64,17 @@ function Back({back, wide}: {back: BackAction; wide: boolean}) {
 function Pill({data, runs, back, wide, onRun}: {data: RunData; runs?: RunListed[] | null; back: BackAction; wide: boolean;
                                                 onRun?(id: string): void}) {
   const others = (runs || []).filter((r) => r.has_map);
+  const [switching, setSwitching] = useState(false);
   return <div class="b-pill">
     <Back back={back} wide={wide} />
     <span class="u-grow b-pill-name" title={data.run.name}>{data.run.name}</span>
     <span class="u-small b-pill-date">{data.run.created.slice(0, 10)}</span>
     {onRun && others.length > 1 && <Popover label="Other runs" button={(open, toggle) =>
-      <IconButton icon="down" label="Switch to another run" plain round on={open} onClick={toggle} />}>
+      <IconButton icon="down" label="Switch to another run" plain round expanded={open} onClick={toggle} />}
+      open={switching} onOpen={setSwitching}>
       {() => <ul class="b-switch">{others.map((r) => <li key={r.id}>
-        <button type="button" class={r.id === data.run.id ? "u-on" : ""} onClick={() => onRun(r.id)}>
+        <button type="button" class={r.id === data.run.id ? "u-on" : ""}
+                onClick={() => { setSwitching(false); if (r.id !== data.run.id) onRun(r.id); }}>
           <b>{r.name}</b><span class="u-small">{r.created.slice(0, 10)} · {runCounts(r)}</span></button></li>)}</ul>}
     </Popover>}
   </div>;
@@ -136,6 +139,9 @@ function Result({map, data, line, nav, wide, back, hashOf, linkOf, runs, onRun, 
       if (!wideRef.current) setSnap((s) => s === "full" ? "half" : s);
     });
   }, [model, view]);
+
+  // Measuring on a phone: the sheet goes down, the map is where the points are clicked
+  useEffect(() => view?.onMeasuring((on) => { if (on && !wideRef.current) setSnap("peek"); }), [view]);
 
   const reveal = (l: Line) => { if (view && !view.inView(l)) view.zoomTo(l, padding()); };
   const zoom = (l: Line) => view?.zoomTo(l, padding());

@@ -1,5 +1,5 @@
 import type { GeoJSON } from "geojson";
-import type { Favourite } from "../favourites";
+import type { Favourite, FavouriteFolder } from "../favourites";
 
 // Requests to the local server (web.py). Changing requests carry the session token
 // of the page, which a foreign website cannot read or set.
@@ -157,7 +157,13 @@ export const api = {
   share: (id: string) => call<{url: string}>("POST", `/api/runs/${encodeURIComponent(id)}/share`),
   unshare: (id: string) => call<{ok: boolean}>("DELETE", `/api/runs/${encodeURIComponent(id)}/share`),
   deleteRun: (id: string) => call<{ok: boolean}>("DELETE", `/api/runs/${encodeURIComponent(id)}`),
-  favourites: () => call<{favourites: Favourite[]}>("GET", "/api/favourites"),
+  favourites: () => call<{favourites: Favourite[]; folders: FavouriteFolder[]}>("GET", "/api/favourites"),
+  moveFavourite: (run: string, line: string, folder: number | null) =>
+    call<{ok: boolean}>("POST", `/api/runs/${encodeURIComponent(run)}/favourites/folder`, {line, folder}),
+  addFolder: (name: string, parent: number | null) => call<{id: number}>("POST", "/api/favourites/folders", {name, parent}),
+  changeFolder: (id: number, change: {name?: string; parent?: number | null}) =>
+    call<{ok: boolean}>("POST", `/api/favourites/folders/${id}`, change),
+  deleteFolder: (id: number) => call<{folders: number; favourites: number}>("DELETE", `/api/favourites/folders/${id}`),
   unfavourite: (run: string, line: string) =>
     call<{ok: boolean}>("POST", `/api/runs/${encodeURIComponent(run)}/favourites`, {line, favourite: false}),
   osm: (lat: number, lon: number) => call<OsmState>("GET", `/api/osm?lat=${lat}&lon=${lon}`),

@@ -4,7 +4,7 @@
 // own runs; confirmed in the card). The usage meters on top, and the old app's notice when no worker runs.
 
 import type { ComponentChildren } from "preact";
-import { useState } from "preact/hooks";
+import { useEffect, useRef, useState } from "preact/hooks";
 import { api, user, type RunListed, type Usage } from "../api";
 import { beingSaved, FINISHED, jobProgress, type JobsState, type JobView } from "../useJobs";
 import { Button, Progress, StatusChip } from "../../ui/components";
@@ -75,8 +75,16 @@ function RunCard({run, jobId, sharing, onShow, onEdit, onDeleted}:
   const [shared, setShared] = useState(run.shared);
   const [asking, setAsking] = useState(false);
   const [error, setError] = useState("");
+  const card = useRef<HTMLElement>(null);
+  const asked = useRef(false);
+  // The confirmation takes the focus ("Keep"); answered or dismissed, it goes back to "Delete"
+  useEffect(() => {
+    if (asking) card.current?.querySelector<HTMLElement>(".b-confirm-keep")?.focus();
+    else if (asked.current) card.current?.querySelector<HTMLElement>(".b-delete")?.focus();
+    asked.current = asking;
+  }, [asking]);
   const remove = () => api.deleteRun(run.id).then(() => onDeleted(run.id), (e) => setError(e.message));
-  return <article class="b-card b-done" data-run={run.id}>
+  return <article class="b-card b-done" data-run={run.id} ref={card}>
     <div class="b-card-head">
       <StatusChip status={shared ? "shared" : "done"}>{shared ? "Shared" : "Done"}</StatusChip>
       <b class="b-card-title">{run.name}</b><span class="u-small">{when(run.created)}</span></div>
@@ -89,10 +97,11 @@ function RunCard({run, jobId, sharing, onShow, onEdit, onDeleted}:
         <ShareRun runId={run.id} run={{...run, shared}} align="left" onChange={setShared} />}
       {sharing && run.own && !asking && <Button kind="ghost" class="b-delete" onClick={() => setAsking(true)}>Delete</Button>}
     </div>
-    {asking && <div class="b-confirm" role="alertdialog" aria-label="Delete the run">
+    {asking && <div class="b-confirm" role="alertdialog" aria-label="Delete the run"
+                    onKeyDown={(e) => { if (e.key === "Escape") { e.preventDefault(); setAsking(false); } }}>
       <span class="u-grow">Delete “{run.name}” and its files? This cannot be undone.</span>
       <Button kind="danger" onClick={remove}>Delete</Button>
-      <Button kind="ghost" onClick={() => setAsking(false)}>Keep</Button>
+      <Button kind="ghost" class="b-confirm-keep" onClick={() => setAsking(false)}>Keep</Button>
     </div>}
     {error && <p class="b-card-error" role="alert">{error}</p>}
   </article>;

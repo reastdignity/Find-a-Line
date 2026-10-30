@@ -18,7 +18,7 @@ import { Home, type RunsState } from "./Home";
 import { NewSearch } from "./NewSearch";
 import { ResultPage } from "./ResultPage";
 import { go, parseRoute, type Route } from "./route";
-import { Trip } from "./Trip";
+import { FavouritesPage } from "./FavouritesPage";
 import "./c.css";
 
 type Nav = "home" | "favourites" | "account";
@@ -81,7 +81,8 @@ export interface ShellProps {
 
 export function AppC() {
   return <ShellC ui="u-app-c" tries={TRIES_C}
-                 result={({id, line, editJob, wide}) => <ResultPage key={id} id={id} line={line} editJob={editJob} wide={wide} />} />;
+                 result={({id, line, nav, editJob, wide}) =>
+                   <ResultPage key={id} id={id} line={line} nav={nav} editJob={editJob} wide={wide} />} />;
 }
 
 export function ShellC({ui, tries, result}: ShellProps) {
@@ -134,7 +135,8 @@ export function ShellC({ui, tries, result}: ShellProps) {
       page = result({id: route.id, line: route.line, nav: navs, editJob, wide});
       break;
     case "favourites":
-      page = <div class="c-page"><Panel title="Favourite lines" class="c-favs c-favs-page"><Trip full /></Panel></div>;
+      page = <div class="c-page c-page-wide"><Panel title="Favourite lines" class="c-favs c-favs-page">
+        <FavouritesPage wide={wide} /></Panel></div>;
       break;
     case "account":
       page = <div class="c-page"><Panel title="Account"><AccountBody theme={theme} setTheme={setTheme} tries={tries} /></Panel></div>;

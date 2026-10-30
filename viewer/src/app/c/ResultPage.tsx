@@ -26,6 +26,7 @@ interface ViewProps {
   model: ResultModel;
   data: RunData;
   line: string | null;
+  nav: number;
   editJob: string | null;
 }
 
@@ -57,20 +58,24 @@ function useResultMap(model: ResultModel, data: RunData, padding: () => Padding)
 }
 
 /** The selection follows the hash's line, and the hash follows the selection. */
-function useLinkedLine(model: ResultModel, line: string | null, view: ResultMap | null, padding: () => Padding) {
+function useLinkedLine(model: ResultModel, line: string | null, view: ResultMap | null, padding: () => Padding,
+                       nav = 0) {
   useEffect(() => {
     if (!view || !line) return;
     const sel = model.selected?.line;
     if (sel && model.runOf(sel) === model.runId && model.lineLink(sel) === line) return;
     const found = model.openLinked(line);
     if (found) view.zoomTo(found, padding(), false);
-  }, [line, view]);
+  }, [line, view, nav]);  // nav: Back or Forward to the same link opens it again
   useEffect(() => model.subscribe(() => {
     const sel = model.selected?.line;
     const want = sel && model.runOf(sel) === model.runId ? model.lineLink(sel) : null;
     const now = parseRoute(location.hash);
     if (now.page !== "run" || now.id !== model.runId || now.line === want) return;
-    if (!want && now.line) return;  // nothing selected: the link stays (e.g. a line hidden by the filters)
+    if (!want && now.line) {  // nothing selected: the link stays for a line hidden by the filters only
+      const linked = model.lines.find((l) => model.lineLink(l) === now.line);
+      if (linked && !model.groupOf(linked)) return;
+    }
     history.replaceState(history.state, "", runHash(model.runId, want));
   }), [model]);
 }
@@ -82,12 +87,12 @@ function Title({data}: {data: RunData}) {
   </div>;
 }
 
-function Desktop({model, data, line, editJob}: ViewProps) {
+function Desktop({model, data, line, nav, editJob}: ViewProps) {
   useModel(model);
   const [measured, setMeasured] = useState<Line | null>(null);
   const padding = (): Padding => ({top: 24, right: 24, bottom: 24, left: 24});
   const {ref, view} = useResultMap(model, data, padding);
-  useLinkedLine(model, line, view, padding);
+  useLinkedLine(model, line, view, padding, nav);
   useEffect(() => {  // a new selection ends a measurement
     let last = model.selected?.line;
     return model.subscribe(() => {
@@ -124,13 +129,13 @@ function Desktop({model, data, line, editJob}: ViewProps) {
   </div>;
 }
 
-function Phone({model, data, line, editJob}: ViewProps) {
+function Phone({model, data, line, nav, editJob}: ViewProps) {
   useModel(model);
   const [measured, setMeasured] = useState<Line | null>(null);
   const [snap, setSnap] = useState<Snap>("half");
   const padding = (): Padding => ({top: 64, right: 0, bottom: Math.round(innerHeight * 0.5), left: 0});
   const {ref, view} = useResultMap(model, data, padding);
-  useLinkedLine(model, line, view, padding);
+  useLinkedLine(model, line, view, padding, nav);
   useEffect(() => {  // a new selection ends a measurement and shows the line in the sheet
     let last = model.selected?.line;
     return model.subscribe(() => {
@@ -143,6 +148,8 @@ function Phone({model, data, line, editJob}: ViewProps) {
       setSnap((s) => s === "full" ? "half" : s);
     });
   }, [model, view]);
+  // Measuring: the sheet goes down, the map is where the points are clicked
+  useEffect(() => view?.onMeasuring((on) => { if (on) setSnap("peek"); }), [view]);
   const reveal = (l: Line) => { if (view && !view.inView(l)) view.zoomTo(l, padding()); };
   const zoom = (l: Line) => view?.zoomTo(l, padding());
   const measuredNow = (l: Line | null) => { setMeasured(l); if (l) setSnap("half"); };
@@ -171,7 +178,8 @@ function Phone({model, data, line, editJob}: ViewProps) {
   </div>;
 }
 
-export function ResultPage({id, line, editJob, wide}: {id: string; line: string | null; editJob: string | null; wide: boolean}) {
+export function ResultPage({id, line, nav = 0, editJob, wide}: {id: string; line: string | null; nav?: number;
+                                                               editJob: string | null; wide: boolean}) {
   const [data, setData] = useState<RunData | null>(null);
   const [error, setError] = useState("");
   useEffect(() => {
@@ -183,6 +191,6 @@ export function ResultPage({id, line, editJob, wide}: {id: string; line: string 
   if (error) return <div class="c-page"><Button kind="ghost" icon="back" href="#home">Home</Button>
     <p class="c-error">{error}</p></div>;
   if (!data || !model) return <div class="c-page"><p class="u-small">Loading the run…</p></div>;
-  const props = {model, data, line, editJob};
+  const props = {model, data, line, nav, editJob};
   return wide ? <Desktop key="wide" {...props} /> : <Phone key="phone" {...props} />;
 }
