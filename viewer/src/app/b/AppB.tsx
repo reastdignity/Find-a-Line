@@ -48,8 +48,8 @@ function Account({theme, onTheme}: {theme: Theme; onTheme(theme: Theme): void}) 
     <div class="b-account-links">
       {canReport() && <button type="button" class="b-report" onClick={() => openReport()}>Report a problem</button>}
       {!user.local && <><a href="/privacy" target="_blank">Privacy</a><a href="/about" target="_blank">About and data licences</a></>}
-      <a href={uiHref("c")}>Try C</a>
-      <a href={uiHref("d")}>Try D</a>
+      <a href={uiHref("c")}>Try interface C</a>
+      <a href={uiHref("d")}>Try interface D</a>
     </div>
     {!user.local && <button type="button" class="u-btn u-ghost b-signout"
                             onClick={() => api.logout().finally(() => { location.href = "/"; })}>Sign out</button>}

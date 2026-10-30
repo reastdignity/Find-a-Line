@@ -306,7 +306,7 @@ run({
 
 @pytest.mark.skipif(not os.path.exists(EDGE), reason="needs Microsoft Edge")
 def test_shell_d_desktop(data, tmp_path):
-    """C's home with the runs as cards and its account menu (Try B, Try C); New search returns home
+    """C's home with the runs as cards and its account menu (Try interface B, Try interface C); New search returns home
     with the new card, which runs and turns done; its card opens B's result on a full-screen map: the panel on
     the right, the profile docked at the bottom left of it, "‹ Home", Edit & run again and the run's actions,
     sorted by clearance, the map's controls dark in the dark theme (focused and disabled too); a row selects its line (details under the row, the profile in the dock, the hash),
@@ -317,7 +317,7 @@ def test_shell_d_desktop(data, tmp_path):
         r = _edge(port, page + "?ui=d", tmp_path / "edge")
     assert "timeout" not in r and "error" not in r, json.dumps(r)
     assert set(r["home"][0]) == {SMALL, BIG} and r["home"][1] and r["home"][2], r
-    assert all(t in r["account"] for t in ("Try B", "Try C")) and "Try D" not in r["account"], r
+    assert all(t in r["account"] for t in ("Try interface B", "Try interface C")) and "Try interface D" not in r["account"], r
     assert "Old interface" not in r["account"], r
     assert r["newPage"] == ["#new", "Typical highline"] and r["started"][1] == "waiting" and r["done"] == 1, r
     assert r["leave"] == {"closed": [False, True], "shownAgain": True, "reselected": [True, True], "escaped": True,
