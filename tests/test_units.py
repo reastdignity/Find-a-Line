@@ -230,6 +230,137 @@ def test_prominence_matches_flooding():
     assert np.allclose(fast, slow, equal_nan=True) and np.nanmax(fast) > 3
 
 
+def _old_prominence(elevation, anchors, res, span):
+    """terrain.prominence before 2026-10-31: the union-find over every pixel of the grid."""
+    import math
+
+    import terrain
+    from numba import njit
+
+    @njit
+    def run(z, order, anchor_pixel, span):
+        h, w = z.shape
+        n = h * w
+        parent = np.full(n, -1, dtype=np.int32)
+        size = np.ones(n, dtype=np.int32)
+        r0, r1 = np.empty(n, dtype=np.int32), np.empty(n, dtype=np.int32)
+        c0, c1 = np.empty(n, dtype=np.int32), np.empty(n, dtype=np.int32)
+        big = np.zeros(n, dtype=np.bool_)
+        head, tail = np.full(n, -1, dtype=np.int32), np.full(n, -1, dtype=np.int32)
+        first = np.full(n, -1, dtype=np.int32)
+        nxt = np.full(anchor_pixel.size, -1, dtype=np.int32)
+        result = np.full(anchor_pixel.size, np.nan)
+        for a in range(anchor_pixel.size):
+            p = anchor_pixel[a]
+            nxt[a] = first[p]
+            first[p] = a
+        for k in range(order.size):
+            p = order[k]
+            level = np.float64(z.flat[p])
+            r, c = p // w, p % w
+            parent[p] = p
+            r0[p], r1[p], c0[p], c1[p] = r, r, c, c
+            big[p] = span <= 1
+            if first[p] >= 0:
+                head[p] = first[p]
+                last = first[p]
+                while nxt[last] >= 0:
+                    last = nxt[last]
+                tail[p] = last
+            root = p
+            for dr in (-1, 0, 1):
+                for dc in (-1, 0, 1):
+                    rr, cc = r + dr, c + dc
+                    if (dr == 0 and dc == 0) or rr < 0 or cc < 0 or rr >= h or cc >= w:
+                        continue
+                    q = rr * w + cc
+                    if parent[q] < 0:
+                        continue
+                    other = terrain._find(parent, q)
+                    if other == root:
+                        continue
+                    if size[other] > size[root]:
+                        root, other = other, root
+                    parent[other] = root
+                    size[root] += size[other]
+                    r0[root], r1[root] = min(r0[root], r0[other]), max(r1[root], r1[other])
+                    c0[root], c1[root] = min(c0[root], c0[other]), max(c1[root], c1[other])
+                    big[root] = big[root] or big[other]
+                    if head[other] >= 0:
+                        if head[root] >= 0:
+                            nxt[tail[root]] = head[other]
+                        else:
+                            head[root] = head[other]
+                        tail[root] = tail[other]
+                        head[other] = -1
+            if not big[root] and (r1[root] - r0[root] + 1 >= span or c1[root] - c0[root] + 1 >= span):
+                big[root] = True
+            if big[root] and head[root] >= 0:
+                a = head[root]
+                while a >= 0:
+                    result[a] = np.float64(z.flat[anchor_pixel[a]]) - level
+                    a = nxt[a]
+                head[root] = -1
+        return result
+
+    z = np.ascontiguousarray(elevation, dtype=np.float32)
+    flat = z.ravel()
+    valid = np.flatnonzero(~np.isnan(flat))
+    order = valid[np.argsort(-flat[valid], kind="stable")]
+    pixels = anchors[:, 0] * z.shape[1] + anchors[:, 1]
+    return run(z, order.astype(np.int64), pixels, max(1, math.ceil(span / res)))
+
+
+def _old_drop(elevation, anchors, res, radius):
+    """terrain.drop before 2026-10-31: two minimum filters of scipy over the whole grid."""
+    import math
+
+    from scipy import ndimage
+    size = 2 * max(1, math.ceil(radius / res)) + 1
+    z = np.where(np.isnan(elevation), np.inf, np.asarray(elevation, dtype=np.float32))
+    lowest = ndimage.minimum_filter1d(z, size, axis=1, mode="constant", cval=np.inf)
+    lowest = ndimage.minimum_filter1d(lowest, size, axis=0, mode="constant", cval=np.inf)
+    e = np.asarray(elevation[anchors[:, 0], anchors[:, 1]], dtype=np.float64)
+    return e - lowest[anchors[:, 0], anchors[:, 1]].astype(np.float64)
+
+
+@pytest.mark.parametrize("seed", [0, 1, 2])
+def test_prominence_and_drop_match_the_whole_grid(seed):
+    """Prominence over the windows of the anchors and the separable minimum of the drop give
+    exactly the values of the union-find and the filters over the whole grid: random terrain
+    with ties, plateaus, holes, anchors at the edges, on holes and on one pixel together."""
+    import terrain
+    rng = np.random.default_rng(seed)
+    shape = [(70, 150), (131, 67), (40, 300)][seed]
+    z = np.round(rng.random(shape) * 40 + np.linspace(0, 30, shape[1]), 0).astype(np.float32)
+    z[10:25, 20:45] = 33                                      # a plateau
+    z[rng.random(shape) < 0.04] = np.nan
+    z[:, -3:] = np.nan                                        # a band without data
+    h, w = shape
+    picked = np.argwhere(rng.random(shape) < [0.003, 0.02, 0.1][seed])
+    edges = np.array([[0, 0], [h - 1, w - 1], [0, w - 4], [h - 1, 5], [h // 2, 0], [3, w - 1]])
+    anchors = np.vstack([picked, edges, picked[:4]])          # several anchors on one pixel
+    for res, span in [(1.0, 0.5), (1.0, 1), (1.0, 2), (1.0, 5), (2.0, 24), (1.0, 37), (0.5, 40), (1.0, 1000)]:
+        new = terrain.prominence(z, anchors, res, span)
+        assert np.array_equal(new, _old_prominence(z, anchors, res, span), equal_nan=True), (res, span)
+    for res, radius in [(1.0, 0.5), (1.0, 1), (1.0, 3), (2.0, 21), (1.0, 64), (1.0, 500)]:
+        new = terrain.drop(z, anchors, res, radius)
+        assert np.array_equal(new, _old_drop(z, anchors, res, radius), equal_nan=True), (res, radius)
+    assert np.isnan(terrain.prominence(z, anchors, 1.0, 5)[len(picked) + 5])  # an anchor without data
+    # The windows: the pixels with data within reach (Chebyshev) of an anchor, in either index type
+    by_row = np.lexsort((anchors[:, 1], anchors[:, 0]))
+    rows, cols = anchors[by_row, 0], anchors[by_row, 1]
+    starts = np.searchsorted(rows, np.arange(h + 1))
+    for reach in (0, 1, 7, 400):
+        near = np.zeros(shape, bool)
+        for r, c in anchors:
+            near[max(0, r - reach):r + reach + 1, max(0, c - reach):c + reach + 1] = True
+        expected = np.flatnonzero(near & ~np.isnan(z))
+        for kind in (np.int32, np.int64):
+            got = terrain._window(z, rows, cols, starts, reach, np.zeros(0, dtype=kind))
+            assert got.dtype == kind and np.array_equal(got, expected), (reach, kind)
+
+
 def test_prominence_and_drop_of_a_tower():
     """A 30 m cone on a plain next to a wall: an anchor on the cone has its height above the
     plain, the edge of the wall none; the drop is the height above the lowest ground near."""

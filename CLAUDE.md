@@ -32,7 +32,7 @@ Finds possible highlines in elevation data: anchors on steep pixels, every pair 
 | `coast.py` | Sea mask: OSM coastline (theme tiles from Overpass or extracts, or the world file) or the Copernicus water mask |
 | `grid.py` | Working grid (metric CRS: the source's, or the UTM zone of the centre, `Source.local_crs`: NAD83 / UTM for the USA, `nad83_utm_crs`; edges on the source's pixel edges, `Source.grid_origin`) |
 | `helpers.py` | Anchors, line evaluation (DDA), line profiles, webbing heights, wall angles, `LineLimits`; `LineTable`: the lines as numpy columns (and the profiles of the rows that have one) from `find_valid_lines` to the saved files, `row(k)` a line as a dict |
-| `terrain.py` | How far anchors stand out: prominence (union-find, numba) and drop |
+| `terrain.py` | How far anchors stand out: prominence (union-find, numba, over the pixels within the span of an anchor only: `_window`, the others cannot change it) and drop (separable van Herk minimum, numba parallel, the column pass at the anchors only); both equal the old whole-grid versions bit for bit (`tests/test_units.py::test_prominence_and_drop_match_the_whole_grid` keeps them) |
 | `linesearch.py` | The pair search (numba): free directions per anchor, bucketed pairs, early-exit line check |
 | `sag.py` | Sag estimator (elastic catenary + point load) and envelope table for `--model sag` |
 | `mapping.py` | Coordinates (`coordify` adds columns), grouping (`group_lines` → `Groups`: index arrays), matplotlib map; `save_map` writes a run's `map.html` + `data.js` + `lines.js` for the viewer, chunk by chunk from the columns |
