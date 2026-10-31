@@ -688,7 +688,7 @@ def test_layers_downloaded_in_one_pool(tmp_path, monkeypatch, capsys):
 
 
 _CHILD = r'''
-import os, sys, threading, time
+import os, sys, threading, time, uuid
 sys.path.insert(0, sys.argv[1])
 import sources as src
 cache_dir, log, mode = sys.argv[2], sys.argv[3], sys.argv[4]
@@ -696,12 +696,16 @@ open(os.path.join(log, f"ready-{os.getpid()}"), "w").close()
 while len([n for n in os.listdir(log) if n.startswith("ready-")]) < 2:
     time.sleep(0.02)
 
+def note(folder, text):
+    """A line of the log as a file of its own: appends of two processes to one file may be lost (Windows)."""
+    with open(os.path.join(log, folder, uuid.uuid4().hex), "w") as f:
+        f.write(text)
+
 def busy():
     """While here: a file of its own in log/busy, the count of all of them noted."""
     mine = os.path.join(log, "busy", f"{os.getpid()}-{threading.get_ident()}")
     open(mine, "w").close()
-    with open(os.path.join(log, "counts"), "a") as f:
-        f.write(f"{len(os.listdir(os.path.join(log, 'busy')))}\n")
+    note("counts", str(len(os.listdir(os.path.join(log, "busy")))))
     time.sleep(0.15)
     os.remove(mine)
 
@@ -711,8 +715,7 @@ class Tiles(src.Layer):
     def tile_path(self, cache_dir, tile): return os.path.join(cache_dir, self.folder, f"{tile}.tif")
     def tile_url(self, tile): return f"https://shared.example/{tile}"
     def download_tile(self, tile, path):
-        with open(os.path.join(log, "fetched"), "a") as f:
-            f.write(f"{tile}\n")
+        note("fetched", str(tile))
         time.sleep(0.3)
         with open(path + ".part", "wb") as f:
             f.write(b"x")
@@ -738,7 +741,8 @@ def _two_processes(tmp_path, mode):
     import subprocess
     script, log = tmp_path / "child.py", tmp_path / "log"
     script.write_text(_CHILD, encoding="utf-8")
-    (log / "busy").mkdir(parents=True)
+    for folder in ("busy", "counts", "fetched"):
+        (log / folder).mkdir(parents=True, exist_ok=True)
     repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     children = [subprocess.Popen([sys.executable, str(script), repo, str(tmp_path / "cache"), str(log), mode])
                 for _ in range(2)]
@@ -749,7 +753,7 @@ def _two_processes(tmp_path, mode):
 def test_host_slots_across_threads_and_processes(tmp_path):
     """At most HOST_SLOTS_OF[host] downloads from one host at once, over the threads of two processes."""
     log = _two_processes(tmp_path, "hosts")
-    counts = [int(n) for n in (log / "counts").read_text().split()]
+    counts = [int(f.read_text()) for f in (log / "counts").iterdir()]
     assert len(counts) == 18 and max(counts) == 2          # two at once: the limit, and used
     assert len(os.listdir(tmp_path / "cache" / "locks" / "hosts")) <= 2
 
@@ -758,7 +762,7 @@ def test_tile_downloaded_once_by_two_processes(tmp_path):
     """Two searches over the same tiles: each tile is downloaded once, the other process waits and skips it."""
     import cache
     log = _two_processes(tmp_path, "tiles")
-    fetched = (log / "fetched").read_text().split()
+    fetched = [f.read_text() for f in (log / "fetched").iterdir()]
     assert sorted(fetched) == [str(t) for t in range(6)]
     cache_dir = str(tmp_path / "cache")
     assert {cache.state(cache_dir, os.path.join(cache_dir, "fake", "shared", f"{t}.tif")) for t in range(6)} == {"ok"}
