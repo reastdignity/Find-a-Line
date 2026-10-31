@@ -50,7 +50,7 @@
 .ui.b-app .b-menu-button { width: 44px; height: 44px; border-radius: 50%; background: var(--surface); box-shadow: var(--shadow); flex: none; }
 .ui.b-app .b-top-title { display: inline-flex; align-items: center; gap: 8px; min-height: 44px; padding: 0 14px 0 10px; border-radius: 999px;
   background: var(--surface); box-shadow: var(--shadow); font-weight: 600; min-width: 0; white-space: nowrap; }
-.ui.b-app .b-top-title svg { width: 28px; height: 18px; }
+.ui.b-app .b-top-title .u-logomark { width: 26px; height: 26px; }
 .ui.b-app .b-top-jobs { display: inline-flex; align-items: center; gap: 6px; min-height: 36px; margin-left: auto; padding: 0 12px;
   border: 0; border-radius: 999px; background: var(--surface); color: var(--ink-2); box-shadow: var(--shadow); font: 500 13px var(--font); cursor: pointer; }
 

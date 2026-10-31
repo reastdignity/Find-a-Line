@@ -1412,7 +1412,8 @@ def test_privacy_and_about_pages(run_people):
     """The privacy and about pages: for anyone, server-rendered (no script, no inline style), linked
     from the anonymous page and the app; privacy states what is stored, for how long, that
     administrators open private runs and that orthophoto tiles are open, with the contact; about
-    names every source's credits and OpenStreetMap."""
+    names every source's credits and OpenStreetMap. They and the sign-in page show the app's logo
+    (dist/logo.svg, the name as text for screen readers) and link its favicon."""
     import sources as src
     anonymous, a = run_people["anonymous"], run_people["a"]
     privacy = anonymous.get("/privacy")
@@ -1430,6 +1431,11 @@ def test_privacy_and_about_pages(run_people):
     assert "OpenStreetMap contributors" in about.text and "ODbL" in about.text
     page = anonymous.get("/").text
     assert "href=\"/privacy\"" in page and "href=\"/about\"" in page
+    for html in (privacy.text, about.text, page):
+        assert web.LOGO_SVG.startswith("<svg") and web.LOGO_SVG in html and '>Find-a-Line</span>' in html
+        assert '<link rel="icon" href="/app/favicon.svg" type="image/svg+xml">' in html
+    favicon = anonymous.get("/app/favicon.svg")
+    assert favicon.status_code == 200 and favicon.headers["content-type"].startswith("image/svg+xml")
     bundle = a.get("/app/app.js").text
     assert "/privacy" in bundle and "/about" in bundle
 

@@ -17,6 +17,7 @@
   border-bottom: 1px solid var(--line); position: relative; z-index: 10; }
 .ui .c-top-phone { min-height: 52px; padding: 0 16px; }
 .ui .c-logo { text-decoration: none; display: inline-flex; }
+.ui .c-top:not(.c-top-phone) .c-logo .u-logo { font-size: 24px; }  /* the desktop header: the logo 10% larger */
 .ui .c-nav { display: flex; gap: 4px; }
 .ui .c-nav-item { display: inline-flex; align-items: center; gap: 6px; min-height: 38px; padding: 0 12px; border-radius: 8px;
   color: var(--ink-2); text-decoration: none; font-weight: 500; }

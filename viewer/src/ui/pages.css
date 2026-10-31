@@ -6,10 +6,8 @@
 .ui .p-signin { max-width: 680px; }
 .ui .p-brand { display: flex; flex-direction: column; align-items: center; gap: 6px; text-align: center; }
 .ui .p-brand .u-logo { font-size: 30px; text-decoration: none; }
-.ui .p-brand .u-logo svg { width: 40px; height: 24px; }
 .ui .p-doc .p-brand { align-items: flex-start; }
 .ui .p-doc .p-brand .u-logo { font-size: 22px; }
-.ui .p-doc .p-brand .u-logo svg { width: 30px; height: 18px; }
 .ui .p-lead { margin: 0; color: var(--ink-2); font-size: 15px; }
 .ui .p-card { background: var(--surface); border: 1px solid var(--line); border-radius: 14px; box-shadow: var(--shadow);
   padding: 22px 24px; display: flex; flex-direction: column; gap: 12px; min-width: 0; }

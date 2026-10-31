@@ -40,7 +40,8 @@ ACCOUNTS = {"FINDALINE_SESSION_SECRET": "ui-shots-" * 5, "FINDALINE_GITHUB_CLIEN
 # name -> (interface ("map": the run's map.html, "shared": it by its share link), hash, actions after loading or None: a CSS selector to click, "scroll:<selector>" to
 # scroll that element (or the page) to its end, "low:<selector>" to click the last one scrolled to the
 # bottom of its panel (a "?" near the bottom: its bubble opens upwards), or a list of such steps[, the user:
-# "admin" (default) or "walker", an approved user with the site's limits]); "{run}" is the clip's run
+# "admin" (default), "walker", an approved user with the site's limits, or "visitor", not signed in]);
+# "{run}" is the clip's run; an interface starting with "/" is a path of web.py's server-rendered pages
 MORE = [".s-more-head", ".s-topic:nth-of-type(2) > summary"]  # More settings, Anchors opened (Lines is)
 PAGES = {
     "d-home": ("d", "", None),
@@ -72,6 +73,9 @@ PAGES = {
     "map": ("map", "", None),
     "map-line": ("map", "", ".r-rows .r-row"),  # a spot selected: its details and profile
     "map-shared": ("shared", "", None),
+    "page-signin": ("/", "", None, "visitor"),
+    "page-privacy": ("/privacy", "", None),
+    "page-about": ("/about", "", None),
 }
 
 # The "low:" step: the last matching element is scrolled to just above the bottom of the visible part of
@@ -219,11 +223,14 @@ def main():
                                                       for intro in INTROS) + "} catch (e) {}")
                     for name, (ui, hash_, steps, *who) in pages.items():
                         context.clear_cookies()
-                        context.add_cookies([{"name": "__Host-findaline", "value": cookies[who[0] if who else "admin"],
-                                              "domain": "localhost", "path": "/", "secure": True, "httpOnly": True,
-                                              "sameSite": "Lax"}])
+                        user = who[0] if who else "admin"
+                        if user != "visitor":
+                            context.add_cookies([{"name": "__Host-findaline", "value": cookies[user],
+                                                  "domain": "localhost", "path": "/", "secure": True,
+                                                  "httpOnly": True, "sameSite": "Lax"}])
                         page = context.new_page()  # a fresh page each: no menu or route of the one before
-                        start = {"map": f"/runs/{run}/map.html", "shared": f"/s/{share}/map.html"}.get(ui, f"/?ui={ui}")
+                        start = {"map": f"/runs/{run}/map.html", "shared": f"/s/{share}/map.html"}.get(
+                            ui, ui if ui.startswith("/") else f"/?ui={ui}")
                         page.goto(f"{site}{start}{hash_.format(run=run)}")
                         page.wait_for_timeout(2500)  # the event stream stays open: no "network idle"
                         try:  # the maps' tiles (OpenTopoMap can be slow): an empty map is no finding

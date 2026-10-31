@@ -1,5 +1,7 @@
-// The icon set of the new interfaces (24×24, stroked with currentColor) and the Find-a-Line mark.
+// The icon set of the new interfaces (24×24, stroked with currentColor) and the Find-a-Line logo.
 // The paths are static markup (no style attributes), so setting them as innerHTML is safe under the CSP.
+import LOGO_SVG from "./logo/logo.svg";
+import MARK_SVG from "./logo/mark.svg";
 
 export const ICONS = {
   search: '<circle cx="11" cy="11" r="7"/><path d="M20 20l-4-4"/>',
@@ -49,14 +51,16 @@ export function Icon({name, class: cls = "", title, fav}: {name: IconName; class
               dangerouslySetInnerHTML={{__html: markup}} />;
 }
 
-/** The mark: a line between two anchors. */
+/** The mark (logo/mark.svg): an A-frame in perspective, the line rising from an anchor on the ground,
+ *  hung under the frame and running off into the distance. Coloured by the tokens (ui.css). */
 export function LogoMark() {
-  return <svg viewBox="0 0 32 20" aria-hidden="true">
-    <path class="u-lg" d="M3 5 Q16 15 29 5" /><circle cx="3" cy="5" r="2.6" /><circle cx="29" cy="5" r="2.6" />
-  </svg>;
+  return <span class="u-lw" dangerouslySetInnerHTML={{__html: MARK_SVG}} />;
 }
 
-/** The logo: the mark and the name (`name={false}`: the mark only). */
+/** The logo (`name={false}`: the mark only): logo/logo.svg, "Find" in outlines and the line of the mark
+ *  writing "line"; the name stays as text for screen readers. web.py's pages take the same file from dist/. */
 export function Logo({name = true}: {name?: boolean}) {
-  return <span class="u-logo"><LogoMark />{name && "Find-a-Line"}</span>;
+  if (!name) return <span class="u-logo"><LogoMark /></span>;
+  return <span class="u-logo"><span class="u-lw" dangerouslySetInnerHTML={{__html: LOGO_SVG}} />
+    <span class="u-sr">Find-a-Line</span></span>;
 }

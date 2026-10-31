@@ -15,10 +15,17 @@
 /* Icons and the logo */
 .ui .u-ic { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; flex: none; }
 .ui .u-ic.u-fav { fill: var(--fav); stroke: var(--fav); }
-.ui .u-logo { display: inline-flex; align-items: center; gap: 8px; font: 700 22px/1 var(--display); letter-spacing: .01em; color: var(--ink); }
-.ui .u-logo svg { width: 30px; height: 18px; flex: none; }
-.ui .u-logo .u-lg { fill: none; stroke: var(--clear); stroke-width: 2.4; }
-.ui .u-logo circle { fill: var(--ink); }
+/* The logo (ui/logo/*.svg) scales with the font size: the word of 186.87 × 50 units has its capitals as
+   tall as those of 22px text at 1.25em; the colours are classes of its shapes (ink and the line) */
+.ui .u-logo { display: inline-flex; align-items: center; position: relative; font-size: 22px; line-height: 1; color: var(--ink); }
+.ui .u-lw { display: contents; }
+.ui .u-logo svg { display: block; flex: none; }
+.ui .u-logo .u-wordmark { width: 4.672em; height: 1.25em; }
+.ui .u-logo .u-logomark { width: 1.3em; height: 1.3em; }
+.ui .u-li { fill: var(--ink); }
+.ui .u-ls { stroke: var(--ink); }
+.ui .u-ll { stroke: var(--clear); }
+.ui .u-lf { fill: var(--clear); }
 
 /* Layout helpers and text */
 .ui .u-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
@@ -171,7 +178,7 @@
 .ui .u-rail-item.u-on { background: var(--accent-soft); color: var(--accent); }
 .ui .u-rail-item .u-ic { width: 20px; height: 20px; }
 .ui .u-rail-item .u-badge, .ui .u-bnav-item .u-badge { position: absolute; top: 2px; left: calc(50% + 4px); }
-.ui .u-mark svg { width: 34px; height: 22px; }
+.ui .u-mark .u-logomark { width: 32px; height: 32px; }
 
 /* Bottom navigation (C on phones) */
 .ui .u-bnav { position: absolute; left: 0; right: 0; bottom: 0; min-height: 64px; padding-bottom: env(safe-area-inset-bottom, 0px);

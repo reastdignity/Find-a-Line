@@ -1387,6 +1387,7 @@ APP_HTML = """<!doctype html>
 <meta name="findaline-user" content="{user}">
 <meta name="findaline-contact" content="{contact}">
 <title>Find-a-Line</title>
+<link rel="icon" href="/app/favicon.svg" type="image/svg+xml">
 <link rel="stylesheet" href="/app/app.css">
 </head><body><div id="app"></div>
 <script src="/app/app.js"></script>
@@ -1394,9 +1395,10 @@ APP_HTML = """<!doctype html>
 """
 
 
-# The logo's mark (as LogoMark in viewer/src/ui/icons.tsx) and the providers' marks of the sign-in buttons
-LOGO_SVG = ('<svg viewBox="0 0 32 20" aria-hidden="true"><path class="u-lg" d="M3 5 Q16 15 29 5"/>'
-            '<circle cx="3" cy="5" r="2.6"/><circle cx="29" cy="5" r="2.6"/></svg>')
+# The logo, the file the app's Logo bundles (viewer/src/ui/logo/logo.svg, copied to dist/ by the build; its
+# colours are classes of ui.css), and the providers' marks of the sign-in buttons
+with open(os.path.join(APP_DIST, "logo.svg"), encoding="utf-8") as _logo:
+    LOGO_SVG = _logo.read().strip()
 PROVIDER_SVG = {
     "github": '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 0c4.42 0 8 3.58 8 8a8.013 8.013 0 0 1-5.45 '
               '7.59c-.4.08-.55-.17-.55-.38 0-.27.01-1.13.01-2.2 0-.75-.25-1.23-.54-1.48 1.78-.2 3.65-.88 3.65-3.95 '
@@ -1420,9 +1422,10 @@ PAGE_FOOTER = ('<footer class="p-footer"><a href="/">Find-a-Line</a><a href="/pr
 SIGNIN_HTML = """<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Find-a-Line</title>
+<link rel="icon" href="/app/favicon.svg" type="image/svg+xml">
 <link rel="stylesheet" href="/app/app.css">
 </head><body class="ui p-body"><main class="p-page p-signin">
-<header class="p-brand"><h1 class="u-logo">{logo}Find-a-Line</h1>
+<header class="p-brand"><h1 class="u-logo">{logo}<span class="u-sr">Find-a-Line</span></h1>
 <p class="p-lead">Finds possible highlines in elevation data.</p></header>
 {body}
 {footer}
@@ -1432,9 +1435,10 @@ SIGNIN_HTML = """<!doctype html>
 PAGE_HTML = """<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{title} · Find-a-Line</title>
+<link rel="icon" href="/app/favicon.svg" type="image/svg+xml">
 <link rel="stylesheet" href="/app/app.css">
 </head><body class="ui p-body"><main class="p-page p-doc">
-<header class="p-brand"><a class="u-logo" href="/">{logo}Find-a-Line</a></header>
+<header class="p-brand"><a class="u-logo" href="/">{logo}<span class="u-sr">Find-a-Line</span></a></header>
 <article class="p-card p-prose"><h1 class="u-h u-xl">{title}</h1>
 {body}
 </article>

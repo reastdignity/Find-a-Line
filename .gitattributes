@@ -1,5 +1,7 @@
 # The built viewer is compared byte for byte with a fresh build (tests/test_viewer.py)
 viewer/dist/** -text
+# The logo's files are copied into viewer/dist as they are, so they keep one line ending everywhere
+viewer/src/ui/logo/*.svg text eol=lf
 # Start scripts keep the line endings of their platform
 *.sh text eol=lf
 *.command text eol=lf

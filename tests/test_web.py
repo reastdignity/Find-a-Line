@@ -47,6 +47,7 @@ def test_guards(client, tmp_path):
     assert client.get("/cache/poland/index.sqlite").status_code == 404               # only orthophoto tiles
     page = client.get("/")
     assert TOKEN in page.text and "script-src 'self'" in page.headers["content-security-policy"]
+    assert 'href="/app/favicon.svg"' in page.text and client.get("/app/favicon.svg").status_code == 200
 
 
 def test_values_checked(client, tmp_path):
