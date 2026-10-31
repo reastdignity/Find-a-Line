@@ -1001,8 +1001,10 @@ run({
     });
   }); },
   select(next) {
+    // the linked line is selected: until the page is drawn again, the details are still its own
     rows()[0].click();
-    wait(() => $(".b-results .r-dtitle") && $(".b-dock .fal-profile-title"), () => {
+    wait(() => rows()[0].getAttribute("aria-selected") === "true" && $(".b-results .r-spot-sel .r-dtitle")
+                && $(".b-dock .fal-profile-title"), () => {
       result.profile = text(".b-dock .fal-profile-title");
       result.hash = decodeURIComponent(location.hash) === "#line=" + model().lineLink(model().selected.line);
       next();
@@ -1010,14 +1012,11 @@ run({
   },
   favourite(next) {
     result.favouritesOn = model().favouritesOn;
-    // the details are drawn again once the selection settled: the button of then, not of now
-    wait(() => $(".b-results .r-details .r-fav"), () => later(() => {
-      $(".b-results .r-details .r-fav").click();
-      wait(() => $(".r-pop .r-folder"), () => { $(".r-pop .r-folder").click(); until(1, (body) => {
-        result.favourite = body.lines[0] === model().lineLink(model().selected.line);
-        next();
-      }); });
-    }, 600));
+    $(".b-results .r-details .r-fav").click();
+    wait(() => $(".r-pop .r-folder"), () => { $(".r-pop .r-folder").click(); until(1, (body) => {
+      result.favourite = body.lines[0] === model().lineLink(model().selected.line);
+      next();
+    }); });
   },
   downloads(next) {
     button("Download").click();
