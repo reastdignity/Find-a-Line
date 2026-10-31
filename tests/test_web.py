@@ -267,6 +267,43 @@ def test_job_through_the_queue(tmp_path, monkeypatch):
     assert {"checking lines", "coordinates", "saving results", "saving the map"} <= stages, stages
 
 
+def test_two_jobs_computing_at_once(tmp_path, monkeypatch):
+    """With two compute slots two jobs compute at the same time in their own processes and both
+    save their runs; the slot's memory budget reaches the search of each phase (run_phase)."""
+    import search
+    from settings import Limits
+    _offline(monkeypatch)
+    jobs = Jobs(str(tmp_path))
+    params = {"elevation_file": os.path.join(DATA, "zabi_kon_nmt.tif"), "northing": 254608, "easting": 553966,
+              "radius": 150, "water": "off", "fill_gaps": "off", "ortho": "never"}
+    added = [jobs.add({"params": {**params, "name": f"Clip {i}"}, "geometry": None}, f"clip {i}") for i in range(2)]
+    scheduler = Scheduler(jobs, limits=Limits(compute_slots=2, download_slots=2))
+    assert scheduler.memory and scheduler.memory > 2 ** 28
+    scheduler.start()
+    try:
+        for job in added:
+            _wait(jobs, job, ("done", "failed", "cancelled"), 300)
+    finally:
+        scheduler.stop()
+    assert [jobs.get(job)["status"] for job in added] == ["done", "done"], [jobs.get(j)["error"] for j in added]
+    seq = {(job, e["data"]["status"]): e["seq"] for job in added for e in jobs.events(0, job) if e["kind"] == "status"}
+    assert seq[(added[1], "computing")] < seq[(added[0], "done")], seq  # the second computed beside the first
+
+    # The budget given to a phase process is the search's Plan.memory (and sizes its tiles)
+    seen = []
+
+    def plan_search(params, paths, on_event, limits=None, memory=None):
+        seen.append(memory)
+        raise ValueError("planned")
+    monkeypatch.setattr(search, "plan_search", plan_search)
+    monkeypatch.setattr(sys, "stdout", sys.stdout)  # run_phase sends it to the job's events
+    job = jobs.add({"params": params, "geometry": None}, "budget")
+    jobs.set(job, "downloading")
+    import jobs as jb
+    jb.run_phase(str(tmp_path), job, "download", Limits(), False, 123456789)
+    assert seen == [123456789] and jobs.get(job)["status"] == "failed"
+
+
 class _Ended:
     """A worker process that has ended."""
     exitcode = 0
@@ -286,13 +323,120 @@ def test_download_process_ending_late(tmp_path):
     jobs.set(job, "computing")
     from jobs import Running
     scheduler = Scheduler(jobs)
-    scheduler.running["download"] = Running(job, _Ended(), time.time())
-    scheduler.running["compute"] = Running(job, type("Alive", (), {"is_alive": lambda self: True})(), time.time())
+    scheduler.running["download"].append(Running(job, _Ended(), time.time()))
+    scheduler.running["compute"].append(Running(job, type("Alive", (), {"is_alive": lambda self: True})(), time.time()))
     scheduler._check()
-    assert jobs.get(job)["status"] == "computing"
-    scheduler.running["compute"] = Running(job, _Ended(), time.time())
+    assert jobs.get(job)["status"] == "computing" and not scheduler.running["download"]
+    scheduler.running["compute"] = [Running(job, _Ended(), time.time())]
     scheduler._check()
     assert jobs.get(job)["status"] == "failed"
+
+
+class _Phase:
+    """A fake process of a phase: alive until it is ended or killed (kill_tree finds no such pid)."""
+    started = []
+
+    def __init__(self, target=None, daemon=None, args=()):
+        self.args, self.alive, self.exitcode, self.pid = args, False, None, 2 ** 31 - 2
+
+    def start(self):
+        self.alive = True
+        _Phase.started.append(self)
+
+    def is_alive(self):
+        return self.alive
+
+    def join(self):
+        self.alive = False
+
+
+def test_slots_of_the_worker(tmp_path, monkeypatch):
+    """With Limits.compute_slots and download_slots the worker runs that many jobs of each phase
+    at once (1 and 1 by default); cancelling one of two running jobs kills only its process, a
+    phase over its time limit only its own, and each slot's process gets the slot's memory budget."""
+    import jobs as jb
+    import search
+    from settings import Limits
+    _Phase.started.clear()
+    assert Limits().compute_slots == 1 and Limits().download_slots == 1 and Limits.load(True).compute_slots == 1
+    monkeypatch.setenv("FINDALINE_LIMIT_COMPUTE_SLOTS", "3")
+    assert Limits.load(True).compute_slots == 3
+    monkeypatch.delenv("FINDALINE_LIMIT_COMPUTE_SLOTS")
+    monkeypatch.setattr(search, "available_memory", lambda: 20 * 2 ** 30)
+    jobs = Jobs(str(tmp_path))
+    added = [jobs.add({"params": {}, "geometry": None}, f"job {i}") for i in range(5)]
+    one = Scheduler(jobs)
+    assert one.slots == {"download": 1, "compute": 1} and one.memory is None  # locally: as before
+
+    scheduler = Scheduler(jobs, limits=Limits(compute_slots=2, download_slots=3, compute_seconds=60))
+    assert scheduler.memory == search.slot_memory(scheduler.limits) == int(
+        (20 * 2 ** 30 - search.MAX_MEASURED_PX ** 2 * search.PIXEL_BYTES - 3 * search.DOWNLOAD_PROCESS_BYTES) // 2)
+    monkeypatch.setattr(scheduler, "context", type("Spawn", (), {"Process": _Phase})())
+    scheduler._begin()
+    try:
+        scheduler._check()
+        downloading = [r.job_id for r in scheduler.running["download"]]
+        assert downloading == added[:3] and not scheduler.running["compute"]
+        assert all(jobs.get(j)["status"] == "downloading" for j in downloading)
+        assert all(p.args[2:] == ("download", scheduler.limits, False, scheduler.memory) for p in _Phase.started)
+        for job in added[:3]:  # their downloads end
+            jobs.set(job, "ready")
+        for running in scheduler.running["download"]:
+            running.process.alive = False
+        scheduler._check()
+        computing = [r.job_id for r in scheduler.running["compute"]]
+        assert computing == added[:2] and [r.job_id for r in scheduler.running["download"]] == added[3:]
+        assert jobs.get(added[2])["status"] == "ready"  # waits for a compute slot
+        assert scheduler.running["compute"][0].process.args[2:] == ("compute", scheduler.limits, False,
+                                                                    scheduler.memory)
+
+        # Cancelling one of the two computing jobs: its process only, then the next one takes the slot
+        first = scheduler.running["compute"][0].process
+        assert jobs.request_cancel(added[0])
+        scheduler._check()
+        assert jobs.get(added[0])["status"] == "cancelled" and not first.alive
+        assert [r.job_id for r in scheduler.running["compute"]] == [added[1], added[2]]
+        assert all(r.process.alive for r in scheduler.running["compute"])
+
+        # A phase over its time limit: only that one fails
+        late = scheduler.running["compute"][0]
+        scheduler.running["compute"][0] = late._replace(started=time.time() - 61)
+        scheduler._check()
+        assert jobs.get(added[1])["status"] == "failed" and jobs.get(added[1])["error"].startswith("time limit")
+        assert jobs.get(added[2])["status"] == "computing" and not late.process.alive
+        # A process that ended without a word fails its job only
+        scheduler.running["download"][0].process.alive = False
+        scheduler._check()
+        assert jobs.get(added[3])["status"] == "failed" and jobs.get(added[4])["status"] == "downloading"
+    finally:
+        scheduler.stop()
+    assert all(not p.alive for p in _Phase.started) and not any(scheduler.running.values())
+    assert jobs.get(added[2])["status"] == "failed" and jobs.get(added[2])["error"] == jb.INTERRUPTED
+    _Phase.started.clear()
+
+
+def test_fair_claiming(tmp_path):
+    """The worker takes the oldest waiting job of the user with the fewest jobs running (in any
+    phase, any worker); the local app's jobs (no user) count as one user's."""
+    jobs = Jobs(str(tmp_path))
+    a1, a2, a3 = (jobs.add({"params": {}, "geometry": None}, f"a{i}", user_id=1) for i in range(3))
+    b1, b2 = (jobs.add({"params": {}, "geometry": None}, f"b{i}", user_id=2) for i in range(2))
+    l1, l2 = (jobs.add({"params": {}, "geometry": None}, f"local{i}") for i in range(2))
+    order = []
+    while (job := jobs.claim("queued", "downloading")) is not None:
+        order.append(job["id"])
+    # a1 (all at 0, oldest), b1 (user 2 at 0), l1 (no user at 0), then a2, b2, l2 at 1 each, a3
+    assert order == [a1, b1, l1, a2, b2, l2, a3]
+    # A user's jobs computing count too, and a finished one does not
+    c1, c2 = (jobs.add({"params": {}, "geometry": None}, f"c{i}", user_id=3) for i in range(2))
+    d1 = jobs.add({"params": {}, "geometry": None}, "d1", user_id=4)
+    for job in (a1, a2, a3, b1, b2, l1, l2):
+        jobs.set(job, "done")
+    jobs.set(c1, "computing")
+    jobs.set(c2, "ready")
+    jobs.set(d1, "ready")
+    assert jobs.claim("ready", "computing")["id"] == d1  # user 3 has c1 computing
+    assert jobs.claim("ready", "computing")["id"] == c2
 
 
 def test_worker_leases(tmp_path):

@@ -7,8 +7,9 @@ opens the browser.
 - Jobs wait in a queue (jobs.py; jobs.sqlite in the data folder). The worker (jobs.Scheduler,
   in this process unless --no-worker, else `findaline.py worker`) runs each job in its own
   process, in two phases: downloading its data (search.download_data) and computing
-  (the search itself). One job computes at a time, as it uses all cores and much
-  memory; the next job may download its data meanwhile. Jobs can be cancelled.
+  (the search itself). One job computes at a time unless FINDALINE_LIMIT_COMPUTE_SLOTS
+  says more (each then with its share of the memory); the next job may download its data
+  meanwhile. Jobs can be cancelled.
 - OpenStreetMap extracts (osmextract.py) are downloaded and updated as jobs too, so the
   coastline and cliffs of a region need no Overpass.
 - Messages and progress of the jobs are stored as events and sent to the page as

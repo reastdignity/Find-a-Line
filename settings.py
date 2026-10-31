@@ -5,7 +5,8 @@ Settings and limits of the web app, from environment variables (pydantic-setting
   Nothing set means no limit: the local app (start.bat, `findaline.py web`) runs as before.
   The public site (Limits.load(public=True)) starts from the values of PUBLIC instead (time
   limits too), each overridable the same way (`none`: no limit). The fields: time limits of the worker
-  (jobs.Scheduler), how long its housekeeping keeps old events, and limits on the values
+  (jobs.Scheduler) and its slots (jobs computed and downloaded at once; 1 and 1 unless set, also
+  on the public site), how long its housekeeping keeps old events, and limits on the values
   of a request (check_request, also the min/max of the form: web.schema), the cost of a
   search, the quotas and request rates of a user, and the safeguards of the server. Users
   without limits and administrators (accounts.User.limited) get None instead of a Limits
@@ -76,7 +77,12 @@ class Limits(BaseSettings):
     keep_events_days: Optional[float] = Field(
         90, gt=0, description="days the events (messages, progress) of a finished job are kept; the job "
                               "itself stays in the queue")
-
+    # The worker's slots (jobs.Scheduler), for everyone: 1 and 1 also on the public site unless set
+    compute_slots: int = Field(
+        1, ge=1, description="jobs the worker computes at once; with more than one, each search gets an equal "
+                             "share of the memory free at the worker's start (search.slot_memory) for its tiles "
+                             "and lines, instead of the memory free when it starts")
+    download_slots: int = Field(1, ge=1, description="jobs the worker downloads the data of at once")
 
     # Values of a request (web.check_request; the form gets them as min/max)
     buffer_max: Optional[float] = Field(None, gt=0, description="largest --buffer, m")

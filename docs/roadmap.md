@@ -82,7 +82,7 @@ Rules for every step:
 - `findaline.py web` (decided instead of a separate `findaline_web.py`; plus `start.bat`, `start.command`, `start.sh`) starts FastAPI on `127.0.0.1` and opens the browser. Locally, the API, the queue (SQLite) and the worker run in one process tree.
 - Pages: map for clicking points and drawing polygons (Leaflet-Geoman); parameter form generated from the schema; live Download/Compute progress (Server-Sent Events); list of runs; result viewer.
 - Static viewer: one JS/CSS bundle shared by all runs. Data per run comes as JSON (lines, groups, profiles), plus `lines.js` for `file://`. Grouping and the `Sag` port move from the Jinja templates in `mapping.py` into this bundle, and stay in sync with Python as today.
-- One job computes at a time (it uses all cores and much RAM); the next job may already download its data meanwhile. The others wait in the queue and can be cancelled. Each job has its own `work/<job-id>/`; concurrent downloads need WAL mode in `index.sqlite` and a lock so the same tile is not fetched twice.
+- One job computes at a time (it uses all cores and much RAM); the next job may already download its data meanwhile. (Since 2026-10-31 the worker can run several of each phase, `FINDALINE_LIMIT_COMPUTE_SLOTS`/`_DOWNLOAD_SLOTS`, each computing job with its share of the memory, and claims the oldest job of the user with the fewest running ones: docs/performance.md, recommendations 2 and 3.) The others wait in the queue and can be cancelled. Each job has its own `work/<job-id>/`; concurrent downloads need WAL mode in `index.sqlite` and a lock so the same tile is not fetched twice.
 
 ## Stage 4: public website
 Decided 2026-10-27 (decisions in the table at the top). Supersedes the earlier sketch (Caddy, Postgres, Redis, object storage for results): one machine with SQLite and the local disk behind a reverse proxy (SWAG at first; since 2026-10-29 nginx on a VPS); Postgres/Redis only with a second machine.
@@ -136,7 +136,7 @@ FastAPI and Starlette stay pinned in `uv.lock` and are raised deliberately (Fast
 | `cache/` | no layout change (`LAYOUT` stays 1) | not needed |
 
 **Deferred**
-- An audit log viewer in the UI (the admin reads the log with `sqlite3`), a round-robin queue between users, overriding single limits per user, `--max-spots`.
+- An audit log viewer in the UI (the admin reads the log with `sqlite3`), overriding single limits per user, `--max-spots`.
 - CI on macOS, if Linux and Windows suffice.
 - A healthcheck of the worker in compose.yaml: its lease in `jobs.sqlite` (the `workers` table) renewed within `LEASE` (decided 2026-10-28: later).
 - LRU eviction of the cache down to a size cap (decided 2026-10-28: later): today only the free-disk limit of new searches protects the disk, and an administrator deletes cache folders by hand.

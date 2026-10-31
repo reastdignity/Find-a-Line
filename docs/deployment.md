@@ -74,7 +74,19 @@ timer, SSH, the free disk).
   cgroup v2 to size the searches; under cgroup v1 it cannot, and warns at start (`docker compose
   logs worker`): a search could then plan for the whole machine and be killed at the memory limit.
 - Cores and memory for the searches: the worker takes `WORKER_CPUS` cores (all but one) and
-  `WORKER_MEMORY` (8 GB by default), the web service 1 core and 1 GB; nginx needs little.
+  `WORKER_MEMORY` (8 GB by default), the web service 1 core and 1 GB; nginx needs little. By
+  default the worker computes one search at a time and downloads the data of the next one
+  meanwhile. One computing search keeps only about 1.5 cores busy (docs/performance.md), so a
+  larger machine runs several: `WORKER_COMPUTE_SLOTS` and `WORKER_DOWNLOAD_SLOTS` in `.env`.
+  With more than one compute slot each search gets an equal share of the memory free at the
+  worker's start, after about 3.4 GB for the quick lane (a profile measured on a map) and 0.5 GB
+  per download slot: the largest public search (a tile of 36 million pixels and 1.5 million
+  lines) needs about 4.1 GB, and the worker warns at its start (`docker compose logs worker`)
+  when it does not fit into a slot. For the 8-core, 24 GB VPS: `WORKER_CPUS=7`,
+  `WORKER_MEMORY=20g`, `WORKER_COMPUTE_SLOTS=3` (about 5.2 GB each), `WORKER_DOWNLOAD_SLOTS=2`;
+  each computing search keeps all `WORKER_CPUS` numba threads (`NUMBA_NUM_THREADS`), which only
+  its line search uses. Each user's oldest waiting search goes first when that user has the
+  fewest searches running, so one user's queue does not hold the others back.
 - **Disk.** The data volume holds the cache of elevation data, orthophotos and OpenStreetMap
   extracts and the saved runs; it grows with every new area searched. The site accepts no new
   searches below 20 GB free (`FINDALINE_LIMIT_FREE_DISK_GB_MIN`), but the cache has no automatic
@@ -436,7 +448,9 @@ python3 -c "import secrets; print(secrets.token_urlsafe(48))" > secrets/findalin
   README's table lists all of them.
 - `.env` (compose itself): `WORKER_CPUS` (the number of cores minus one, a whole number: it is
   also the worker's `NUMBA_NUM_THREADS`; `nproc` tells them),
-  `WORKER_MEMORY`, `FINDALINE_MIRROR_DIR` (section 10), `CONTAINER_DNS_1`/`_2` (section 2),
+  `WORKER_MEMORY`, `WORKER_COMPUTE_SLOTS`/`WORKER_DOWNLOAD_SLOTS` (section 1, 1 and 1 by
+  default; they set `FINDALINE_LIMIT_COMPUTE_SLOTS`/`_DOWNLOAD_SLOTS`, which `findaline.env`
+  then cannot), `FINDALINE_MIRROR_DIR` (section 10), `CONTAINER_DNS_1`/`_2` (section 2),
   `WEB_PORT` (the host's port of the web service, 8765; the upstream in `findaline-http.conf`
   names it too).
 - `secrets/` (secrets/README.md): the client secrets into their files (`nano
@@ -776,7 +790,7 @@ depend on the folder's name.
   resolver while `CONTAINER_DNS_1` is that resolver, or a public resolver blocked by the provider.
   `docker compose exec worker python -c "import socket; print(socket.gethostbyname('nominatim.openstreetmap.org'))"`.
 - **A search ends as killed, `OOMKilled` true**: raise `WORKER_MEMORY` in `.env` (and
-  `docker compose up -d`), or lower the limits of searches.
+  `docker compose up -d`), lower `WORKER_COMPUTE_SLOTS`, or lower the limits of searches.
 - **You banned yourself**: over SSH, `sudo fail2ban-client set findaline unbanip <address>`; then
   `ignoreip` (section 5).
 - **`no Docker volume findaline_...` in the backup**: the volumes are named after the folder of

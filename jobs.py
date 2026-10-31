@@ -5,7 +5,10 @@ The job queue of the web application and its worker.
   leases of the workers.
 - Scheduler: the worker. `findaline.py worker` runs it as its own process, `findaline.py
   web` in a thread of its own unless it gets --no-worker. It starts one process per job
-  and phase (run_phase): one downloading and one computing job at a time. It holds a
+  and phase (run_phase): Limits.download_slots downloading and Limits.compute_slots computing
+  jobs at a time (1 and 1 unless set; each computing job of several gets its share of the
+  memory, search.slot_memory), taking the waiting job of the user with the fewest running
+  jobs first (Jobs.claim). It holds a
   lease in the table `workers` and renews it every HEARTBEAT seconds; the running jobs
   of a worker whose lease expired are failed by the next worker that looks (so a
   restart of the web server does not touch the jobs of a separate worker).
@@ -401,14 +404,19 @@ class Jobs:
             db.close()
 
     def claim(self, waiting: str, status: str, worker_id: Optional[str] = None) -> Optional[Dict]:
-        """Take the oldest job of the status `waiting` and set it to `status` (None if there is none).
+        """Take a job of the status `waiting` and set it to `status` (None if there is none): the
+        oldest job of the user with the fewest jobs running (downloading or computing, by any
+        worker); jobs without a user (the local app's) count as one user's. So one user's queue
+        never holds the others' jobs back.
 
         One statement in one write transaction, so two workers never take the same job.
         """
         with self._write() as db:
-            rows = db.execute("UPDATE jobs SET status = ?, worker_id = ? WHERE id = (SELECT id FROM jobs "
-                              "WHERE status = ? AND cancel_requested = 0 ORDER BY created, rowid LIMIT 1) "
-                              "AND status = ? RETURNING *", (status, worker_id, waiting, waiting)).fetchall()
+            rows = db.execute(
+                "UPDATE jobs SET status = ?, worker_id = ? WHERE id = (SELECT j.id FROM jobs j "
+                "WHERE j.status = ? AND j.cancel_requested = 0 ORDER BY (SELECT COUNT(*) FROM jobs r "
+                f"WHERE r.status IN {_in(ACTIVE)} AND r.user_id IS j.user_id), j.created, j.rowid LIMIT 1) "
+                "AND status = ? RETURNING *", (status, worker_id, waiting, *ACTIVE, waiting)).fetchall()
         if not rows:
             return None
         self.event(rows[0]["id"], "status", {"status": status})
@@ -976,11 +984,14 @@ def charge_area(jobs: Jobs, user_id: Optional[int], plan, limits: Optional[Limit
     jobs.use(user_id, "km2", km2, limits.km2_day_max)
 
 
-def run_phase(data_dir: str, job_id: str, phase: str, limits: Optional[Limits] = None, public: bool = False):
+def run_phase(data_dir: str, job_id: str, phase: str, limits: Optional[Limits] = None, public: bool = False,
+              memory: Optional[int] = None):
     """A worker process: download the data of a job, or compute it. It ends the phase only if the
     job is still in it (not cancelled or failed by the worker meanwhile). With limits, a search
     over them fails before its costly work (search.plan_search, check_estimate); a job of a user
-    without limits gets none, and the user's quotas (km², Nominatim) are counted here."""
+    without limits gets none, and the user's quotas (km², Nominatim) are counted here. `memory`:
+    the budget of a compute slot (search.slot_memory; None with one slot), for every user: it sizes
+    the tiles (in the download phase, which announces them) and refuses lines that would not fit."""
     import requests
 
     import progress as pg
@@ -1032,7 +1043,7 @@ def run_phase(data_dir: str, job_id: str, phase: str, limits: Optional[Limits] =
             if params.tile_size is None and os.path.exists(tile_file):
                 with open(tile_file, encoding="utf-8") as f:
                     params = params.model_copy(update={"tile_size": json.load(f)})
-        plan = search.plan_search(params, paths, on_event, limits=limits)
+        plan = search.plan_search(params, paths, on_event, limits=limits, memory=memory)
         plan.owner = job["user_id"]  # a tiled search resumes only for the same user
         if phase == "download":
             charge_area(jobs, job["user_id"], plan, limits)
@@ -1084,7 +1095,8 @@ def quick_estimate(data_dir: str, request: Dict, limits: Optional[Limits] = None
     folder = os.path.join(data_dir, "work", "estimates", uuid.uuid4().hex)  # one per request
     try:
         paths = search.Paths(data_dir, folder)
-        plan = search.plan_search(params, paths, lambda kind, text: notes.append(_message(kind, text)), limits=limits)
+        plan = search.plan_search(params, paths, lambda kind, text: notes.append(_message(kind, text)), limits=limits,
+                                  memory=SLOT_MEMORY)  # the tiles of the job
         result = search.estimate_search(plan)
         search.check_estimate(plan, result)
     finally:
@@ -1125,9 +1137,11 @@ def quick_place(data_dir: str, request: Dict, limits: Optional[Limits] = None) -
 
 
 QUICK = {"estimate": quick_estimate, "profile": quick_profile, "place": quick_place}
+SLOT_MEMORY: Optional[int] = None  # the budget of a compute slot, in the quick lane's process (run_quick)
 
 
-def run_quick(data_dir: str, worker_id: str, parent: int, limits: Optional[Limits] = None, public: bool = False):
+def run_quick(data_dir: str, worker_id: str, parent: int, limits: Optional[Limits] = None, public: bool = False,
+              memory: Optional[int] = None):
     """The process of the quick lane: serves the tasks of the table `quick` one after another, until
     its worker (`parent`) is gone. One process and one thread, so the state of search and sources
     (caches of sheet indexes, sag tables) is never shared between threads."""
@@ -1137,6 +1151,8 @@ def run_quick(data_dir: str, worker_id: str, parent: int, limits: Optional[Limit
     import requests
 
     import search
+    global SLOT_MEMORY
+    SLOT_MEMORY = memory  # an estimate's tiles as its job's (search.slot_memory)
     jobs = Jobs(data_dir, public)
     looked = time.time()
     while True:
@@ -1200,7 +1216,8 @@ def kill_tree(pid: int):
 
 
 class Scheduler:
-    """The worker: starts the processes of the jobs, one downloading and one computing job at a time."""
+    """The worker: starts the processes of the jobs, Limits.download_slots downloading and
+    Limits.compute_slots computing jobs at a time."""
 
     def __init__(self, jobs: Jobs, worker_id: Optional[str] = None, limits: Optional[Limits] = None,
                  public: bool = False):
@@ -1209,7 +1226,12 @@ class Scheduler:
         self.limits = limits or Limits.load(public)  # FINDALINE_LIMIT_* (none locally), for its processes too
         self.quick = None  # the process of the quick lane
         self.worker_id = worker_id or f"{socket.gethostname()}-{os.getpid()}-{uuid.uuid4().hex[:6]}"
-        self.running: Dict[str, Running] = {}  # phase -> the job running in it
+        self.slots = {"download": self.limits.download_slots, "compute": self.limits.compute_slots}
+        self.running: Dict[str, List[Running]] = {phase: [] for phase in self.slots}  # the jobs of each phase
+        self.memory: Optional[int] = None  # the budget of a compute slot (search.slot_memory), with several
+        if self.slots["compute"] > 1:  # the memory free now, before any search, shared by the slots
+            import search
+            self.memory = search.slot_memory(self.limits)
         self.lock = threading.Lock()
         self.context = multiprocessing.get_context("spawn")  # the same on every OS
         self.stopped = threading.Event()
@@ -1263,11 +1285,9 @@ class Scheduler:
             self.jobs.unregister(self.worker_id)
 
     def _kill_all(self):
-        for phase, running in list(self.running.items()):
-            kill_tree(running.process.pid)
-            running.process.join()
-            del self.running[phase]
-            self._remove_folder(running.job_id)
+        for phase in self.running:
+            for running in list(self.running[phase]):
+                self._kill(phase, running)
         if self.quick is not None:
             kill_tree(self.quick.pid)
             self.quick.join()
@@ -1315,48 +1335,53 @@ class Scheduler:
         if self.quick is None:
             self.quick = self.context.Process(target=run_quick, daemon=True,
                                               args=(self.jobs.data_dir, self.worker_id, os.getpid(), self.limits,
-                                                    self.public))
+                                                    self.public, self.memory))
             self.quick.start()
 
-    def _kill(self, phase: str):
-        running = self.running.pop(phase)
+    def _kill(self, phase: str, running: "Running"):
+        """Kill the process tree of one running phase of a job and remove the job's work folder."""
+        self.running[phase].remove(running)
         kill_tree(running.process.pid)
         running.process.join()
         self._remove_folder(running.job_id)
 
     def _check(self):
-        for job_id in self.jobs.cancel_requested(running.job_id for running in self.running.values()):
-            for phase, running in list(self.running.items()):
+        every = [(phase, running) for phase, slots in self.running.items() for running in slots]
+        for job_id in self.jobs.cancel_requested(running.job_id for _, running in every):
+            for phase, running in every:
                 if running.job_id == job_id:
-                    self._kill(phase)
+                    self._kill(phase, running)
             self._remove_folder(job_id)
             self.jobs.set(job_id, "cancelled", when=ACTIVE + WAITING)
-        for phase, (job_id, process, started, limit, what) in list(self.running.items()):
-            if limit and process.is_alive() and time.time() - started > limit:
-                self._kill(phase)
+        for phase in self.running:
+            for running in list(self.running[phase]):
+                job_id, process, started, limit, what = running
+                if limit and process.is_alive() and time.time() - started > limit:
+                    self._kill(phase, running)
+                    self.jobs.set(job_id, "failed", when=(PHASE_STATUS[phase],),
+                                  error=f"time limit: {what} was stopped after {limit:g} s")
+                    continue
+                if process.is_alive():
+                    continue
+                process.join()
+                self.running[phase].remove(running)
+                # Ended without a word. Only the job's status of this phase tells that: a download
+                # process sets "ready" and may take a moment to exit, while the job already computes
                 self.jobs.set(job_id, "failed", when=(PHASE_STATUS[phase],),
-                              error=f"time limit: {what} was stopped after {limit:g} s")
-                continue
-            if process.is_alive():
-                continue
-            process.join()
-            del self.running[phase]
-            # Ended without a word. Only the job's status of this phase tells that: a download
-            # process sets "ready" and may take a moment to exit, while the job already computes
-            self.jobs.set(job_id, "failed", when=(PHASE_STATUS[phase],),
-                          error=f"the worker stopped (exit code {process.exitcode})")
+                              error=f"the worker stopped (exit code {process.exitcode})")
         for phase, waiting, status in (("download", "queued", "downloading"), ("compute", "ready", "computing")):
-            if phase not in self.running:
+            while len(self.running[phase]) < self.slots[phase]:
                 job = self.jobs.claim(waiting, status, self.worker_id)
-                if job:
-                    process = self.context.Process(target=run_phase, daemon=True,
-                                                   args=(self.jobs.data_dir, job["id"], phase, self.limits,
-                                                         self.public))
-                    process.start()
-                    osm = "osm" in json.loads(job["request"])  # an OSM extract: its own limit
-                    self.running[phase] = Running(job["id"], process, time.time(),
-                                                  self.limits.phase_seconds(phase, osm),
-                                                  "the OSM extract job" if osm else f"the {phase} phase")
+                if not job:
+                    break
+                process = self.context.Process(target=run_phase, daemon=True,
+                                               args=(self.jobs.data_dir, job["id"], phase, self.limits,
+                                                     self.public, self.memory))
+                process.start()
+                osm = "osm" in json.loads(job["request"])  # an OSM extract: its own limit
+                self.running[phase].append(Running(job["id"], process, time.time(),
+                                                   self.limits.phase_seconds(phase, osm),
+                                                   "the OSM extract job" if osm else f"the {phase} phase"))
 
 
 def warn_without_cgroup(root: Optional[str] = None) -> bool:
@@ -1399,7 +1424,8 @@ def main(argv: List[str]) -> int:
     if args.public:
         warn_without_cgroup()
         import search
-        warning = search.memory_warning(scheduler.limits)
+        # The largest search must fit into one compute slot (with one slot: into the memory free now)
+        warning = search.memory_warning(scheduler.limits, scheduler.memory)
         if warning:
             print(warning, file=sys.stderr, flush=True)
     # SIGTERM (docker stop, systemd) stops it like Ctrl+C: the running phases are killed and

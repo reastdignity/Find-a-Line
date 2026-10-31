@@ -88,7 +88,13 @@ services:
     environment:
       FINDALINE_MIRROR: /mirror
       # numba's threads: the cores of the quota, not all the host's cores the container sees
+      # (each computing job's, also with several compute slots)
       NUMBA_NUM_THREADS: ${WORKER_CPUS:-3}
+      # Jobs computed and downloaded at once (settings.Limits); with several compute slots each
+      # search gets an equal share of WORKER_MEMORY, less the quick lane's and the downloads'
+      # (search.slot_memory); docs/deployment.md, "Cores and memory", for the values
+      FINDALINE_LIMIT_COMPUTE_SLOTS: ${WORKER_COMPUTE_SLOTS:-1}
+      FINDALINE_LIMIT_DOWNLOAD_SLOTS: ${WORKER_DOWNLOAD_SLOTS:-1}
       # numba's compiled code (loaded by every phase's process), the home and matplotlib's
       # settings in the worker's own /tmp: compiled once per start of the container (a few
       # seconds), never from files the web service could have written

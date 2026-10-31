@@ -2521,6 +2521,50 @@ def test_public_limits_fit_the_worker_memory():
     assert search.memory_needed(PUBLIC["grid_mpx_max"] * 1e6, PUBLIC["lines_max"]) <= gib * 2 ** 30
 
 
+def test_memory_of_compute_slots(tmp_path, monkeypatch):
+    """Several compute slots share the memory free at the worker's start, less the quick lane's
+    largest grid and the download processes: each search gets its slot's budget as Plan.memory and
+    for its tiles (not the memory free when it starts), and the warning at the start is per slot.
+    One slot (the local app, the default) and the command line are as before."""
+    import search
+    from settings import PUBLIC, Limits
+    gib = 2 ** 30
+    monkeypatch.setattr(search, "available_memory", lambda: 20 * gib)
+    public = Limits(**PUBLIC)
+    assert search.slot_memory(public) is None  # one slot
+    vps = public.model_copy(update={"compute_slots": 3, "download_slots": 2})  # docs/deployment.md
+    budget = search.slot_memory(vps)
+    quick = search.memory_needed(search.MAX_MEASURED_PX ** 2, 0)
+    assert budget == int((20 * gib - quick - 2 * search.DOWNLOAD_PROCESS_BYTES) // 3)
+    assert 5 * gib < budget < 5.5 * gib
+    # The largest public search fits into one of the VPS's three slots, not into one of four
+    assert search.memory_warning(vps, budget) is None
+    four = vps.model_copy(update={"compute_slots": 4})
+    warning = search.memory_warning(four, search.slot_memory(four))
+    assert warning and "for each of 4 compute slots" in warning and "FINDALINE_LIMIT_COMPUTE_SLOTS" in warning
+    assert search.memory_warning(vps) is None  # one slot's warning: the memory free now
+
+    # The budget is the search's memory and sizes its tiles, with limits or without
+    point = {"northing": 254608, "easting": 553966, "radius": 150}
+    assert _plan(tmp_path, None, **point).memory is None and _plan(tmp_path, Limits(), **point).memory == 20 * gib
+    paths = search.Paths(str(tmp_path), str(tmp_path / "work"))
+    from params import SearchParams
+    for limits in (None, Limits()):
+        plan = search.plan_search(SearchParams(**CLIP, **point), paths, lambda k, t: None, limits=limits,
+                                  memory=budget)
+        assert plan.memory == budget
+    wide = {"type": "Polygon", "coordinates": [[[19.74, 50.15], [19.77, 50.15], [19.77, 50.165], [19.74, 50.165],
+                                                [19.74, 50.15]]]}  # 2.1 × 1.7 km, planned only
+    area = SearchParams(**CLIP, geometry={"type": "FeatureCollection", "features": [
+        {"type": "Feature", "properties": {}, "geometry": wide}]}, max_length=150)
+    small = 300 * 300 * search.PIXEL_BYTES // search.TILE_MEMORY_SHARE  # tiles of 300 px with their overlaps
+    plan = search.plan_search(area, paths, lambda k, t: None, memory=int(small))
+    assert plan.tile_core == search.tile_core_size(area, plan.resolution, None, int(small)) == 500  # the smallest
+    assert plan.tiles and len(plan.tiles) > 1 and plan.memory == small
+    whole = search.plan_search(area, paths, lambda k, t: None)  # the memory free now: one grid
+    assert whole.tiles is None and whole.tile_core == search.tile_core_size(area, whole.resolution)
+
+
 def test_lines_limit_counts_earlier_tiles(tmp_path, monkeypatch):
     """The limit of lines of a tiled area counts the lines of the tiles done already with the new
     tile's, and refuses before that tile's coordinates (step 4 holds them all in memory)."""

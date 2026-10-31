@@ -93,6 +93,10 @@ CIRCLE_PROFILES_BYTES = 500e6
 TILE_MEMORY_SHARE = 0.25
 DOWNLOAD_MB_PER_S = 5  # for the time estimate of area searches
 MAX_MEASURED_PX = 6000  # the longest line measured on the map, in pixels (profile_of_line builds a square grid around it)
+# The memory a download phase's process takes at its peak (slot_memory keeps it free for each
+# download slot): measured 2026-10-31 at 120 MiB after the imports, 240-400 MiB when it downloads
+# (Montserrat at 1 m, 2 WCS tiles of 32 MB per layer; El Capitan, 3DEP blocks)
+DOWNLOAD_PROCESS_BYTES = 512 * 2 ** 20
 CGROUP_ROOT = "/sys/fs/cgroup"  # cgroup v2 of this process inside a container (its own namespace)
 
 OnEvent = Callable[[str, str], None]
@@ -154,7 +158,9 @@ class Plan:
     tile_core: Optional[float] = None
     tile_label: str = ""  # "Tile 3/15 · " while a tile of a large area is computed
     owner: Optional[int] = None  # the user of the web app's job (None: the local app, the command line)
-    memory: Optional[int] = None  # free memory when a search with limits was planned (_check_lines)
+    # The memory the search may use (_check_lines): its compute slot's budget, or the memory free
+    # when a search with limits was planned; None: not checked
+    memory: Optional[int] = None
 
 
 STEPS = 5
@@ -204,10 +210,13 @@ def _print(kind: str, text: str):
 
 
 def plan_search(params: SearchParams, paths: Paths, on_event: Optional[OnEvent] = None,
-                with_margin: bool = True, limits: Optional[Limits] = None) -> Plan:
+                with_margin: bool = True, limits: Optional[Limits] = None, memory: Optional[int] = None) -> Plan:
     """Choose the source and the grid, and describe the search. The grid covers the area
     and _margin around it, unless with_margin is False (a profile needs no anchor values).
-    With limits, a search over them is refused (SearchError) before anything costly."""
+    With limits, a search over them is refused (SearchError) before anything costly.
+    `memory`: the bytes this search may use (a compute slot of the web worker: slot_memory),
+    for its tiles and Plan.memory, with or without limits; None: the memory free now (with
+    limits; without them Plan.memory stays None)."""
     emit = on_event or _print
     src.used_data.clear()  # several searches may run in one process
     cache.check_layout(paths.cache)
@@ -271,7 +280,7 @@ def plan_search(params: SearchParams, paths: Paths, on_event: Optional[OnEvent] 
     max_px = limits.grid_mpx_max * 1e6 if limits and limits.grid_mpx_max else None
     if isinstance(area, ar.Polygon):
         grid.area_shape = ar.project(area.geometry, "EPSG:4326", crs)
-        core = tile_core_size(params, resolution, max_px)
+        core = tile_core_size(params, resolution, max_px, memory)
         if limits:
             _check_tiles(grid, params, resolution, core, limits)
         tiles = _tiles(grid, params, resolution, source.grid_origin, core)
@@ -314,7 +323,8 @@ def plan_search(params: SearchParams, paths: Paths, on_event: Optional[OnEvent] 
     for note in getattr(area, "notes", []):
         emit("warning", note)
     return Plan(params, paths, area, source, grid, resolution, group_distance, nmpt, rigging, layers,
-                emit, crs, (x, y), limits, tiles, core, memory=available_memory() if limits else None)
+                emit, crs, (x, y), limits, tiles, core,
+                memory=memory if memory is not None else available_memory() if limits else None)
 
 
 def _check_params(limits: Optional[Limits], params: SearchParams, resolution: Optional[float] = None):
@@ -463,20 +473,23 @@ def profile_points(lines: sh.LineTable) -> int:
     return int(np.minimum(steps + 1, PROFILE_POINTS).sum())
 
 
-def memory_warning(limits: Optional[Limits]) -> Optional[str]:
+def memory_warning(limits: Optional[Limits], budget: Optional[int] = None) -> Optional[str]:
     """A warning when the largest search the limits allow (a tile of grid_mpx_max pixels and
-    lines_max lines) needs more memory than is free now (the container's limit in the worker)."""
+    lines_max lines) needs more memory than is free now (the container's limit in the worker),
+    or than `budget` (one compute slot's: slot_memory)."""
     if not limits or not limits.lines_max:
         return None
-    free = available_memory()
+    free = available_memory() if budget is None else budget
     pixels = (limits.grid_mpx_max or 0) * 1e6
     need = memory_needed(pixels, limits.lines_max)
     if need <= free:
         return None
     fits = max(0, int((free - memory_needed(pixels, 0)) // LINE_BYTES))
+    room = "free" if budget is None else f"for each of {limits.compute_slots} compute slots"
     return (f"WARNING: the largest search the limits allow ({limits.lines_max} lines, grids of "
-            f"{pixels / 1e6:g} million pixels) needs about {need / 2 ** 30:.1f} GiB, {free / 2 ** 30:.1f} GiB free: "
-            f"such searches are refused for memory; FINDALINE_LIMIT_LINES_MAX={fits} would fit")
+            f"{pixels / 1e6:g} million pixels) needs about {need / 2 ** 30:.1f} GiB, {free / 2 ** 30:.1f} GiB "
+            f"{room}: such searches are refused for memory; FINDALINE_LIMIT_LINES_MAX={fits} would fit"
+            + ("" if budget is None else " (or fewer FINDALINE_LIMIT_COMPUTE_SLOTS)"))
 
 
 def available_memory() -> int:
@@ -484,6 +497,19 @@ def available_memory() -> int:
     free = psutil.virtual_memory().available
     limit = cgroup_limits().memory
     return free if limit is None else min(free, limit)
+
+
+def slot_memory(limits: Limits, total: Optional[int] = None) -> Optional[int]:
+    """The memory budget of one compute slot of the web worker (limits.compute_slots of them), in
+    bytes: `total` (the memory free at the worker's start, the container's limit) less what the
+    quick lane may take (a profile measured on the map: a grid of MAX_MEASURED_PX squared pixels)
+    and the download slots' processes (DOWNLOAD_PROCESS_BYTES each), shared by the compute slots.
+    None with one compute slot: its search takes the memory free when it starts, as before."""
+    if limits.compute_slots <= 1:
+        return None
+    total = available_memory() if total is None else total
+    reserve = memory_needed(MAX_MEASURED_PX ** 2, 0) + limits.download_slots * DOWNLOAD_PROCESS_BYTES
+    return max(0, int((total - reserve) // limits.compute_slots))
 
 
 def line_threads(params: SearchParams) -> Optional[int]:
@@ -501,14 +527,16 @@ def line_threads(params: SearchParams) -> Optional[int]:
     return max(1, min(cpus, numba.config.NUMBA_NUM_THREADS - spare))
 
 
-def tile_core_size(params: SearchParams, res: float, max_px: Optional[float] = None) -> float:
-    """Side of a tile core in metres: --tile-size, or what the free memory allows (and max_px,
-    the pixels a tile may have with its overlap; in steps of 500 m, so the tiles stay the same
-    when the free memory changes a little)."""
+def tile_core_size(params: SearchParams, res: float, max_px: Optional[float] = None,
+                   memory: Optional[int] = None) -> float:
+    """Side of a tile core in metres: --tile-size, or what the free memory (or `memory`, a compute
+    slot's budget) allows (and max_px, the pixels a tile may have with its overlap; in steps of
+    500 m, so the tiles stay the same when the free memory changes a little)."""
     if params.tile_size:
         core = params.tile_size
     else:
-        side_px = math.sqrt(available_memory() * TILE_MEMORY_SHARE / memory_needed(1, 0))
+        free = available_memory() if memory is None else memory
+        side_px = math.sqrt(free * TILE_MEMORY_SHARE / memory_needed(1, 0))
         if max_px:
             side_px = min(side_px, math.sqrt(max_px))
         core = max(500.0, math.floor((side_px * res - 2 * _overlap(params, res)) / 500) * 500)
