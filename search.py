@@ -71,13 +71,19 @@ CONFIRM_MINUTES = 30
 ORTHO_SECONDS_PER_TILE = 0.3  # measured download rate with orthophoto.DOWNLOAD_THREADS
 ORTHO_DETAIL = 50  # groups of an area with detailed orthophoto, unless the service or --ortho-detail says
 # The memory of a search (memory_needed): its grids, this many bytes per pixel (terrain,
-# surface, water, gaps, masks, temporaries), and its lines, this many bytes per line (a line of
-# step 4 with its coordinates, values and group, or one of a tile done already)
+# surface, water, gaps, masks, temporaries), its lines, this many bytes per line (a line of
+# step 4 with its coordinates, values and group, one of a tile done already, or one being saved
+# in step 5), and the profiles a circle keeps for every line, this many bytes per point
 PIXEL_BYTES = 100  # 64 of them, and the union-find of the anchor prominence (terrain.py)
-# Measured 2026-10-31 (tracemalloc, 300 000 lines): a line of step 4 about 2.6 KB at the peak
-# (its Line 0.8 KB, coordify's dict 1.7 KB, grouping), one of a tile done already 1.8 KB; the
-# worker killed on the VPS held 2.6 million lines of earlier tiles and 1.1 million of a tile
-LINE_BYTES = 2500
+# Measured 2026-10-31 (tools/perf_lines_memory.py, the 403 026 lines of the Gozo coast): as
+# columns (helpers.LineTable) 421 B per line at the peak of step 4, 236 B held between tiles,
+# 382 B at the peak of step 5; with a dict per line they were 2.2 KB, 1.6 KB and 3.1 KB (the
+# worker killed on the VPS held 2.6 million lines of earlier tiles and 1.1 million of a tile)
+LINE_BYTES = 500
+# A profile (helpers.line_profile: lists of Python floats) takes 64-100 B per point, up to
+# PROFILE_POINTS points (its max_points, the anchors and the smallest clearances): about 19 KB
+PROFILE_POINT_BYTES = 100
+PROFILE_POINTS = 203
 # Tiles of large areas: the grids of one tile may use this share of the free memory (the rest
 # is for the lines of the tiles)
 TILE_MEMORY_SHARE = 0.25
@@ -439,10 +445,18 @@ def cgroup_limits(root: Optional[str] = None) -> CgroupLimits:
     return limits
 
 
-def memory_needed(pixels: float, lines: float) -> float:
-    """Bytes a search needs for grids of this many pixels and this many lines (the peak of step 4
-    of a tile: its grids, its lines and those of the tiles done already)."""
-    return pixels * PIXEL_BYTES + lines * LINE_BYTES
+def memory_needed(pixels: float, lines: float, profile_points: float = 0) -> float:
+    """Bytes a search needs for grids of this many pixels, this many lines and profiles of this
+    many points in all (the peak of step 4 of a tile: its grids, its lines and those of the
+    tiles done already; a circle's profiles of every line)."""
+    return pixels * PIXEL_BYTES + lines * LINE_BYTES + profile_points * PROFILE_POINT_BYTES
+
+
+def profile_points(lines: sh.LineTable) -> int:
+    """The points of the profiles of these lines (helpers.line_profile: every pixel between the
+    anchors and both anchors, at most PROFILE_POINTS)."""
+    steps = np.abs(lines.columns["a2"] - lines.columns["a1"]).max(axis=1) if len(lines) else np.zeros(0)
+    return int(np.minimum(steps + 1, PROFILE_POINTS).sum())
 
 
 def memory_warning(limits: Optional[Limits]) -> Optional[str]:
@@ -708,7 +722,8 @@ def _lines(plan: Plan, data: Data, core: Optional[tuple] = None, before: int = 0
                                       p.high_above, sh.LineLimits(p.min_height, p.min_mean_height,
                                                                   p.min_high_share, p.max_wall_angle),
                                       np.column_stack([prom, drop]), strong)
-    _check_lines(plan, before + len(valid_lines), grid.width * grid.height)
+    _check_lines(plan, before + len(valid_lines), grid.width * grid.height,
+                 profile_points(valid_lines) if isinstance(plan.area, ar.Circle) else 0)
     if not valid_lines and core is None:
         raise SearchError("No lines found matching elevation requirements.", "no_lines")
 
@@ -737,15 +752,17 @@ def _lines(plan: Plan, data: Data, core: Optional[tuple] = None, before: int = 0
     return results, groups
 
 
-def _check_lines(plan: Plan, count: int, pixels: int = 0):
-    """Refuse more lines than plan.limits allows, or than fit with grids of this many pixels into
-    the memory free when the search started (before their coordinates, profiles, groups and files)."""
+def _check_lines(plan: Plan, count: int, pixels: int = 0, points: int = 0):
+    """Refuse more lines than plan.limits allows, or than fit with grids of this many pixels (and
+    profiles of this many points: a circle's) into the memory free when the search started
+    (before their coordinates, profiles, groups and files)."""
     if plan.limits and plan.limits.lines_max and count > plan.limits.lines_max:
         raise SearchError(f"{count} lines, at most {plan.limits.lines_max} on this site: a higher --min-prominence "
                           f"(or --min-height, --min-drop), a coarser --resolution or a smaller area", "too_many_lines",
                           n=count, max=plan.limits.lines_max)
-    if plan.memory is not None and memory_needed(pixels, count) > plan.memory:
-        fits = max(0, int((plan.memory - memory_needed(pixels, 0)) // LINE_BYTES))
+    if plan.memory is not None and memory_needed(pixels, count, points) > plan.memory:
+        per_line = memory_needed(0, 1, points / max(count, 1))  # with the mean profile of these lines
+        fits = max(0, int((plan.memory - memory_needed(pixels, 0)) // per_line))
         raise SearchError(f"{count} lines, at most {fits} fit into the memory of this site: a higher --min-prominence "
                           f"(or --min-height, --min-drop), a coarser --resolution or a smaller area",
                           "too_many_lines_memory", n=count, max=fits)

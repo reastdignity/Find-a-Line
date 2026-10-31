@@ -2454,6 +2454,7 @@ def test_search_limits_of_anchors_and_lines(tmp_path):
 def test_lines_refused_for_memory(tmp_path, monkeypatch):
     """Lines that would not fit with the grids into the memory free when the search started are
     refused before their coordinates; the command line (no limits) never checks it."""
+    from types import SimpleNamespace
     import mapping
     import search
     from settings import Limits
@@ -2462,19 +2463,27 @@ def test_lines_refused_for_memory(tmp_path, monkeypatch):
     assert plan.memory is not None and _plan(tmp_path, None, **point).memory is None
     pixels = plan.grid.width * plan.grid.height
     plan.memory = int(search.memory_needed(pixels, 4))  # the grids and 4 lines
+    monkeypatch.setattr(search, "profile_points", lambda lines: 0)  # a circle's profiles: below
     monkeypatch.setattr(mapping, "coordify", lambda *a: pytest.fail("coordinates of lines over the memory"))
     with pytest.raises(search.SearchError) as error:
         search.find_lines(plan, search.prepare_data(plan))
     assert error.value.code == "too_many_lines_memory" and error.value.params["max"] == 4, error.value
     import gc
     gc.collect()
+    # A circle keeps the profile of every line: 10 lines fit without their profiles, 4 with them
+    plan = SimpleNamespace(limits=None, memory=int(search.memory_needed(0, 10)))
+    search._check_lines(plan, 10)
+    points = 10 * (search.LINE_BYTES // search.PROFILE_POINT_BYTES)  # each profile as large as its line
+    with pytest.raises(search.SearchError) as error:
+        search._check_lines(plan, 10, 0, points)
+    assert error.value.params["max"] == 5, error.value.params
 
 
 def test_memory_warning(monkeypatch):
     """The worker warns at its start when the largest search the limits allow does not fit."""
     import search
     from settings import Limits
-    limits = Limits(grid_mpx_max=36, lines_max=3_000_000)
+    limits = Limits(grid_mpx_max=36, lines_max=20_000_000)
     monkeypatch.setattr(search, "available_memory", lambda: 8 * 2 ** 30)
     warning = search.memory_warning(limits)
     fits = int((8 * 2 ** 30 - 36e6 * search.PIXEL_BYTES) // search.LINE_BYTES)

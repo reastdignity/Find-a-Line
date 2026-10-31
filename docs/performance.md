@@ -18,6 +18,8 @@ first out. What limits it when many people queue jobs?
 | `tools/perf_profile.py --out <dir> --name <n> [--cores N] -- <findaline options> --data-dir <scratch>` | Runs a search in its own process, follows the progress bars and samples CPU time and memory every 0.1 s: a table per stage (wall s, CPU s, cores busy, peak memory) and a timeline chart |
 | `tools/perf_download.py --out <dir> --osm-from cache/osm --threads 2 4 8 -- <findaline options>` | The download phase (`search.download_data`) on an empty cache (only the OSM themes and Nominatim answers copied), with `sources.DOWNLOAD_THREADS` set |
 | `tools/perf_sqlite.py --out <dir> --jobs 1 4 8 16 --pages 30 [--burst]` | `jobs.sqlite` with the real `jobs.Jobs` under K phase processes, the worker, the quick lane and M open pages |
+| `tools/perf_profile.py ... --tracemalloc` | The same, with the peak of Python's heap per stage (numpy arrays included, memory-mapped grids not; several times slower) |
+| `tools/perf_lines_memory.py --tiles <run>/tiles --out <dir> [--repo <checkout> --legacy]` | The lines of a tiled run through steps 4 and 5 by the code of a checkout: bytes per line as found, at the peak of step 4, held, at the peak of step 5 (`search.LINE_BYTES`) |
 
 The searches ran on cached data (a scratch data folder whose `cache` is a junction to the real one)
 with `--ortho never`, one at a time. Their results equal the regression table: R13 566 lines / 143
@@ -134,6 +136,48 @@ the quick lane `quick_claim` every 0.05 s, each page reads its events and `worke
 - The idle quick lane opens a write transaction (`BEGIN IMMEDIATE`) 20 times a second, the
   busiest writer when nothing happens; harmless now, but it competes with every other write.
 
+## 4. Memory of a job
+
+A search needs memory for its grids (step 1-3: the terrain, surface, water and gap grids of a
+tile and their temporaries, `search.PIXEL_BYTES` per pixel) and for its lines (steps 4 and 5).
+Until 2026-10-31 a line was a `helpers.Line` of Python floats and then a dict of its coordinates,
+and step 5 built every row of `lines.csv` and `data.js` at once; the worker on the VPS was killed
+at 3.7 million lines. Lines are now numpy columns (`helpers.LineTable`) from the line search to
+the files, which are written chunk by chunk from them (the files are the same byte for byte:
+R4, R9, R13 and the Gozo coast in tiles compared with the old code).
+
+Bytes per line, the 403 026 lines of the Gozo coast through steps 4 and 5
+(`tools/perf_lines_memory.py`, the grids apart):
+
+| | a dict per line (before) | columns (now) |
+| --- | ---: | ---: |
+| the line search's output | 760 | 144 |
+| peak of step 4 (coordinates, groups) | 2 213 | 421 |
+| held between tiles | 1 605 | 236 |
+| peak of step 5 (saving) | **3 050** | 382 |
+
+Step 5 was the highest peak, above the 2.5 KB that `search.LINE_BYTES` counted; it is now
+500 B. The whole search (no tracemalloc, tiles of 5 km, the same lines):
+
+| Gozo coast, 403 026 lines | before | now |
+| --- | ---: | ---: |
+| peak memory of step 4 | 1.71 GB | 0.78 GB |
+| peak memory of step 5 | 1.67 GB | 0.48 GB |
+| peak memory of the job (step 1, the grids of a 50 Mpx tile) | 3.87 GB | 3.48 GB |
+| wall time | 125 s | 112 s |
+
+- **The grids now decide the peak** of an area: about 65-85 bytes per pixel at the gap filling of
+  step 1 (50 Mpx: 3.5 GB, 65 Mpx: 5.6 GB), within the 100 B of `PIXEL_BYTES`. Recommendation 1
+  (the median of the gap filling) also takes a full-size temporary out of that peak.
+- **A circle keeps the profile of every line** (the map from disk shows each), about 100 B per
+  point and up to 203 points: 3 KB on average at R9's 5 m, 19 KB at 1 m. R9's 85 671 lines hold
+  about 0.45 GB of profiles (its peak 1.02 → 0.81 GB). The memory model counted none of this, so a
+  public 1 m circle with a million lines would have needed about 20 GB; `search.memory_needed`
+  now counts a circle's profile points (`PROFILE_POINT_BYTES`) and refuses lines that would not
+  fit with them.
+- **The largest public search** (`grid_mpx_max` 36 Mpx, `lines_max` 1.5 million) now needs
+  3.6 + 0.75 = 4.35 GB where it needed 3.6 + 3.75 GB by the model (and about 8.2 GB in step 5).
+
 ## The VPS: 8 cores, 24 GB
 
 The worker gets 7 cores and about 20 GB (24 GB less the web service's 1 GB, the system, nginx and
@@ -142,11 +186,20 @@ the page cache that the memory-mapped grids rely on).
 - **Cores.** One job at a time uses 1.4 of 7. Four compute slots would keep about 5-6 cores busy
   (each job 1.2-1.5, the line search of several jobs sharing the cores now and then), leaving
   room for the download slots and the quick lane.
-- **Memory.** The public limits cut large areas into tiles of at most `grid_mpx_max` = 36 Mpx
-  (`settings.PUBLIC`); at about 85 bytes per pixel (measured on Gozo's 65 Mpx tiles, unlimited
-  locally) a tile peaks at about 3 GB. Four large jobs at once need about 12 GB, small ones a few
-  hundred MB. A slot admitted by an estimate of its largest tile keeps the worker within
-  `WORKER_MEMORY` even when several large jobs meet.
+- **Memory.** A worst-case public job (a 36 Mpx tile and 1.5 million lines) needs 4.35 GB, a
+  job like Gozo about 3.5 GB, R9 0.8 GB, R13 0.2 GB. Beside the computing jobs the worker holds the
+  quick lane (a profile measured on the map builds a grid of up to 6 000 × 6 000 px,
+  `MAX_MEASURED_PX`: up to 3.6 GB) and its download processes (a few hundred MB each). Of about
+  20 GB, some 15 GB are left for computing:
+  - **three compute slots of 5 GB each** fit the worst case without any estimate; before the
+    columns a worst-case job needed 7.4-8.2 GB, so only two would have fitted;
+  - **four slots** fit only with admission by an estimate (the pixels of the largest tile are
+    known when the job is planned, its lines are not: a slot reserves `memory_needed(pixels,
+    lines_max)`, which for most jobs is far less than 5 GB).
+
+  Each slot's search must then be checked against its own budget, not against the memory free
+  when it starts (`Plan.memory = available_memory()` today): jobs started one after another would
+  each count the same free memory.
 - **Throughput.** With one slot, a Gozo-sized job (about 2 minutes on cached data) holds the
   queue; with four slots and fair claiming, three other users' small jobs pass it meanwhile.
   Jobs per hour grow about 3-4 times when the queue holds several jobs; one job alone is not
@@ -163,13 +216,17 @@ the page cache that the memory-mapped grids rely on).
 3. **Downloads are limited by the services**, not by the worker; one slot means a slow service
    blocks the downloads of all other jobs.
 4. **SQLite fits**; the web's polling per page is what grows with many users.
+5. **Memory per job is now set by its grids**, not its lines: the lines as columns take about a
+   seventh of the memory (500 B per line instead of 2.5-3 KB), so a worst-case public job needs
+   4.35 GB instead of 7.4-8.2 GB, and three of them fit the VPS's worker. A circle's profiles of
+   every line are the exception (about 19 KB per line at 1 m) and are now counted.
 
 ## Recommendations (ranked by gain against effort)
 
 | # | Change | Gain | Effort |
 | --- | --- | --- | --- |
 | 1 | `fill_gaps`: the median over the ring pixels only | ~15 % of a large job, less memory; identical results | a few lines |
-| 2 | Compute slots per worker (four on the VPS's 7 cores, two on 3) and two or three download slots, admitted by memory: a tile's peak is about 85 bytes per pixel (Gozo's 65 Mpx tile 5.6 GB, a public 36 Mpx tile about 3 GB), so a slot is taken only when the job's largest tile fits into what remains of `WORKER_MEMORY` | ~3-4× jobs per hour on the VPS; small jobs no longer wait for a large one | `Scheduler.running` per slot, a memory estimate in `plan`; medium |
+| 2 | Compute slots per worker, each with a memory budget that its search is checked against (`Plan.memory` = the slot's budget, also for the tile size): on the VPS three slots of 5 GB (or four admitted by `memory_needed(largest tile, lines_max)`), on the default 3 cores / 8 GB one slot, or two of about 2 GB with smaller tiles; and two or three download slots | ~3× jobs per hour on the VPS; small jobs no longer wait for a large one | `Scheduler.running` per slot, the budget into `plan_search`; medium |
 | 3 | Fair claiming: the oldest job of the user with the fewest running jobs (round robin, already in docs/roadmap.md) | small jobs of other users are not stuck behind one user's queue | one SQL query; small |
 | 4 | The tiles of a large area in parallel processes (each tile is independent until the merge) | large jobs ~N× faster with N tiles in memory | medium (memory as in 2) |
 | 5 | Parallel single-core stages: `reproject(num_threads=...)`, the prominence's `argsort` (numba parallel or per band), profiles of a circle in numba `prange`, writing `lines.csv`/`lines.geojson`/`data.js` in parallel | 10-25 % each where they dominate | small to medium each |

@@ -193,7 +193,7 @@ Each is an environment variable `FINDALINE_LIMIT_<NAME>`; nothing is limited by 
 | `GRID_MPX_MAX` | 36 | Most pixels of the grid of a circle, or of a tile of an area with its overlap, in millions (about 100 bytes of memory each; the tiles are made smaller to fit) |
 | `TILES_MAX` | 300 | Most tiles over the bounding box of an area |
 | `ANCHORS_MAX` | 3000000 | Most anchors of a grid or a tile |
-| `LINES_MAX` | 1500000 | Most lines of a search (all its tiles), before their coordinates and profiles (a higher `--min-prominence` or a coarser `--resolution` finds fewer); a search is also refused when its lines and grids would not fit into the memory free when it started (about 2.5 KB per line and 100 bytes per pixel), and the worker warns at its start when these limits do not fit into its container's memory |
+| `LINES_MAX` | 1500000 | Most lines of a search (all its tiles), before their coordinates and profiles (a higher `--min-prominence` or a coarser `--resolution` finds fewer); a search is also refused when its lines and grids would not fit into the memory free when it started (about 500 bytes per line, plus about 100 bytes per point of the profile a circle keeps for each line, and 100 bytes per pixel), and the worker warns at its start when these limits do not fit into its container's memory |
 | `DOWNLOAD_MB_MAX` | 3000 | Largest download of a search (its estimate), MB |
 | `ORTHO_MINUTES` | 10 | Orthophoto that would take longer to download is not cached (the map loads it online) |
 | `NOT_ALLOWED` | `["update", "threads", "tile_size", "source", "water", "shore_buffer", "fill_gaps", "coastline", "ortho", "ortho_detail"]` | Options (or values of them) the page may not set, a JSON list |
