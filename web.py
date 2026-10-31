@@ -40,8 +40,10 @@ import math
 import os
 import re
 import secrets
+import sys
 import threading
 import time
+import traceback
 import webbrowser
 from typing import Callable, Dict, List, Optional, Tuple
 
@@ -54,7 +56,7 @@ import cache
 import messages
 from audit import KEEP_DAYS as AUDIT_DAYS, Audit
 import params as pm
-from jobs import TICK, Jobs, QuotaExceeded, Scheduler, search_params
+from jobs import EVENTS_LIMIT, TICK, Jobs, QuotaExceeded, Scheduler, search_params
 from settings import AccountSettings, Limits, PublicSettings
 
 PORT = 8765
@@ -491,6 +493,7 @@ def create_app(data_dir: str, token: Optional[str] = None, port: int = PORT, sta
         yield
         if sweep:
             sweep.cancel()
+        hub.stop()
         scheduler.stop()
 
     app = FastAPI(title="Find-a-Line", docs_url=None, redoc_url=None, openapi_url=None, lifespan=lifespan)
@@ -740,6 +743,7 @@ def create_app(data_dir: str, token: Optional[str] = None, port: int = PORT, sta
         jobs.adopt_runs(runs_dir, users.first_admin())  # (the viewer comes from the code: RunFiles)
 
     streams: Dict[Optional[int], int] = {}  # open event streams per user
+    hub = app.state.hub = EventHub(jobs)  # the one poller of the event streams
 
     # --- The tiers of the accounts: limits of the site for users, none for users without limits
     # and administrators; the safeguards of the server (Jobs.admission) for everyone ---
@@ -953,8 +957,8 @@ def create_app(data_dir: str, token: Optional[str] = None, port: int = PORT, sta
         whose = seen_by(user)
         cookie = request.cookies.get(ac.SESSION_COOKIE)
 
-        def look(seq: int):
-            return jobs.events(seq, user_id=whose), jobs.worker_alive()
+        def catch_up(seq: int, until: int):
+            return jobs.events(seq, user_id=whose, until=until)
 
         def still_signed_in() -> bool:
             found = users.session(cookie)
@@ -962,23 +966,43 @@ def create_app(data_dir: str, token: Optional[str] = None, port: int = PORT, sta
 
         async def stream():
             # sse-starlette ends the generator when the client goes away (or the server stops); the
-            # public site ends it when the session ends (signed out, revoked, blocked)
-            seq, worker, checked = start, None, time.monotonic()
+            # public site ends it when the session ends (signed out, revoked, blocked). The events
+            # come from the process's one poller (EventHub); the stream itself reads only those
+            # from its start to where the hub stood when it subscribed
+            seq, checked, queue = start, time.monotonic(), None
             try:
-                while True:
-                    if public and time.monotonic() - checked > SESSION_CHECK:
-                        checked = time.monotonic()
-                        if not await run_in_threadpool(still_signed_in):
-                            return
-                    found, alive = await run_in_threadpool(look, seq)
+                queue, until, alive = await hub.subscribe(whose)
+                while seq < until:
+                    found = await run_in_threadpool(catch_up, seq, until)
                     for event in found:
                         seq = event["seq"]
                         yield {"id": str(seq), "data": json.dumps(event)}
-                    if alive != worker:  # whether a worker runs: no id, it is not a stored event
+                    if len(found) < EVENTS_LIMIT:
+                        break
+                worker = alive  # whether a worker runs: no id, it is not a stored event
+                yield {"data": json.dumps({"kind": "worker", "data": {"alive": alive}})}
+                while True:
+                    wait = None
+                    if public:
+                        if time.monotonic() - checked > SESSION_CHECK:
+                            checked = time.monotonic()
+                            if not await run_in_threadpool(still_signed_in):
+                                return
+                        wait = max(0.0, SESSION_CHECK - (time.monotonic() - checked)) + 0.01
+                    try:
+                        found, alive = await asyncio.wait_for(queue.get(), wait)
+                    except TimeoutError:
+                        continue
+                    for event in found:
+                        if event["seq"] > seq:  # not after a Last-Event-ID beyond the hub's position
+                            seq = event["seq"]
+                            yield {"id": str(seq), "data": json.dumps(event)}
+                    if alive != worker:
                         worker = alive
                         yield {"data": json.dumps({"kind": "worker", "data": {"alive": alive}})}
-                    await asyncio.sleep(TICK)
             finally:
+                if queue is not None:
+                    hub.unsubscribe(queue)
                 release()
         # A comment every PING seconds keeps proxies from closing a quiet stream and finds dead
         # connections; a client that takes no data for SEND_TIMEOUT seconds is dropped
@@ -1587,6 +1611,102 @@ def signin_page(providers: List[str], user=None, csrf: Optional[str] = None, not
                     "<button class='u-btn' type='submit'>Sign out</button></form>")
     parts = ["<section class='p-card'>" + "\n".join(card) + "</section>", demo_list(demos or [])]
     return SIGNIN_HTML.format(body="\n".join(parts), logo=LOGO_SVG, footer=PAGE_FOOTER)
+
+
+class EventHub:
+    """The one poller of the events of a web process: while at least one event stream is open, a
+    task reads the new events of all jobs with their owners (Jobs.owned_events) and whether a worker
+    runs (Jobs.worker_alive) once every TICK, and hands each stream the events its user may see
+    (`whose`: a user's id, None for everyone's) and the liveness when it changes, so hundreds of open
+    pages cost two queries per TICK, not two each. A stream catches up by itself from its start to
+    the position the hub had when it subscribed (Jobs.events(until=)); everything after comes from
+    the hub, so nothing is missed or sent twice. The task stops with the last stream (or `stop`)."""
+
+    def __init__(self, jobs: Jobs):
+        self.jobs = jobs
+        self.listeners: Dict[asyncio.Queue, Optional[int]] = {}
+        self.seq: Optional[int] = None   # the last event handed out
+        self.alive: Optional[bool] = None
+        self.task: Optional[asyncio.Task] = None
+        self.ready: Optional[asyncio.Event] = None
+        self.polls = 0  # reads of the events (tests, measurements)
+
+    async def subscribe(self, whose: Optional[int]) -> Tuple[asyncio.Queue, int, bool]:
+        """A queue of (events, alive) for a stream of `whose`, the position from which the hub hands
+        out events (the stream catches up to it by itself) and the current liveness."""
+        queue: asyncio.Queue = asyncio.Queue()
+        self.listeners[queue] = whose
+        if self.task is None:
+            self.seq, self.alive, self.ready = None, None, asyncio.Event()
+            self.task = asyncio.create_task(self._run())
+        try:
+            await self.ready.wait()
+        except BaseException:
+            self.unsubscribe(queue)
+            raise
+        return queue, self.seq, self.alive
+
+    def unsubscribe(self, queue: asyncio.Queue):
+        self.listeners.pop(queue, None)
+        if not self.listeners:
+            self.stop()
+
+    def stop(self):
+        """Stop the poller (the last stream closed, or the server stops)."""
+        task, self.task = self.task, None
+        if task is not None:
+            task.cancel()
+
+    def _start(self) -> Tuple[int, bool]:
+        return self.jobs.last_seq(), self.jobs.worker_alive()
+
+    def _look(self, seq: int) -> Tuple[List[Tuple[Optional[int], Dict]], bool]:
+        found: List[Tuple[Optional[int], Dict]] = []
+        while True:  # all of them, in reads of EVENTS_LIMIT
+            batch = self.jobs.owned_events(seq)
+            found += batch
+            if len(batch) < EVENTS_LIMIT:
+                return found, self.jobs.worker_alive()
+            seq = batch[-1][1]["seq"]
+
+    def _hand_out(self, found: List[Tuple[Optional[int], Dict]], alive: bool):
+        """No await in here: a stream subscribed before gets all of it, one subscribed after none."""
+        if found:
+            self.seq = found[-1][1]["seq"]
+        changed, self.alive = alive != self.alive, alive
+        by_owner: Dict[Optional[int], List[Dict]] = {}
+        for owner, event in found:
+            by_owner.setdefault(owner, []).append(event)
+        everything = [event for _, event in found]
+        for queue, whose in self.listeners.items():
+            mine = everything if whose is None else by_owner.get(whose, [])
+            if mine or changed:
+                queue.put_nowait((mine, alive))
+
+    async def _run(self):
+        from fastapi.concurrency import run_in_threadpool
+        me = asyncio.current_task()
+        try:
+            while self.seq is None and self.task is me:
+                try:
+                    self.seq, self.alive = await run_in_threadpool(self._start)
+                except Exception:  # the database busy for a moment: the streams wait
+                    print("event poller:", traceback.format_exc(), file=sys.stderr)
+                    await asyncio.sleep(TICK)
+            self.ready.set()
+            while self.task is me:
+                await asyncio.sleep(TICK)
+                try:
+                    found, alive = await run_in_threadpool(self._look, self.seq)
+                except Exception:
+                    print("event poller:", traceback.format_exc(), file=sys.stderr)
+                    continue
+                self.polls += 1
+                if self.task is me:
+                    self._hand_out(found, alive)
+        finally:
+            if self.task is me:
+                self.task = None
 
 
 async def _disconnect(receive):

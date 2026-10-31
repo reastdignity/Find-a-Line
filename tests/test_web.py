@@ -613,6 +613,43 @@ def test_quick_lane(tmp_path, monkeypatch):
     assert Jobs(str(tmp_path))._db().execute("SELECT COUNT(*) FROM quick").fetchone()[0] == 0
 
 
+def test_quick_lane_idle_and_prompt(tmp_path, monkeypatch):
+    """The idle quick lane only reads (no write transaction while nothing waits), and a task that
+    arrives is answered within a few of its looks."""
+    import subprocess
+    import threading
+
+    import jobs as jb
+    jobs = Jobs(str(tmp_path))
+    writes = []
+    original = jb.Jobs._write
+
+    def counted(self):
+        writes.append(threading.current_thread().name)
+        return original(self)
+    monkeypatch.setattr(jb.Jobs, "_write", counted)
+    monkeypatch.setitem(jb.QUICK, "noop", lambda data_dir, request, limits: {"ok": request["n"]})
+    parent = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(120)"])  # the lane's "worker"
+    lane = threading.Thread(target=jb.run_quick, args=(str(tmp_path), "w1", parent.pid), name="lane", daemon=True)
+    try:
+        lane.start()
+        time.sleep(1.5)  # importing search and its looks at the table
+        assert "lane" not in writes
+        for n in range(5):
+            started = time.monotonic()
+            task = jobs.quick_add("noop", {"n": n})
+            while (answer := jobs.quick_take(task)) is None:
+                assert time.monotonic() - started < 2
+                time.sleep(0.01)
+            assert answer == {"code": 200, "body": {"ok": n}} and time.monotonic() - started < 0.5
+        assert writes.count("lane") == 5  # the claim of each task, nothing between
+    finally:
+        parent.kill()
+        parent.wait()
+        lane.join(10)
+    assert not lane.is_alive()
+
+
 def test_quick_wait_ends(tmp_path, monkeypatch):
     """The server waits for the quick lane at most the lane's time limit per task ahead and its own
     (plus QUICK_SLACK), and not after the client went away; either way it deletes its waiting task.

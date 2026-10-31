@@ -41,7 +41,7 @@ import threading
 import time
 import uuid
 from datetime import datetime
-from typing import Any, Callable, Dict, Iterable, List, NamedTuple, Optional, Set
+from typing import Any, Callable, Dict, Iterable, List, NamedTuple, Optional, Set, Tuple
 
 import cache
 import messages
@@ -59,6 +59,7 @@ KEEP_QUICK_SECONDS = 3600  # an answer of the quick lane nobody took (the page w
 # A waiting task of the quick lane is deleted by the web process that waits for it when it gives up
 # (web.quick); one left by a web process that stopped is deleted after this (longer than any wait)
 KEEP_WAITING_QUICK_SECONDS = 86400
+EVENTS_LIMIT = 1000     # events one read of the event streams gets at most (the next read goes on from there)
 JOB_EVENTS_MAX = 1000  # messages of a job its page gets at once (the newest; and the last progress)
 LEASE = 30.0              # seconds a lease lasts without a renewal
 # What a job is doing; "ready" means its data is downloaded and it waits to compute
@@ -468,18 +469,34 @@ class Jobs:
         return {"events": [{"seq": r["seq"], "job": r["job"], "kind": r["kind"], "data": json.loads(r["data"])}
                            for r in rows], "omitted": max(0, count - limit)}
 
-    def events(self, since: int, job_id: Optional[str] = None, user_id: Optional[int] = None) -> List[Dict]:
-        """The events after `since`: of one job, or of all jobs (of one user's jobs with user_id)."""
+    def events(self, since: int, job_id: Optional[str] = None, user_id: Optional[int] = None,
+               until: Optional[int] = None) -> List[Dict]:
+        """The events after `since` (and up to `until`): of one job, or of all jobs (of one user's
+        jobs with user_id; EVENTS_LIMIT of them at most)."""
+        end = until if until is not None else 2 ** 63 - 1
         with self._db() as db:
             if job_id:
-                rows = db.execute("SELECT * FROM events WHERE seq > ? AND job = ? ORDER BY seq", (since, job_id))
+                rows = db.execute("SELECT * FROM events WHERE seq > ? AND seq <= ? AND job = ? ORDER BY seq",
+                                  (since, end, job_id))
             elif user_id is not None:
                 rows = db.execute("SELECT e.* FROM events e JOIN jobs j ON j.id = e.job WHERE e.seq > ? AND "
-                                  "j.user_id = ? ORDER BY e.seq LIMIT 1000", (since, user_id))
+                                  "e.seq <= ? AND j.user_id = ? ORDER BY e.seq LIMIT ?",
+                                  (since, end, user_id, EVENTS_LIMIT))
             else:
-                rows = db.execute("SELECT * FROM events WHERE seq > ? ORDER BY seq LIMIT 1000", (since,))
+                rows = db.execute("SELECT * FROM events WHERE seq > ? AND seq <= ? ORDER BY seq LIMIT ?",
+                                  (since, end, EVENTS_LIMIT))
             return [{"seq": r["seq"], "job": r["job"], "kind": r["kind"], "data": json.loads(r["data"])}
                     for r in rows.fetchall()]
+
+    def owned_events(self, since: int) -> List[Tuple[Optional[int], Dict]]:
+        """The events of all jobs after `since` (EVENTS_LIMIT at most), each with the owner of its
+        job (None: the local app's, or a job gone): for the event poller of the web process
+        (web.EventHub), which hands each stream the events its user may see."""
+        with self._db() as db:
+            rows = db.execute("SELECT e.*, j.user_id AS owner FROM events e LEFT JOIN jobs j ON j.id = e.job "
+                              "WHERE e.seq > ? ORDER BY e.seq LIMIT ?", (since, EVENTS_LIMIT)).fetchall()
+        return [(r["owner"], {"seq": r["seq"], "job": r["job"], "kind": r["kind"], "data": json.loads(r["data"])})
+                for r in rows]
 
     def last_seq(self, user_id: Optional[int] = None) -> int:
         """The id of the last event (of one user's jobs with user_id)."""
@@ -825,7 +842,11 @@ class Jobs:
                               (task_id,)).fetchone()[0]
 
     def quick_take(self, task_id: int) -> Optional[Dict]:
-        """The answer of a task once it is there ({"code", "body"}), removing the task; else None."""
+        """The answer of a task once it is there ({"code", "body"}), removing the task; else None.
+        A read first: no write transaction while the answer is not there."""
+        with contextlib.closing(self._db()) as db:
+            if db.execute("SELECT 1 FROM quick WHERE id = ? AND status = 'done'", (task_id,)).fetchone() is None:
+                return None
         with self._write() as db:
             row = db.execute("SELECT answer FROM quick WHERE id = ? AND status = 'done'", (task_id,)).fetchone()
             if row:
@@ -838,7 +859,16 @@ class Jobs:
         with self._db() as db:
             db.execute("DELETE FROM quick WHERE id = ? AND status != 'running'", (task_id,))
 
+    def quick_waiting(self, db: Optional[sqlite3.Connection] = None) -> bool:
+        """Whether a task of the quick lane waits: a read (on `db`, the lane's own connection, if
+        given), so the idle lane opens no write transaction."""
+        if db is not None:
+            return db.execute("SELECT 1 FROM quick WHERE status = 'waiting' LIMIT 1").fetchone() is not None
+        with contextlib.closing(self._db()) as own:
+            return self.quick_waiting(own)
+
     def quick_claim(self, worker_id: str) -> Optional[Dict]:
+        """The oldest waiting task, now running on `worker_id`; None if none waits."""
         with self._write() as db:
             rows = db.execute("UPDATE quick SET status = 'running', worker_id = ?, started = ? WHERE id = "
                               "(SELECT id FROM quick WHERE status = 'waiting' ORDER BY id LIMIT 1) "
@@ -1154,9 +1184,10 @@ def run_quick(data_dir: str, worker_id: str, parent: int, limits: Optional[Limit
     global SLOT_MEMORY
     SLOT_MEMORY = memory  # an estimate's tiles as its job's (search.slot_memory)
     jobs = Jobs(data_dir, public)
+    reader = jobs._db()  # one connection for the idle looks (reads, so no write lock 1/QUICK_POLL times a second)
     looked = time.time()
     while True:
-        task = jobs.quick_claim(worker_id)
+        task = jobs.quick_claim(worker_id) if jobs.quick_waiting(reader) else None
         if task is None:
             if time.time() - looked > 2:
                 looked = time.time()

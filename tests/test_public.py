@@ -1949,6 +1949,105 @@ def test_event_streams_at_once_and_after_sign_out(tmp_path, settings, account_se
         assert ended
 
 
+def test_event_hub_hands_out_per_user(tmp_path, monkeypatch):
+    """The one poller of a web process (web.EventHub) reads the events of all jobs and hands each
+    stream only its user's (an administrator's: all) in order; a stream that subscribes later gets
+    from the hub only what came after its position (it catches up to it by itself); the poller
+    stops when the last stream leaves, and starts again with the next one."""
+    import asyncio
+
+    from jobs import Jobs
+    monkeypatch.setattr(web, "TICK", 0.05)
+    jobs = Jobs(str(tmp_path))
+    mine, other, local = jobs.add({}, "a's", 1), jobs.add({}, "b's", 2), jobs.add({}, "local", None)
+
+    async def drain(queue, until_seq, seconds=5):
+        got, deadline = [], time.monotonic() + seconds
+        while (not got or got[-1]["seq"] < until_seq) and time.monotonic() < deadline:
+            try:
+                events, _ = await asyncio.wait_for(queue.get(), 0.2)
+            except TimeoutError:
+                continue
+            got += events
+        return got
+
+    async def scenario():
+        hub = web.EventHub(jobs)
+        a, start_a, alive = await hub.subscribe(1)
+        b, start_b, _ = await hub.subscribe(2)
+        admin, _, _ = await hub.subscribe(None)
+        assert hub.task is not None and alive is False and start_a == start_b == jobs.last_seq()
+        for i in range(30):
+            jobs.event((mine, other, local)[i % 3], "info", {"i": i})
+        last = jobs.last_seq()
+        got_a, got_b, got_admin = await drain(a, last - 2), await drain(b, last - 1), await drain(admin, last)
+        assert {e["job"] for e in got_a} == {mine} and len(got_a) == 10
+        assert {e["job"] for e in got_b} == {other} and len(got_b) == 10
+        assert len(got_admin) == 30 and [e["seq"] for e in got_admin] == sorted(e["seq"] for e in got_admin)
+        assert [e["data"]["i"] for e in got_a] == list(range(0, 30, 3))
+
+        late, until, _ = await hub.subscribe(1)  # the hub stands at the last event
+        assert until == last
+        jobs.event(mine, "info", {"i": "after"})
+        got_late = await drain(late, jobs.last_seq())
+        assert [e["data"]["i"] for e in got_late] == ["after"]
+        assert [e["data"]["i"] for e in jobs.events(start_a, user_id=1, until=until)] == list(range(0, 30, 3))
+
+        jobs.register("w")  # the liveness reaches every stream once it changes
+        alive_seen = await asyncio.wait_for(b.get(), 5)
+        assert alive_seen == ([], True)
+        for queue in (a, b, admin, late):
+            hub.unsubscribe(queue)
+        task = asyncio.all_tasks() - {asyncio.current_task()}
+        assert hub.task is None
+        await asyncio.sleep(0.2)
+        assert all(t.done() for t in task)
+        polls = hub.polls
+        await asyncio.sleep(0.3)
+        assert hub.polls == polls  # no reads without streams
+        again, _, alive = await hub.subscribe(2)
+        assert hub.task is not None and alive is True
+        hub.stop()
+        await asyncio.sleep(0.1)
+        assert hub.task is None
+    asyncio.run(scenario())
+
+
+def test_event_stream_resumes_after_last_event_id(tmp_path, settings, account_settings, providers, monkeypatch):
+    """A stream that reconnects with Last-Event-ID gets the user's events after it, then the new ones
+    from the shared poller, each once and in order, and none of another user's."""
+    import socket
+
+    from jobs import Jobs
+    monkeypatch.setattr(web, "PING", 1)
+    jobs = Jobs(str(tmp_path))
+    a_id, a_cookie, _ = session_of(tmp_path, account_settings, "a")
+    b_id = session_of(tmp_path, account_settings, "b")[0]
+    mine, other = jobs.add({"params": {}}, "a's", a_id), jobs.add({"params": {}}, "b's", b_id)
+    for i in range(5):
+        jobs.event(mine, "info", {"i": i})
+        jobs.event(other, "info", {"i": i})
+    seen = [e["seq"] for e in jobs.events(0, user_id=a_id)]
+    with _public_server(tmp_path, settings, account_settings, providers) as port:
+        sock = _stream(port, a_cookie, str(seen[2]).encode())  # the "queued" event, i = 0 and 1 seen
+        sock.settimeout(1)
+        for i in range(5, 8):
+            jobs.event(mine, "info", {"i": i})
+            jobs.event(other, "info", {"i": i})
+        data, deadline = b"", time.time() + 15
+        while time.time() < deadline and data.count(b"\"info\"") < 6:
+            try:
+                data += sock.recv(65536)
+            except socket.timeout:
+                pass
+        sock.close()
+    events = [json.loads(line[5:]) for line in data.decode().splitlines() if line.startswith("data:")]
+    infos = [e for e in events if e.get("kind") == "info"]
+    assert {e["job"] for e in infos} == {mine}
+    assert [e["data"]["i"] for e in infos] == [2, 3, 4, 5, 6, 7]
+    assert sum(e.get("kind") == "worker" for e in events) == 1
+
+
 def test_blocking_cancels_the_jobs(tmp_path, settings, account_settings, providers):
     """Blocking a user cancels their waiting and running jobs and deletes their waiting estimates and
     profiles, with an audit entry; other users' work stays (review A, 7)."""
