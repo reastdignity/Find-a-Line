@@ -251,3 +251,19 @@ Recommendations 1, 2, 3, 6 and 7, with the lines as numpy columns (section 4); 4
 
 All together on the Gozo coast (cached data, tiles of 5 km): 125 → 95 s on 24 threads, 134 → 102 s on
 3 cores, the peak memory of the job 3.9 → 2.7 GB; regression R1, R2, R4, R9, R10, R13-R16, R18, R19 ok.
+
+## Recommendation 4 deferred (2026-10-31)
+
+The tiles of a large area in parallel processes are left for later:
+- **Memory.** The grids of a tile now set a job's peak (a public 36 Mpx tile about 3.6 GB), and a
+  compute slot on the VPS has about 5.2 GB: one tile fits. Two tiles at once would mean fewer slots
+  or smaller tiles.
+- **Smaller tiles mean more work.** Each tile reads `--max-length` and the margin around its core:
+  with a 5 km core and about 1 km around it a tile has about twice the pixels of its core, with a
+  2.5 km core about 3.4 times.
+- **It helps when the site is idle.** With the queue full the other slots already use the cores;
+  only one large job alone would finish sooner.
+- **Effort**: resuming, progress per tile, the same tiles in both phases, R14 (tiles equal one grid).
+
+To reconsider if the site is mostly idle and large areas are common: lending free compute slots to
+the tiles of a running job.
