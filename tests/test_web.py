@@ -158,9 +158,10 @@ def test_drawn_area_through_the_queue(tmp_path, monkeypatch):
 
 
 def test_jobs_database_migrated(tmp_path):
-    """A jobs.sqlite from before the schema versions keeps its jobs and gets the newest version;
-    a failing step leaves a database as it was."""
+    """A jobs.sqlite from before the schema versions keeps its jobs and gets the newest version,
+    its times (the local time of the process then) in UTC; a failing step leaves a database as it was."""
     import sqlite3
+    from datetime import datetime, timezone
 
     import cache
     import jobs as jb
@@ -170,10 +171,20 @@ def test_jobs_database_migrated(tmp_path):
                            run_id TEXT, error TEXT, finished TEXT);
         CREATE TABLE events (seq INTEGER PRIMARY KEY AUTOINCREMENT, job TEXT, kind TEXT, data TEXT);
         INSERT INTO jobs VALUES ('old', '2026-10-01T10:00:00', 'done', '{}', 'Old job', 'run', NULL,
-                                 '2026-10-01T11:00:00');""")
+                                 '2026-10-01T11:00:00');
+        INSERT INTO events (job, kind, data) VALUES
+            ('old', 'status', '{"status": "queued", "title": "Old job", "created": "2026-10-01T10:00:00"}'),
+            ('old', 'info', '"a message"');""")
     db.close()
     jobs = Jobs(str(tmp_path))
-    assert jobs.get("old")["title"] == "Old job"
+    utc = {t: datetime.fromisoformat(t).astimezone(timezone.utc).isoformat(timespec="seconds")
+           for t in ("2026-10-01T10:00:00", "2026-10-01T11:00:00")}
+    old = jobs.get("old")
+    assert old["title"] == "Old job" and old["created"] == utc["2026-10-01T10:00:00"]
+    assert old["finished"] == utc["2026-10-01T11:00:00"] and old["created"].endswith("+00:00")
+    events = [e["data"] for e in jobs.events(0)]
+    assert events == [{"status": "queued", "title": "Old job", "created": utc["2026-10-01T10:00:00"]}, "a message"]
+    assert cache.utc_iso(old["created"]) == old["created"] and cache.utc_iso("soon") == "soon"
     db = sqlite3.connect(tmp_path / "jobs.sqlite")
     assert db.execute("PRAGMA user_version").fetchone()[0] == len(jb.MIGRATIONS)
     db.close()

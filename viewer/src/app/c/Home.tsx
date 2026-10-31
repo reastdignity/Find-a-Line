@@ -15,6 +15,7 @@ import { beingSaved, jobProgress, type JobsState, type JobView } from "../useJob
 import { editHash, go, runHash } from "./route";
 import { Thumb, THUMB_CREDIT, type ThumbSource } from "./Thumb";
 import { Trip } from "./Trip";
+import { timeOf, when } from "../../time";
 
 export interface RunsState {
   runs: RunListed[] | null;
@@ -45,17 +46,11 @@ export function cardsOf(jobs: JobView[], runs: RunListed[], publicSite: boolean)
   for (const run of own) {
     if (!used.has(run.id) && !beingSaved(run, jobs)) cards.push({key: "run:" + run.id, run, created: run.created});
   }
-  return cards.sort((a, b) => b.created.localeCompare(a.created));
+  return cards.sort((a, b) => timeOf(b.created) - timeOf(a.created));
 }
 
-const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
 /** "27 Oct 2026, 10:41" from an ISO time (as written, no time zone arithmetic). */
-export function when(iso: string): string {
-  const m = /^(\d{4})-(\d\d)-(\d\d)[T ](\d\d):(\d\d)/.exec(iso);
-  if (!m) return iso.slice(0, 16);
-  return `${Number(m[3])} ${MONTHS[Number(m[2]) - 1]} ${m[1]}, ${m[4]}:${m[5]}`;
-}
 
 const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
 
@@ -215,7 +210,7 @@ export function Home({jobs, runs, usage, highlight, wide}: HomeProps) {
   const shared = cards.filter((c) => c.run?.shared);
   const shown = show === "running" ? running : show === "shared" ? shared : cards;
   const example = runs.public ? listed.find((r) => r.demo && r.has_map)
-    : listed.filter((r) => r.has_map).sort((a, b) => b.created.localeCompare(a.created))[0];
+    : listed.filter((r) => r.has_map).sort((a, b) => timeOf(b.created) - timeOf(a.created))[0];
 
   return <div class="c-home">
     <div class="c-home-main">

@@ -37,7 +37,7 @@ import sys
 import threading
 import time
 import uuid
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import Any, Callable, Dict, Iterable, List, NamedTuple, Optional, Set
 
 import cache
@@ -121,6 +121,12 @@ MIGRATIONS = [
     # 11: the code of a job's error and its parameters (JSON {"code", "params"}: the page shows the text
     # of the message catalogue, "error.<code>"); NULL: no code (and every job of before), `error` is shown
     """ALTER TABLE jobs ADD COLUMN error_info TEXT;""",
+    # 12: times in UTC with their offset ("...+00:00"; the page shows them in the viewer's time zone):
+    # those of before had none and were the local time of the process (UTC in the container)
+    lambda db: cache.utc_columns(db, {"jobs": ("created", "finished"), "runs": ("created",),
+                                      "favourites": ("created",), "favourite_folders": ("created",),
+                                      "reports": ("created",), "workers": ("started",)},
+                                 json_columns={("events", "data"): ("created", "finished")}),
 ]
 FAVOURITES_MAX = 10000  # favourite lines of a user (a safeguard of the database, the same for everyone)
 FOLDERS_MAX = 1000      # folders of favourites of a user
@@ -230,7 +236,7 @@ class Jobs:
         transaction before the job is added (a quota: it raises to refuse it); `unlimited`: a job
         of a user without limits (the worker's Limits do not apply to it, its time limits do)."""
         job_id = f"{datetime.now():%Y%m%d-%H%M%S}-{uuid.uuid4().hex[:6]}"
-        created = datetime.now().isoformat(timespec="seconds")
+        created = cache.now_iso()
         with self._write() as db:
             if check:
                 check(db)
@@ -268,7 +274,7 @@ class Jobs:
                     raise QuotaExceeded(f"at most {limits.jobs_active_max} of your searches may wait or run at once",
                                         code="quota_active", max=limits.jobs_active_max)
             if limits.jobs_day_max is not None:
-                since = (datetime.now() - timedelta(seconds=DAY)).isoformat(timespec="seconds")
+                since = cache.now_iso(ago=DAY)
                 count = db.execute("SELECT COUNT(*) FROM jobs WHERE user_id = ? AND created >= ?",
                                    (user_id, since)).fetchone()[0]
                 if count >= limits.jobs_day_max:
@@ -329,7 +335,7 @@ class Jobs:
         the local app's jobs and runs (those without an owner)."""
         owner = "user_id IS ?" if user_id is None else "user_id = ?"
         active = WAITING + ACTIVE
-        since = (datetime.now() - timedelta(seconds=DAY)).isoformat(timespec="seconds")
+        since = cache.now_iso(ago=DAY)
         db = self._db()
         try:
             counted = limits is not None and user_id is not None
@@ -414,7 +420,7 @@ class Jobs:
         An `error` is a text or an error: a coded one (messages.Coded) is stored as its web text with
         its code and parameters in `error_info`; an error clears the code of an earlier one."""
         if status in FINISHED:
-            fields["finished"] = datetime.now().isoformat(timespec="seconds")
+            fields["finished"] = cache.now_iso()
         if "error" in fields:
             error = fields["error"]
             coded = messages.user_error(error) if isinstance(error, BaseException) else None
@@ -483,7 +489,7 @@ class Jobs:
         with self._db() as db:
             db.execute("INSERT INTO runs (run_id, user_id, bytes, created) VALUES (?, ?, ?, ?) ON CONFLICT (run_id) "
                        "DO UPDATE SET user_id = excluded.user_id, bytes = excluded.bytes",
-                       (run_id, user_id, size, datetime.now().isoformat(timespec="seconds")))
+                       (run_id, user_id, size, cache.now_iso()))
 
     def run(self, run_id: str) -> Optional[Dict]:
         with self._db() as db:
@@ -509,7 +515,7 @@ class Jobs:
                     found.append(entry.name)
         with self._write() as db:
             known = {r[0] for r in db.execute("SELECT run_id FROM runs")}
-            now = datetime.now().isoformat(timespec="seconds")
+            now = cache.now_iso()
             new = [run_id for run_id in found if run_id not in known]
             for run_id in new:
                 db.execute("INSERT INTO runs (run_id, user_id, bytes, created) VALUES (?, ?, ?, ?)",
@@ -584,7 +590,7 @@ class Jobs:
                                     "favourites_max", max=FAVOURITES_MAX)
             db.execute("INSERT INTO favourites (user_id, run_id, line, data, created, folder_id) "
                        "VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING",
-                       (user_id, run_id, line, json.dumps(data), datetime.now().isoformat(timespec="seconds"),
+                       (user_id, run_id, line, json.dumps(data), cache.now_iso(),
                         folder_id))
 
     def move_favourite(self, user_id: Optional[int], run_id: str, line: str, folder_id: Optional[int]):
@@ -649,7 +655,7 @@ class Jobs:
             if self._depth(parents, parent_id) + 1 > FOLDER_DEPTH_MAX:
                 raise ValueError(f"folders go at most {FOLDER_DEPTH_MAX} deep")
             return db.execute("INSERT INTO favourite_folders (user_id, parent_id, name, created) VALUES (?, ?, ?, ?)",
-                              (user_id, parent_id, name, datetime.now().isoformat(timespec="seconds"))).lastrowid
+                              (user_id, parent_id, name, cache.now_iso())).lastrowid
 
     def change_folder(self, user_id: Optional[int], folder_id: int, name: Optional[str] = None,
                       parent_id: Optional[int] = None, move: bool = False):
@@ -689,7 +695,7 @@ class Jobs:
         """A user's problem report (checked by web.checked_report); its id."""
         with self._db() as db:
             return db.execute("INSERT INTO reports (user_id, created, category, text, context) VALUES (?, ?, ?, ?, ?)",
-                              (user_id, datetime.now().isoformat(timespec="seconds"), category, text,
+                              (user_id, cache.now_iso(), category, text,
                                json.dumps(context))).lastrowid
 
     def reports(self, limit: int = 200) -> List[Dict]:
@@ -742,7 +748,7 @@ class Jobs:
         """A worker starts: its lease."""
         with self._db() as db:
             db.execute("INSERT OR REPLACE INTO workers (id, pid, host, started, expires) VALUES (?, ?, ?, ?, ?)",
-                       (worker_id, os.getpid(), socket.gethostname(), datetime.now().isoformat(timespec="seconds"),
+                       (worker_id, os.getpid(), socket.gethostname(), cache.now_iso(),
                         time.time() + LEASE))
 
     def heartbeat(self, worker_id: str) -> bool:
@@ -847,7 +853,7 @@ class Jobs:
 
     def forget_events(self, days: float) -> int:
         """Delete the events (messages, progress) of jobs finished more than `days` ago; the jobs stay."""
-        cutoff = (datetime.now() - timedelta(days=days)).isoformat(timespec="seconds")
+        cutoff = cache.now_iso(ago=days * 86400)
         with self._db() as db:
             return db.execute(f"DELETE FROM events WHERE job IN (SELECT id FROM jobs WHERE status IN {_in(FINISHED)} "
                               "AND finished < ?)", (*FINISHED, cutoff)).rowcount
@@ -870,7 +876,7 @@ class Jobs:
             alive = db.execute("SELECT 1 FROM workers WHERE id = ? AND expires > ?",
                                (row["worker_id"], time.time())).fetchone()
             now = row["status"] in WAITING or not alive
-            finished = datetime.now().isoformat(timespec="seconds")
+            finished = cache.now_iso()
             if now:
                 db.execute("UPDATE jobs SET status = 'cancelled', finished = ? WHERE id = ?", (finished, job_id))
             else:

@@ -26,6 +26,7 @@ import { ProfileDock } from "./ProfileDock";
 import { ResultSummary } from "./ResultSummary";
 import { RunActions, runFolder, type RunActionsProps } from "./RunActions";
 import "./workspace.css";
+import { day } from "../../time";
 
 const PANEL = 384 + 12;  // the results panel's width and its margin (workspace.css .b-results)
 
@@ -79,14 +80,14 @@ function Pill({data, runs, back, wide, onRun}: {data: RunData; runs?: RunListed[
   return <div class={back ? "b-pill" : "b-pill b-pill-alone"}>
     <Back back={back} wide={wide} />
     <span class="u-grow b-pill-name" title={data.run.name}>{data.run.name}</span>
-    <span class="u-small b-pill-date">{data.run.created.slice(0, 10)}</span>
+    <span class="u-small b-pill-date">{day(data.run.created)}</span>
     {onRun && others.length > 1 && <Popover label="Other runs" button={(open, toggle) =>
       <IconButton icon="down" label="Switch to another run" plain round expanded={open} onClick={toggle} />}
       open={switching} onOpen={setSwitching}>
       {() => <ul class="b-switch">{others.map((r) => <li key={r.id}>
         <button type="button" class={r.id === data.run.id ? "u-on" : ""}
                 onClick={() => { setSwitching(false); if (r.id !== data.run.id) onRun(r.id); }}>
-          <b>{r.name}</b><span class="u-small">{r.created.slice(0, 10)} · {runCounts(r)}</span></button></li>)}</ul>}
+          <b>{r.name}</b><span class="u-small">{day(r.created)} · {runCounts(r)}</span></button></li>)}</ul>}
     </Popover>}
   </div>;
 }

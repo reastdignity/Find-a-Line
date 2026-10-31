@@ -39,7 +39,7 @@ import os
 import pickle
 import shutil
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Callable, Dict, List, Optional, Tuple
 
 import numpy as np
@@ -987,7 +987,7 @@ def save_run(plan: Plan, lines: Lines, confirm: Optional[Confirm] = None, run: O
     meta = {
         "id": run["id"],
         "name": name,
-        "created": created.isoformat(timespec="seconds"),
+        "created": created.astimezone(timezone.utc).isoformat(timespec="seconds"),  # local time in its id
         "center": {"lat": center_lat, "lon": center_lon, "x": x, "y": y, "crs": plan.crs},
         "area": plan.area.describe(),
         "source": {"id": plan.source.id, "name": plan.source.name, "description": plan.source.description},

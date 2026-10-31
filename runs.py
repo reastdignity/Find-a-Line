@@ -260,6 +260,14 @@ def save_results(run_path: str, groups: List[Dict], meta: Dict, on_lines=lambda 
     on_lines(0, "run.json")
 
 
+def _local_time(created: str) -> str:
+    """A run's time (UTC) as this computer's local time, "2026-10-31 07:17"."""
+    try:
+        return datetime.fromisoformat(created).astimezone().strftime("%Y-%m-%d %H:%M")
+    except ValueError:
+        return created[:16].replace("T", " ")
+
+
 def list_runs(runs_dir: str, only: Optional[Iterable[str]] = None) -> List[Dict]:
     """All saved runs (or those of `only`, ids), newest first."""
     runs = []
@@ -269,6 +277,7 @@ def list_runs(runs_dir: str, only: Optional[Iterable[str]] = None) -> List[Dict]
             if os.path.isfile(path):
                 with open(path, encoding="utf-8") as f:
                     run = json.load(f)
+                run["created"] = cache.utc_iso(run.get("created")) or ""  # without an offset before 2026-10-31
                 run["has_map"] = os.path.isfile(os.path.join(runs_dir, run_id, "map.html"))
                 run["has_lines"] = os.path.isfile(os.path.join(runs_dir, run_id, "lines.js"))
                 runs.append(run)
@@ -345,7 +354,7 @@ def write_index(runs_dir: str):
             if os.path.exists(os.path.join(runs_dir, r["id"], file)):
                 links.append(f"<a href='{e(quote(r['id']))}/{file}'>{label}</a>")
         rows.append(
-            f"<tr><td>{e(r['created'][:16].replace('T', ' '))}</td><td>{e(r['name'])}</td>"
+            f"<tr><td>{e(_local_time(r['created']))}</td><td>{e(r['name'])}</td>"
             f"<td>{r['center']['lat']:.5f}, {r['center']['lon']:.5f}</td>"
             f"<td>{e(params_summary(r))}</td>"
             f"<td class='n'>{r['summary']['lines']}</td><td class='n'>{r['summary']['spots']}</td>"

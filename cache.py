@@ -34,6 +34,7 @@ time changes), so the fetch time says when the data last changed.
 
 import contextlib
 import hashlib
+import json
 import os
 import re
 import shutil
@@ -187,8 +188,50 @@ def remove_work(path: str):
         print(f"Could not delete the work folder {path}: {e}")
 
 
-def _now() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+def now_iso(ago: float = 0) -> str:
+    """The time now (or `ago` seconds before) in UTC with its offset, as the databases store it."""
+    return (datetime.now(timezone.utc) - timedelta(seconds=ago)).isoformat(timespec="seconds")
+
+
+def utc_iso(value: Optional[str]) -> Optional[str]:
+    """A stored time in UTC with its offset; one without an offset (stored before) is the local
+    time of this process (UTC in the container). Anything else is returned as it is."""
+    if not value:
+        return value
+    try:
+        moment = datetime.fromisoformat(value)
+    except ValueError:
+        return value
+    return moment.astimezone(timezone.utc).isoformat(timespec="seconds")
+
+
+def utc_columns(db: sqlite3.Connection, columns: Dict[str, Iterable[str]],
+                json_columns: Optional[Dict[tuple, Iterable[str]]] = None):
+    """A migration step: the times of these columns (and of these keys of JSON columns) in UTC
+    (utc_iso); a table that does not exist is skipped."""
+    tables = {r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+    for table, names in columns.items():
+        if table not in tables:
+            continue
+        for name in names:
+            rows = db.execute(f"SELECT rowid, {name} FROM {table} WHERE {name} IS NOT NULL").fetchall()
+            db.executemany(f"UPDATE {table} SET {name} = ? WHERE rowid = ?",
+                           [(utc_iso(value), rowid) for rowid, value in rows if utc_iso(value) != value])
+    for (table, name), keys in (json_columns or {}).items():
+        if table not in tables:
+            continue
+        changed = []
+        for rowid, text in db.execute(f"SELECT rowid, {name} FROM {table} WHERE {name} IS NOT NULL").fetchall():
+            try:
+                data = json.loads(text)
+            except ValueError:
+                continue
+            if not isinstance(data, dict) or not any(isinstance(data.get(k), str) for k in keys):
+                continue
+            new = {**data, **{k: utc_iso(data[k]) for k in keys if isinstance(data.get(k), str)}}
+            if new != data:
+                changed.append((json.dumps(new), rowid))
+        db.executemany(f"UPDATE {table} SET {name} = ? WHERE rowid = ?", changed)
 
 
 def http_headers() -> Dict[str, str]:
@@ -261,7 +304,7 @@ def record_many(cache_dir: str, paths: Iterable[str], status: str = "ok", url: O
     for path in paths:
         top, inner = _split(cache_dir, path)
         by_top.setdefault(top, []).append((path, inner))
-    now = _now()
+    now = now_iso()
     for top, items in by_top.items():
         with _connect(cache_dir, top) as db:
             rows = []
@@ -279,7 +322,7 @@ def record_many(cache_dir: str, paths: Iterable[str], status: str = "ok", url: O
 
 def checked(cache_dir: str, paths: Iterable[str]):
     """Note that files were checked and are still current."""
-    now = _now()
+    now = now_iso()
     by_top: Dict[str, List[str]] = {}
     for path in paths:
         top, inner = _split(cache_dir, path)
@@ -377,7 +420,7 @@ def touch(cache_dir: str, paths: Iterable[str]) -> Dict[str, Optional[str]]:
     for path in paths:
         top, inner = _split(cache_dir, path)
         by_top.setdefault(top, []).append(inner)
-    now, fetched = _now(), []
+    now, fetched = now_iso(), []
     for top, inners in by_top.items():
         with _connect(cache_dir, top) as db:
             db.executemany("UPDATE files SET last_used_at = ? WHERE path = ?", [(now, i) for i in inners])

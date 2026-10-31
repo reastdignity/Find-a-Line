@@ -2,6 +2,7 @@
 // ones, and whether a listed run is still being saved by its job.
 
 import type { Job } from "./api";
+import { timeOf } from "../time";
 
 export const FINISHED: Job["status"][] = ["done", "failed", "cancelled"];
 
@@ -10,5 +11,5 @@ export const FINISHED: Job["status"][] = ["done", "failed", "cancelled"];
  *  has no map yet and was made after the unfinished job was queued; its job's card stands for it. */
 export function beingSaved(run: {has_map: boolean; created: string}, jobs: Pick<Job, "status" | "run_id" | "created">[]): boolean {
   return !run.has_map && jobs.some((j) => !FINISHED.includes(j.status) && !j.run_id
-                                          && run.created.slice(0, 19) >= j.created.slice(0, 19));
+                                          && timeOf(run.created) >= timeOf(j.created));
 }

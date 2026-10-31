@@ -15,7 +15,7 @@ import { ResultModel } from "../../result/model";
 import { ResultMap, type Padding } from "../../result/ResultMap";
 import { FilterBar, LineDetails, LinesTable, ProfileDock, ResultSummary, RunActions, useModel } from "../../result/view";
 import { editHash, parseRoute, runHash } from "./route";
-import { when } from "./Home";
+import { when } from "../../time";
 
 /** A model of the run; its list sorted by clearance, largest first, unless the user chose a sorting. */
 function modelOf(data: RunData): ResultModel {

@@ -9,6 +9,7 @@ import { exportFavourites, favouriteLine, type Favourite } from "../../favourite
 import { formatValue, sortKey, sortRows, SORT_KEYS, type Row } from "../../list";
 import { api } from "../api";
 import { runHash } from "./route";
+import { day } from "../../time";
 
 const ADDED = "added";  // the server's order: marked last first
 type FavouriteRow = Row & {fav: Favourite};
@@ -58,7 +59,7 @@ export function Trip({full = false, limit}: {full?: boolean; limit?: number}) {
             <b>{formatValue(sortKey("len"), r)} m</b> · {formatValue(sortKey("clr"), r)} m clear
             {extra && <span class="u-small"> · {extra.head} {formatValue(extra, r)}{extra.unit}</span>}
             {r.line.over && <span class="c-fav-over"> · over trees</span>}
-            <span class="u-small c-fav-run">{r.fav.run_name} · {r.fav.run_created.slice(0, 10)}</span>
+            <span class="u-small c-fav-run">{r.fav.run_name} · {day(r.fav.run_created)}</span>
           </span>
           <Icon name="next" />
         </a>

@@ -10,6 +10,7 @@ import { Button, IconButton } from "../../ui/components";
 import { Icon } from "../../ui/icons";
 import { api } from "../api";
 import type { PlaceMap } from "../PlaceMap";
+import { day } from "../../time";
 
 const ADDED = "added";  // the server's order: marked last first
 type FavouriteRow = Row & {fav: Favourite};
@@ -60,7 +61,7 @@ export function FavouritesB({place, onOpen}: {place: PlaceMap; onOpen(runId: str
       {sorted.map((r) => <li key={r.fav.run_id + "|" + r.fav.line} class="b-fav">
         <button type="button" class="b-fav-open" onClick={() => onOpen(r.fav.run_id, r.fav.line)}>
           <span class="b-fav-nums">{columns.map((c) => <span key={c.key}><b>{formatValue(c, r)}</b>{c.unit} {c.head}</span>)}</span>
-          <span class="u-small">{r.fav.run_name} · {r.fav.run_created.slice(0, 10)}
+          <span class="u-small">{r.fav.run_name} · {day(r.fav.run_created)}
             {r.line.over && " · over trees or buildings"}</span>
         </button>
         <IconButton icon="star" fav label="Remove from favourites" plain onClick={() => remove(r)} />

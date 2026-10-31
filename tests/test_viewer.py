@@ -424,6 +424,23 @@ console.log(JSON.stringify({json.dumps(cases)}.map(([key, params]) =>
     assert python[4] == "The area is 51.25 km², limit 50 km²." and python[6] == "Spot <b>"  # Preact escapes
 
 
+def test_times_in_the_viewers_zone(tmp_path):
+    """time.ts shows the server's UTC times in the viewer's time zone (Warsaw here: CET, CEST in
+    summer), times without an offset (stored before UTC) as the viewer's local time, and compares
+    them as moments."""
+    found = run_ts(tmp_path, "time", """
+process.env.TZ = "Europe/Warsaw";
+console.log(JSON.stringify([
+  m.when("2026-10-31T06:17:52+00:00"), m.when("2026-07-01T23:30:00+00:00"), m.day("2026-07-01T23:30:00+00:00"),
+  m.when("2026-10-31T06:17:52"), m.when("2026-10-31 06:17:52"), m.when(null, "never"), m.when("soon"),
+  m.shortWhen("2026-10-31T06:17:52+00:00", new Date("2026-10-31T12:00:00+00:00")),
+  m.shortWhen("2026-10-30T06:17:52+00:00", new Date("2026-10-31T12:00:00+00:00")),
+  m.timeOf("2026-10-31T07:17:52+01:00") === m.timeOf("2026-10-31T06:17:52+00:00"), m.timeOf(undefined)]));""")
+    assert found == ["31 Oct 2026, 07:17", "2 Jul 2026, 01:30", "2026-07-02",
+                     "31 Oct 2026, 06:17", "31 Oct 2026, 06:17", "never", "soon",
+                     "07:17", "2026-10-30 07:17", True, 0]
+
+
 def test_error_texts_match_python(tmp_path):
     """The page renders a coded error as the server writes its web text (i18n.ts errorText and
     detailMessage, the text of app/api.ts ApiError): the field's label, plural forms, the server's

@@ -234,7 +234,7 @@ def _store(cache_dir: str, table: str, key: str, answer: Dict) -> Dict:
     db = _nominatim_db(cache_dir)
     try:
         with db:
-            db.execute(f"INSERT OR REPLACE INTO {table} VALUES (?, ?, ?)", (key, text, cache._now()))
+            db.execute(f"INSERT OR REPLACE INTO {table} VALUES (?, ?, ?)", (key, text, cache.now_iso()))
     finally:
         db.close()
     return json.loads(text)

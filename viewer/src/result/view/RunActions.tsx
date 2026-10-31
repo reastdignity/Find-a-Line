@@ -13,6 +13,7 @@ import type { ResultModel } from "../model";
 import type { ResultMap } from "../ResultMap";
 import { LinkField } from "./LineDetails";
 import { Popover, Swatch, useModel } from "./common";
+import { day } from "../../time";
 
 export interface RunActionsProps {
   model: ResultModel;
@@ -95,7 +96,7 @@ function Compare({model, view, compact, base = "/runs/"}: RunActionsProps) {
   const row = (item: OtherItem) => <label class="r-check r-other" key={item.run.id} title={item.run.description}>
     <input type="checkbox" checked={item.status === "on" || item.status === "loading"} onChange={() => toggle(item)} />
     <Swatch color={colorOf(item.run.id)} />
-    <span class="u-grow">{item.run.name}<span class="u-small"> · {item.run.created.slice(0, 10)} · {item.km < 1 ? "here"
+    <span class="u-grow">{item.run.name}<span class="u-small"> · {day(item.run.created)} · {item.km < 1 ? "here"
       : num0(item.km) + " km"}{item.status === "loading" ? " · loading…" : item.status === "error" ? " · no lines" : ""}</span></span>
   </label>;
   return <Popover label="Compare with other runs" align="right"

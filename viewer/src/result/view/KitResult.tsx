@@ -22,6 +22,7 @@ import { ProfileDock } from "./ProfileDock";
 import { ResultSummary } from "./ResultSummary";
 import { RunActions } from "./RunActions";
 import { useModel } from "./common";
+import { day, when } from "../../time";
 
 const PANEL = 384 + 16;  // the panel's width and its margin (result.css .r-panel)
 
@@ -42,7 +43,7 @@ function RunPicker() {
     {error && <p class="r-error">{error}</p>}
     {runs === null ? <p class="u-small">Loading…</p> : runs.length === 0 ? <p>No saved runs yet.</p>
       : <ul class="r-runs">{runs.filter((r) => r.has_map).map((r) => <li key={r.id}>
-          <a href={href(r.id)}>{r.name}</a> <span class="u-small">{r.created.slice(0, 16).replace("T", " ")} ·
+          <a href={href(r.id)}>{r.name}</a> <span class="u-small">{when(r.created)} ·
             {" "}{r.summary.spots} spots, {r.summary.lines} lines</span></li>)}</ul>}
     <a href={uiHref("kit")}>Component gallery</a>
   </div>;
@@ -114,7 +115,7 @@ function Result({data}: {data: RunData}) {
   const title = <div class="r-pill">
     <a class="u-ib u-plain u-round" href={uiHref("kit-result")} aria-label="All runs" title="All runs">‹</a>
     <span class="u-grow r-pill-name">{data.run.name}</span>
-    <span class="u-small">{data.run.created.slice(0, 10)}</span>
+    <span class="u-small">{day(data.run.created)}</span>
   </div>;
 
   return <div class="r-kit-main">

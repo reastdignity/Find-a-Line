@@ -28,7 +28,6 @@ import secrets
 import sqlite3
 import time
 from dataclasses import dataclass
-from datetime import datetime
 from typing import Dict, List, Optional, Tuple
 
 import cache
@@ -54,6 +53,8 @@ MIGRATIONS = [
        CREATE INDEX sessions_user ON sessions (user_id);""",
     # 2: users without limits (set by an administrator; settings.Limits does not apply to them)
     """ALTER TABLE users ADD COLUMN unlimited INTEGER NOT NULL DEFAULT 0;""",
+    # 3: times in UTC with their offset; those of before were the local time of the process
+    lambda db: cache.utc_columns(db, {"users": ("created", "last_login")}),
 ]
 # The providers: Authlib's registration and how to read the user's id and name
 GITHUB = {"authorize_url": "https://github.com/login/oauth/authorize",
@@ -166,7 +167,7 @@ class Accounts:
         """The id of a user, made (approved, without a name) if it has never signed in."""
         with self._db() as db:
             db.execute("INSERT OR IGNORE INTO users (provider, subject, status, created) VALUES (?, ?, 'approved', ?)",
-                       (provider, subject, datetime.now().isoformat(timespec="seconds")))
+                       (provider, subject, cache.now_iso()))
             return db.execute("SELECT id FROM users WHERE provider = ? AND subject = ?",
                               (provider, subject)).fetchone()[0]
 
@@ -181,7 +182,7 @@ class Accounts:
         refused (SignupClosed) by FINDALINE_SIGNUP; administrators are always approved."""
         if provider not in PROVIDERS or not subject:
             raise ValueError("unknown identity")
-        now = datetime.now().isoformat(timespec="seconds")
+        now = cache.now_iso()
         admin = (provider, subject) in self.admins
         name = clean_name(name)
         with self._db() as db:

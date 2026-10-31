@@ -20,6 +20,7 @@ import { formatValue, sortKey, sortRows, SORT_KEYS, type Row } from "../../list"
 import { api } from "../api";
 import { menuKeys } from "./Home";
 import { favouritesHash, folderOfHash, runHash } from "./route";
+import { day } from "../../time";
 
 const ADDED = "added";  // the server's order: marked last first
 type FavouriteRow = Row & {fav: Favourite};
@@ -184,7 +185,7 @@ function FavRow({shelf, r, extra}: {shelf: Shelf; r: FavouriteRow; extra: Return
         <b>{formatValue(sortKey("len"), r)} m</b> · {formatValue(sortKey("clr"), r)} m clear
         {extra && <span class="u-small"> · {extra.head} {formatValue(extra, r)}{extra.unit}</span>}
         {r.line.over && <span class="c-fav-over"> · over trees</span>}
-        <span class="u-small c-fav-run">{f.run_name} · {f.run_created.slice(0, 10)}</span>
+        <span class="u-small c-fav-run">{f.run_name} · {day(f.run_created)}</span>
       </span>
     </a>
     <RowMenu label="Actions of the line"

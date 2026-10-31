@@ -1740,7 +1740,7 @@ def test_jobs_database_gets_error_codes(tmp_path):
     db.close()
     jobs = jb.Jobs(str(tmp_path), public=True)
     db = sqlite3.connect(tmp_path / "jobs.sqlite")
-    assert db.execute("PRAGMA user_version").fetchone()[0] == len(jb.MIGRATIONS) == 11
+    assert db.execute("PRAGMA user_version").fetchone()[0] == len(jb.MIGRATIONS) == 12
     db.close()
     assert [(j["id"], j["error"], j["error_info"]) for j in jobs.all()] == [("old", "it broke", None)]
     job = jobs.add({"params": {}, "geometry": None}, "New")

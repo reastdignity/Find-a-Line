@@ -6,6 +6,7 @@ import { useEffect, useState } from "preact/hooks";
 import { Button } from "../../ui/components";
 import { api, type OsmState } from "../api";
 import type { PlaceMap } from "../PlaceMap";
+import { day } from "../../time";
 
 export function OsmC({place, onStarted}: {place: PlaceMap; onStarted(): void}) {
   const [state, setState] = useState<OsmState | null>(null);
@@ -41,7 +42,7 @@ export function OsmC({place, onStarted}: {place: PlaceMap; onStarted(): void}) {
     {state && (state.extracts.length ? <ul class="c-admin-list">{state.extracts.map((e) => <li key={e.id} class="c-admin-row">
       <div class="c-admin-head"><b>{e.id}</b>
         <Button kind="ghost" icon="refresh" onClick={() => start("update", e.id)}>Update</Button></div>
-      <div class="u-small">{e.mb} MB · data of {(e.data || "?").slice(0, 10)} · checked {(e.checked || "?").slice(0, 10)}</div>
+      <div class="u-small">{e.mb} MB · data of {day(e.data, "?")} · checked {day(e.checked, "?")}</div>
     </li>)}</ul> : <p class="u-small">None yet.</p>)}
   </div>;
 }

@@ -13,17 +13,13 @@ import { Icon } from "../../ui/icons";
 import { UsageMeters } from "../../search/SearchPanel";
 import { ShareRun } from "../../result/view/RunActions";
 import { runCounts } from "../../result/view/ResultWorkspace";
+import { shortWhen } from "../../time";
 
 export { runCounts };
 
 const cx = (...names: (string | false | null | undefined)[]) => names.filter(Boolean).join(" ");
 
 /** "2026-10-29 14:05" of an ISO time; the time only for today. */
-export function when(iso: string | null | undefined): string {
-  if (!iso) return "";
-  const day = iso.slice(0, 10), today = new Date().toISOString().slice(0, 10);
-  return day === today ? iso.slice(11, 16) : iso.slice(0, 16).replace("T", " ");
-}
 
 /** The steps of a search: the elevation data, finding the lines (tiles and steps), the map. */
 export function JobSteps({job}: {job: JobView}) {
@@ -51,7 +47,7 @@ export function JobCard({job, run, onShow, onEdit, onCancel, actions}:
   return <article class={cx("b-card", `b-${p.state}`)} data-job={job.id} data-status={job.status}>
     <div class="b-card-head"><StatusChip status={p.state}>{p.state === "waiting" ? "Waiting" : p.state === "running"
       ? "Running" : p.state === "done" ? "Done" : job.status === "cancelled" ? "Cancelled" : "Failed"}</StatusChip>
-      <b class="b-card-title">{job.title}</b><span class="u-small">{when(job.created)}</span></div>
+      <b class="b-card-title">{job.title}</b><span class="u-small">{shortWhen(job.created)}</span></div>
     {!p.finished && <>
       {!osm && <JobSteps job={job} />}
       <Progress value={p.fraction} label={<span class="u-small">{p.label}</span>} />
@@ -88,7 +84,7 @@ function RunCard({run, jobId, sharing, onShow, onEdit, onDeleted}:
   return <article class="b-card b-done" data-run={run.id} ref={card}>
     <div class="b-card-head">
       <StatusChip status={shared ? "shared" : "done"}>{shared ? "Shared" : "Done"}</StatusChip>
-      <b class="b-card-title">{run.name}</b><span class="u-small">{when(run.created)}</span></div>
+      <b class="b-card-title">{run.name}</b><span class="u-small">{shortWhen(run.created)}</span></div>
     <span class="u-small b-counts">{runCounts(run)}{run.demo && " · demo, open to everyone"}</span>
     {run.description && <span class="u-small b-desc">{run.description}</span>}
     <div class="b-card-acts">

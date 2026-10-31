@@ -9,9 +9,10 @@ import { useEffect, useState } from "preact/hooks";
 import { Button, Panel, Stat, Stats, StatusChip, type Status } from "../../ui/components";
 import { api, type AdminReport, type AdminRun, type AdminStatus, type AdminUser, type Job } from "../api";
 import { runHash } from "./route";
+import { day, when } from "../../time";
 
 const JOBS_SHOWN = 50;
-const when = (iso: string | null | undefined, empty = "?") => (iso || empty).slice(0, 16).replace("T", " ");
+const at = (iso: string | null | undefined, empty = "?") => when(iso, empty);
 
 /** A job's status as a chip. */
 function jobStatus(job: Job): [Status, string] {
@@ -30,7 +31,7 @@ function Users({users, onChange, onError}: {users: AdminUser[]; onChange(): void
       <span class={`u-badge c-user-${u.admin ? "admin" : u.status}`}>{u.admin ? "administrator" : u.status}</span>
       {u.unlimited && !u.admin && <span class="u-badge u-n">without limits</span>}
     </div>
-    <div class="u-small">since {(u.created || "?").slice(0, 10)} · last sign-in {when(u.last_login, "never")}
+    <div class="u-small">since {day(u.created, "?")} · last sign-in {at(u.last_login, "never")}
       {" · "}{u.sessions} {u.sessions === 1 ? "session" : "sessions"}</div>
     {!u.admin && <div class="c-admin-tools">
       {u.status !== "approved" && <Button kind="primary" onClick={() => change(api.adminSetUser(u.id, {status: "approved"}))}>
@@ -54,7 +55,7 @@ function Runs({runs, names, onChange, onError}: {runs: AdminRun[]; names: Map<nu
       {r.shared && <StatusChip status="shared">shared by a link</StatusChip>}
       {r.visibility === "demo" && <span class="u-badge">demo</span>}
     </div>
-    <div class="u-small">{names.get(r.user_id ?? -1) || "nobody"} · {(r.bytes / 1e6).toFixed(1)} MB · {when(r.created)}</div>
+    <div class="u-small">{names.get(r.user_id ?? -1) || "nobody"} · {(r.bytes / 1e6).toFixed(1)} MB · {at(r.created)}</div>
     <div class="c-admin-tools">
       {r.has_map && <Button kind="ghost" icon="next" href={runHash(r.run_id)}>Open</Button>}
       <label class="c-check"><input type="checkbox" checked={r.visibility === "demo"}
@@ -76,7 +77,7 @@ function Reports({reports, onChange, onError}: {reports: AdminReport[]; onChange
       <div class="c-admin-head">
         <span class="u-badge">{KINDS[r.category] || r.category}</span>
         <StatusChip status={r.status === "done" ? "done" : "waiting"}>{r.status}</StatusChip>
-        <b>{r.user_name || "?"}</b><span class="u-small">{when(r.created)}</span>
+        <b>{r.user_name || "?"}</b><span class="u-small">{at(r.created)}</span>
       </div>
       <p class="c-report-text">{r.text}</p>
       <div class="u-small c-report-context">
@@ -133,7 +134,7 @@ export function AdminC({jobs}: {jobs: Job[]}) {
             status.queue_max !== null && `At most ${status.queue_max} searches waiting or running.`]
             .filter(Boolean).join(" ")}</p>}
         {status.workers.length ? <ul class="c-admin-workers u-small">{status.workers.map((w) =>
-            <li key={w.id}>worker {w.id} since {when(w.started)}</li>)}</ul>
+            <li key={w.id}>worker {w.id} since {at(w.started)}</li>)}</ul>
           : <p class="c-error">No worker is running.</p>}
       </>}
     </Panel>
@@ -146,7 +147,7 @@ export function AdminC({jobs}: {jobs: Job[]}) {
         const finished = ["done", "failed", "cancelled"].includes(j.status);
         return <li key={j.id} class="c-admin-row c-admin-job">
           <div class="c-admin-head"><b>{j.title}</b><StatusChip status={st}>{text}</StatusChip></div>
-          <div class="u-small">{j.user_id === undefined ? "?" : names.get(j.user_id ?? -1) || "nobody"} · {when(j.created)}</div>
+          <div class="u-small">{j.user_id === undefined ? "?" : names.get(j.user_id ?? -1) || "nobody"} · {at(j.created)}</div>
           {!finished && <div class="c-admin-tools">
             <Button kind="danger" onClick={() => api.cancel(j.id).catch(onError)}>Cancel</Button></div>}
         </li>;

@@ -13,6 +13,7 @@ import { canReport, openReport } from "../../report";
 import { FavouritePicker } from "./FavouritePicker";
 import { ResultNote } from "./ResultSummary";
 import { cx, num, Swatch, useModel } from "./common";
+import { day } from "../../time";
 
 const BY_LABEL: Record<string, string> = {clearance: "the most clearance", longest: "the longest",
                                           height: "the highest above the ground"};
@@ -60,7 +61,7 @@ export interface LineDetailsProps {
 /** The facts of a line beyond its four numbers, as label and value. */
 export function lineFacts(l: Line, highAbove: number): [string, string][] {
   const facts: [string, string][] = [];
-  if (l.run) facts.push(["Run", `${l.run.info.created.slice(0, 10)} ${l.run.info.name}`]);
+  if (l.run) facts.push(["Run", `${day(l.run.info.created)} ${l.run.info.name}`]);
   facts.push(["Anchor 1", `${l.lat1.toFixed(6)}, ${l.lon1.toFixed(6)} · ${num(l.e1, 1)} m`]);
   facts.push(["Anchor 2", `${l.lat2.toFixed(6)}, ${l.lon2.toFixed(6)} · ${num(l.e2, 1)} m`]);
   if (l.clrN !== null) facts.push(["Over trees/buildings", `${num(l.clrN, 1)} m clear`]);
