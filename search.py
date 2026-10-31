@@ -606,9 +606,10 @@ def find_lines(plan: Plan, data: Data) -> Lines:
     return Lines(results, groups)
 
 
-def _lines(plan: Plan, data: Data, core: Optional[tuple] = None) -> Tuple[List[Dict], List[Dict]]:
+def _lines(plan: Plan, data: Data, core: Optional[tuple] = None, before: int = 0) -> Tuple[List[Dict], List[Dict]]:
     """Steps 2-4: the lines and their groups; with core (bounds), only lines whose first
-    anchor (smaller x, then y) lies in it.
+    anchor (smaller x, then y) lies in it. before: the lines of the tiles done already, which
+    count towards the limit of lines with these (held in memory together in step 4).
 
     Every line gets its metres over water and over filled gaps. Circles keep the profile
     of every line (the map shows each); areas only that of the line shown for each group,
@@ -677,7 +678,7 @@ def _lines(plan: Plan, data: Data, core: Optional[tuple] = None) -> Tuple[List[D
                                       p.high_above, sh.LineLimits(p.min_height, p.min_mean_height,
                                                                   p.min_high_share, p.max_wall_angle),
                                       np.column_stack([prom, drop]), strong)
-    _check_lines(plan, len(valid_lines))
+    _check_lines(plan, before + len(valid_lines))
     if not valid_lines and core is None:
         raise SearchError("No lines found matching elevation requirements.", "no_lines")
 
@@ -836,7 +837,7 @@ def search_lines(plan: Plan) -> Tuple[Lines, Optional[Dict]]:
             tile_plan = dataclasses.replace(plan, grid=tile, paths=Paths(plan.paths.data, work), tiles=None,
                                             tile_label=f"Tile {k + 1}/{len(plan.tiles)} · ")
             data = prepare_data(tile_plan)
-            found, _ = _lines(tile_plan, data, core)
+            found, _ = _lines(tile_plan, data, core, before=len(results))
             del data
             gc.collect()  # close the memory-mapped grids before deleting them (Windows)
             shutil.rmtree(work, ignore_errors=True)

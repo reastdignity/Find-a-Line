@@ -2451,6 +2451,30 @@ def test_search_limits_of_anchors_and_lines(tmp_path):
         gc.collect()
 
 
+def test_lines_limit_counts_earlier_tiles(tmp_path, monkeypatch):
+    """The limit of lines of a tiled area counts the lines of the tiles done already with the new
+    tile's, and refuses before that tile's coordinates (step 4 holds them all in memory)."""
+    import mapping
+    import search
+    from settings import Limits
+    found = []
+    coordify = mapping.coordify
+    monkeypatch.setattr(mapping, "coordify", lambda lines, *a: (found.append(len(lines)), coordify(lines, *a))[1])
+    area = {"geometry": {"type": "FeatureCollection", "features": [{"type": "Feature", "properties": {},
+                                                                   "geometry": SQUARE}]},
+            "max_length": 150, "tile_size": 150}
+    search.search_lines(_plan(tmp_path / "all", Limits(), **area))
+    counts = [n for n in found if n]
+    limit = max(counts)  # each tile alone fits, not all of them together
+    over = next(k for k in range(len(counts)) if sum(counts[:k + 1]) > limit)
+    assert over > 0, counts
+    found.clear()
+    with pytest.raises(search.SearchError) as error:
+        search.search_lines(_plan(tmp_path / "limited", Limits(lines_max=limit), **area))
+    assert error.value.code == "too_many_lines" and error.value.params["n"] == sum(counts[:over + 1])
+    assert [n for n in found if n] == counts[:over]  # that tile's lines never got their coordinates
+
+
 def test_worker_orthophoto_limit(monkeypatch):
     """The worker answers no to orthophoto over Limits.ortho_minutes (the map loads it online), yes
     to everything without the limit."""
