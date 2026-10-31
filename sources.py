@@ -23,11 +23,17 @@ Kinds of layers:
 
 To add a national source, add a Source with WcsTiles layers to SOURCES (see the
 Malta entries) and its country code to `countries`; see README, "Data sources".
+The layers of a search are downloaded together (download_layers: one pool for all their
+tiles). Searches of one data folder may download at once: each tile under its own lock
+(tile_lock; the second search waits, then finds it cached) and at most HOST_SLOTS tiles
+from one host at a time across all of them (host_slot), both lock files in cache/locks.
+
 Every source and every layer used for filling (the water mask, the gap filling
 source) names its licence and the notice its data must be shown with (`Credit`):
 each run records them for the layers it used (run.json, the map, ATTRIBUTION.txt).
 """
 
+import contextlib
 import glob
 import hashlib
 import io
@@ -42,11 +48,13 @@ import zipfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import asdict, dataclass, field
 from typing import Callable, Dict, List, NamedTuple, Optional, Sequence, Tuple
+from urllib.parse import urlsplit
 
 import numpy as np
 import rasterio as rio
 import requests
 from affine import Affine
+from filelock import FileLock, Timeout
 from rasterio.io import MemoryFile
 from rasterio.transform import from_origin
 from rasterio.warp import Resampling, reproject, transform_bounds
@@ -58,7 +66,14 @@ from grid import Grid, nad83_utm_crs, utm_crs
 from messages import ServiceError
 from progress import progress
 
-DOWNLOAD_THREADS = 4
+DOWNLOAD_THREADS = 8  # tiles of one download (all its layers) at a time; each connection is slow
+# Tile downloads from one host at a time across all processes of a data folder (several jobs
+# of the web worker download at once), through lock files in cache/locks/hosts (host_slot);
+# HOST_SLOTS_OF holds the hosts that need another number
+HOST_SLOTS = 8
+HOST_SLOTS_OF: Dict[str, int] = {}
+TILE_LOCKS = 4096  # lock files of tiles (tile_lock): a tile's lock is one of these, by its path
+LOCK_WAIT_S = 3600  # longest wait for a host slot or a tile's lock (a download in another job)
 RETRIES = 3
 VALID_MIN = -500  # metres; anything lower is treated as "no data"
 # Finest working resolution: finer grids bring nothing for highlines (clearances are
@@ -87,6 +102,66 @@ def _get(url: str, params=None, timeout: int = 300, binary_types=("image", "octe
 def _sleep(attempt: int):
     """Exponential backoff with jitter (swisstopo's fair use asks for it), 0.5-1.5 times 2^attempt s."""
     time.sleep(2 ** attempt * (0.5 + random.random()))
+
+
+def _locks(cache_dir: str, kind: str) -> str:
+    folder = os.path.join(cache_dir, cache.LOCKS, kind)
+    os.makedirs(folder, exist_ok=True)
+    return folder
+
+
+@contextlib.contextmanager
+def host_slot(cache_dir: str, url: Optional[str]):
+    """One of the HOST_SLOTS (HOST_SLOTS_OF) download slots of the host of url, across the
+    threads and processes of a data folder: lock files <host>.<n>.lock, each tried in turn,
+    waiting while all are taken. A file lock of the OS: a killed process releases it, and the
+    files are a fixed few per host. Nothing to wait for without a remote host (a local mirror)."""
+    host = urlsplit(url).hostname if url and re.match(r"https?://", url) else None
+    if not host:
+        yield
+        return
+    folder = _locks(cache_dir, "hosts")
+    slots = list(range(HOST_SLOTS_OF.get(host, HOST_SLOTS)))
+    deadline = time.monotonic() + LOCK_WAIT_S
+    while True:
+        random.shuffle(slots)  # waiters spread over the slots
+        for n in slots:
+            # A new instance per attempt: filelock's instances are per thread, and two of them
+            # on one file exclude each other also within a process (Windows LockFileEx, flock)
+            lock = FileLock(os.path.join(folder, f"{host}.{n}.lock"))
+            try:
+                lock.acquire(blocking=False)
+            except Timeout:
+                continue
+            try:
+                yield
+            finally:
+                lock.release()
+            return
+        if time.monotonic() > deadline:
+            raise RuntimeError(f"{host} is busy with the downloads of other searches "
+                               f"(waited {LOCK_WAIT_S // 60} min); try again later")
+        time.sleep(0.1 + 0.2 * random.random())
+
+
+@contextlib.contextmanager
+def tile_lock(cache_dir: str, path: str):
+    """The lock of a cached file, so two searches never download it at once (the second waits
+    and then finds it cached). One of TILE_LOCKS lock files chosen by the path, so their number
+    stays fixed (on Linux filelock leaves its files behind); two tiles sharing one only wait
+    for each other."""
+    digest = hashlib.sha256(cache.relative(cache_dir, path).encode()).digest()
+    name = f"{int.from_bytes(digest[:4], 'big') % TILE_LOCKS:04d}.lock"
+    lock = FileLock(os.path.join(_locks(cache_dir, "tiles"), name))
+    try:
+        lock.acquire(timeout=LOCK_WAIT_S)
+    except Timeout:
+        raise RuntimeError(f"{cache.relative(cache_dir, path)} is being downloaded by another search "
+                           f"(waited {LOCK_WAIT_S // 60} min); try again later") from None
+    try:
+        yield
+    finally:
+        lock.release()
 
 
 def _part(path: str) -> str:
@@ -236,19 +311,20 @@ class Layer:
         raise NotImplementedError
 
     def download(self, grid: Grid, cache_dir: str, update: Optional[str], label: str):
+        download_layers([(self, label)], grid, cache_dir, update)
+
+    def to_download(self, grid: Grid, cache_dir: str, update: Optional[str]) -> Tuple[list, Optional[str]]:
+        """The tiles download_layers fetches, and the line saying how many there are (None: none)."""
         todo = self.missing(grid, cache_dir, update)
         total = len(self.tiles(grid))
-        print(f"{self.description}: {total} tiles ({total - len(todo)} cached, {len(todo)} to download)")
-        if not todo:
-            return
-        progress.download.start(f"{label} tiles", len(todo), unit="tile")
-        received = 0
-        with ThreadPoolExecutor(max_workers=DOWNLOAD_THREADS) as pool:
-            futures = {pool.submit(self._download_and_record, t, cache_dir): t for t in todo}
-            for future in as_completed(futures):
-                received += future.result()
-                progress.download.update(1, MB=f"{received / 1e6:.0f}")
-        progress.download.finish(f"{received / 1e6:.0f} MB")
+        return todo, f"{self.description}: {total} tiles ({total - len(todo)} cached, {len(todo)} to download)"
+
+    def downloaded(self, grid: Grid, cache_dir: str):
+        """What a layer does once its tiles are downloaded (IndexedTiles: deletes older surveys)."""
+
+    def tile_url(self, tile) -> Optional[str]:
+        """Where a tile comes from, for the limit per host (host_slot); None: a local copy."""
+        return None
 
     def unavailable(self) -> Optional[str]:
         """Why this layer cannot be used here (e.g. no copy of our own tiles is set up), or None."""
@@ -263,12 +339,19 @@ class Layer:
         """Whether the layer has data near a point, when its index can tell (None: unknown)."""
         return None
 
-    def _download_and_record(self, tile, cache_dir: str) -> int:
+    def _download_and_record(self, tile, cache_dir: str, update: Optional[str] = None,
+                             if_due: bool = False) -> int:
+        """Download a tile under its lock (tile_lock) and a slot of its host (host_slot); with
+        if_due only if it is still due then (another search may have just downloaded it)."""
         path = self.tile_path(cache_dir, tile)
-        fetched = self.download_tile(tile, path)
-        # A tile outside the data (e.g. sea) is remembered as missing
-        cache.record(cache_dir, path, "ok" if os.path.exists(path) else "missing", fetched.url,
-                     fetched.etag, fetched.last_modified, self.source_date(tile), self.processing)
+        with tile_lock(cache_dir, path):
+            if if_due and not cache.due(cache_dir, path, self.processing, update, self.ttl_days):
+                return 0
+            with host_slot(cache_dir, self.tile_url(tile)):
+                fetched = self.download_tile(tile, path)
+            # A tile outside the data (e.g. sea) is remembered as missing
+            cache.record(cache_dir, path, "ok" if os.path.exists(path) else "missing", fetched.url,
+                         fetched.etag, fetched.last_modified, self.source_date(tile), self.processing)
         return fetched.received
 
     def source_date(self, tile) -> Optional[str]:
@@ -287,6 +370,40 @@ class Layer:
         if self.credit:
             info["credit"] = self.credit.as_dict()
         return info
+
+
+def download_layers(layers: Sequence[Tuple[Layer, str]], grid: Grid, cache_dir: str,
+                    update: Optional[str] = None):
+    """Download what the layers (layer, label) miss over the grid in one pool of DOWNLOAD_THREADS,
+    so a slow tile of one layer does not hold the others: one progress bar for all their tiles,
+    a line per layer of how many it has. Each tile under its lock and a slot of its host
+    (Layer._download_and_record), skipped when another search downloaded it meanwhile."""
+    # The layers' indexes asked at the same time too (a WFS query of geoportal.gov.pl takes
+    # seconds), each layer once; the lines in the order of the layers
+    distinct = list({id(layer): layer for layer, _ in layers}.values())
+    with ThreadPoolExecutor(max_workers=len(distinct)) as pool:
+        listed = list(pool.map(lambda layer: layer.to_download(grid, cache_dir, update), distinct))
+    todo = []
+    for layer, (tiles, line) in zip(distinct, listed):
+        if line:
+            print(line)
+        todo += [(layer, tile) for tile in tiles]
+    if todo:
+        labels = list(dict.fromkeys(label for layer, label in layers if any(t[0] is layer for t in todo)))
+        progress.download.start(f"{', '.join(labels)} tiles", len(todo), unit="tile")
+        received = 0
+        pool = ThreadPoolExecutor(max_workers=DOWNLOAD_THREADS)
+        try:
+            futures = [pool.submit(layer._download_and_record, tile, cache_dir, update, True)
+                       for layer, tile in todo]
+            for future in as_completed(futures):
+                received += future.result()
+                progress.download.update(1, MB=f"{received / 1e6:.0f}")
+        finally:
+            pool.shutdown(cancel_futures=True)  # after an error: the tiles not started yet are not
+        progress.download.finish(f"{received / 1e6:.0f} MB")
+    for layer, _ in layers:
+        layer.downloaded(grid, cache_dir)
 
 
 class WcsTiles(Layer):
@@ -385,6 +502,9 @@ class WcsTiles(Layer):
             except (requests.RequestException, AttributeError, ValueError, IndexError):
                 self._extent = ()
         return self._extent or None
+
+    def tile_url(self, tile) -> Optional[str]:
+        return self.url
 
     def _request(self, left: float, bottom: float, right: float, top: float, res: float):
         """GetCoverage of a box; None if the service has no data there (404)."""
@@ -551,6 +671,10 @@ class GridTiles(Layer):
         os.replace(tmp, path)
         return Fetched(len(data), source)
 
+    def tile_url(self, tile) -> Optional[str]:
+        bases = self.bases()
+        return bases[0] if bases else None  # a local mirror first: no host
+
     def download_tile(self, tile, path: str) -> Fetched:
         name, error = grid_tile_name(*tile), None
         for base in self.bases():  # the first that has it
@@ -597,6 +721,9 @@ class DegreeTiles(Layer):
 
     def bytes_per_tile(self) -> float:
         return self._bytes
+
+    def tile_url(self, tile) -> Optional[str]:
+        return self.url(*tile)
 
     def download_tile(self, tile, path: str) -> Fetched:
         lat, lon = tile
@@ -683,9 +810,12 @@ class IndexedTiles(Layer):
     def _index_tile(self, cache_dir: str, lat: float, lon: float, update: Optional[str] = None) -> List[Dict]:
         """The sheets listed in one tile, asking the index when not cached or stale."""
         path = self.index_path(cache_dir, lat, lon)
-        if cache.due(cache_dir, path, update=update, ttl=cache.TTL_DAYS["sheet-index"]):
-            self._fetch_tile(lat, lon, path)
-            cache.record(cache_dir, path, url=self.index_url)
+        due = lambda: cache.due(cache_dir, path, update=update, ttl=cache.TTL_DAYS["sheet-index"])  # noqa: E731
+        if due():
+            with tile_lock(cache_dir, path):  # another search may be asking for it now
+                if due():
+                    self._fetch_tile(lat, lon, path)
+                    cache.record(cache_dir, path, url=self.index_url)
         with open(path, encoding="utf-8") as f:
             return json.load(f)["sheets"]
 
@@ -793,14 +923,21 @@ class IndexedTiles(Layer):
             return len(self._cached(grid, cache_dir)), 0, 0.0
         return super().estimate(grid, cache_dir, update)
 
-    def download(self, grid: Grid, cache_dir: str, update: Optional[str], label: str):
+    def to_download(self, grid: Grid, cache_dir: str, update: Optional[str]) -> Tuple[list, Optional[str]]:
         self._use(cache_dir, update)
+        if self.tiles(grid) is None:
+            return [], None  # the index cannot be reached: the cached files are used
+        return super().to_download(grid, cache_dir, update)
+
+    def downloaded(self, grid: Grid, cache_dir: str):
         sheets = self.tiles(grid)
         if sheets is not None:
-            super().download(grid, cache_dir, update, label)
             pruned = self._prune(cache_dir, sheets)
             if pruned:
                 print(f"{self.description}: {pruned} older surveys replaced by newer ones (deleted)")
+
+    def tile_url(self, tile) -> Optional[str]:
+        return tile.url
 
     def files(self, grid: Grid, cache_dir: str) -> List[str]:
         self._use(cache_dir, self._update)
@@ -1324,6 +1461,9 @@ class TnmBlocks(IndexedTiles):
                 return True
         return False
 
+    def tile_url(self, tile) -> Optional[str]:
+        return tile.files[0][1] if tile.files else None
+
     def download_tile(self, tile, path: str) -> Fetched:
         px = round(tile.size / self.native_res)
         transform = from_origin(tile.i * tile.size, (tile.j + 1) * tile.size, self.native_res, self.native_res)
@@ -1446,6 +1586,9 @@ class DegreeBlocks(Layer):
 
     def bytes_per_tile(self) -> float:
         return self._bytes
+
+    def tile_url(self, tile) -> Optional[str]:
+        return self.url(self.tile_name(*tile))
 
     def download_tile(self, tile, path: str) -> Fetched:
         i, j = tile
@@ -1848,9 +1991,11 @@ used_data: List[Dict] = []
 
 
 def prepare_layer(layer: Layer, grid: Grid, cache_dir: str, out_path: str, label: str,
-                  update: Optional[str] = None) -> str:
-    """Download what is missing and bring the layer onto the working grid (.npy)."""
-    layer.download(grid, cache_dir, update, label)
+                  update: Optional[str] = None, download: bool = True) -> str:
+    """Download what is missing (unless done already: download False) and bring the layer
+    onto the working grid (.npy)."""
+    if download:
+        layer.download(grid, cache_dir, update, label)
     tiles = (layer.tiles(grid) or []) if layer.folder else []  # local files are not in the cache
     empty = sum(cache.state(cache_dir, layer.tile_path(cache_dir, t)) == "missing" for t in tiles)
     if empty:  # normal over the sea; on land a sign of a lost tile (see the regression tests)
@@ -1948,9 +2093,12 @@ WATER_MASK = DegreeTiles("Copernicus water body mask", "copernicus30/2021/wbm",
                          bytes_per_tile=1e5, credit=WATER_MASK_CREDIT)
 
 
-def water_body_mask(grid: Grid, cache_dir: str, out_path: str, update: Optional[str] = None) -> np.ndarray:
-    """Copernicus water body mask on the grid (OCEAN, LAKE...), open sea where tiles are missing."""
-    WATER_MASK.download(grid, cache_dir, update, "water mask")
+def water_body_mask(grid: Grid, cache_dir: str, out_path: str, update: Optional[str] = None,
+                    download: bool = True) -> np.ndarray:
+    """Copernicus water body mask on the grid (OCEAN, LAKE...), open sea where tiles are missing
+    (downloaded first unless done already: download False)."""
+    if download:
+        WATER_MASK.download(grid, cache_dir, update, "water mask")
     wbm = build_mosaic(WATER_MASK.files(grid, cache_dir), grid, out_path, "water mask", categorical=True)
     used_data.append(WATER_MASK.used(grid, cache_dir))
     for tile in WATER_MASK.tiles(grid):

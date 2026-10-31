@@ -142,8 +142,8 @@ def _sheets(layer: src.IndexedTiles, cache_dir: str, lat: float, lon: float) -> 
 
 
 def _tops(cache_dir: str, folder: Optional[str]) -> List[str]:
-    found = sorted(d for d in os.listdir(cache_dir) if os.path.isdir(os.path.join(cache_dir, d))) \
-        if os.path.isdir(cache_dir) else []
+    found = sorted(d for d in os.listdir(cache_dir) if os.path.isdir(os.path.join(cache_dir, d))
+                   and d != cache.LOCKS) if os.path.isdir(cache_dir) else []
     if folder:
         if folder not in found:
             raise SystemExit(f"No folder {folder} in {cache_dir} (there are: {', '.join(found) or 'none'})")

@@ -15,6 +15,9 @@ Cache layout: <country or global dataset>/<dataset>/<edition>/<tiling>/<tile>, e
     copernicus30/2021/dem/N50E019.tif
     osm/water-polygons/<date>/..., osm/themes/<theme>/<tile>.geojson, osm/nominatim.sqlite
     (osm/nominatim-rate.sqlite and osm/overpass.lock: the shared limits of those services, osm.py)
+    locks/hosts/<host>.<n>.lock, locks/tiles/<n>.lock: the download slots of a host and the
+    locks of tiles shared by the searches of the data folder (sources.host_slot, tile_lock);
+    a fixed number of empty files, not a dataset (no index)
 Deleting a top-level folder (a country or a global dataset) removes everything about it,
 its index included. cache/LAYOUT holds the layout version; a cache of another layout
 is not read (delete it: everything is downloaded again when needed).
@@ -47,6 +50,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Dict, Iterable, List, Optional
 
 LAYOUT = 1
+LOCKS = "locks"  # the lock files of downloads (sources.host_slot, tile_lock), not a dataset
 
 
 def _version() -> str:
@@ -277,7 +281,17 @@ def relative(cache_dir: str, path: str) -> str:
 def _connect(cache_dir: str, top: str) -> sqlite3.Connection:
     os.makedirs(os.path.join(cache_dir, top), exist_ok=True)
     db = sqlite3.connect(os.path.join(cache_dir, top, "index.sqlite"), timeout=60)
-    db.execute("PRAGMA journal_mode=WAL")
+    # Switching a new database to WAL fails at once ("locked", no busy wait) while another
+    # connection switches it too (threads or searches downloading at the same time): wait for it
+    for attempt in range(100):
+        try:
+            if db.execute("PRAGMA journal_mode").fetchone()[0].lower() != "wal":
+                db.execute("PRAGMA journal_mode=WAL")
+            break
+        except sqlite3.OperationalError as e:
+            if "locked" not in str(e) or attempt == 99:
+                raise
+            time.sleep(0.05 + 0.1 * attempt / 100)
     db.execute(SCHEMA)
     return db
 

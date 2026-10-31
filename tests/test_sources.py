@@ -640,3 +640,147 @@ def test_gaps_filled_in_turn(tmp_path):
     assert filled[:, :4].all() and not filled[:, 4:].any()
     result = np.load(path)
     assert (result[:, :2] == 110).all() and (result[:, 2:4] == 120).all()
+
+
+class _Tiles(src.Layer):
+    """A layer of numbered tiles whose download is a function of the test."""
+
+    def __init__(self, name, tiles, fetch, host="tiles.example"):
+        self.description, self.folder, self._tiles, self.fetch, self.host = name, f"fake/{name}", tiles, fetch, host
+
+    def tiles(self, grid):
+        return self._tiles
+
+    def tile_path(self, cache_dir, tile):
+        return os.path.join(cache_dir, self.folder, f"{tile}.tif")
+
+    def tile_url(self, tile):
+        return f"https://{self.host}/{tile}"
+
+    def download_tile(self, tile, path):
+        self.fetch(tile)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "wb") as f:
+            f.write(b"x")
+        return src.Fetched(1, self.tile_url(tile))
+
+
+def test_layers_downloaded_in_one_pool(tmp_path, monkeypatch, capsys):
+    """A slow tile of the terrain does not hold the surface: both layers share one pool."""
+    import threading
+    monkeypatch.setattr(src, "DOWNLOAD_THREADS", 3)
+    surface_done = threading.Semaphore(0)
+
+    def slow(tile):  # waits for every tile of the other layer (it would time out one layer after another)
+        for _ in range(3):
+            assert surface_done.acquire(timeout=20), "the surface waited for the terrain"
+    terrain = _Tiles("terrain", [0, 1], lambda t: slow(t) if t == 0 else None)
+    surface = _Tiles("surface", [0, 1, 2], lambda t: surface_done.release())
+    cache_dir = str(tmp_path / "cache")
+    os.makedirs(os.path.dirname(terrain.tile_path(cache_dir, 1)))
+    open(terrain.tile_path(cache_dir, 1), "wb").close()           # cached (adopted by the index)
+    src.download_layers([(terrain, "terrain"), (surface, "surface")], None, cache_dir)
+    import cache
+    out = capsys.readouterr().out
+    assert "terrain: 2 tiles (1 cached, 1 to download)" in out and "surface: 3 tiles (0 cached, 3 to download)" in out
+    assert all(not cache.due(cache_dir, layer.tile_path(cache_dir, t)) for layer in (terrain, surface)
+               for t in layer.tiles(None))
+
+
+_CHILD = r'''
+import os, sys, threading, time
+sys.path.insert(0, sys.argv[1])
+import sources as src
+cache_dir, log, mode = sys.argv[2], sys.argv[3], sys.argv[4]
+open(os.path.join(log, f"ready-{os.getpid()}"), "w").close()
+while len([n for n in os.listdir(log) if n.startswith("ready-")]) < 2:
+    time.sleep(0.02)
+
+def busy():
+    """While here: a file of its own in log/busy, the count of all of them noted."""
+    mine = os.path.join(log, "busy", f"{os.getpid()}-{threading.get_ident()}")
+    open(mine, "w").close()
+    with open(os.path.join(log, "counts"), "a") as f:
+        f.write(f"{len(os.listdir(os.path.join(log, 'busy')))}\n")
+    time.sleep(0.15)
+    os.remove(mine)
+
+class Tiles(src.Layer):
+    description, folder = "Shared", "fake/shared"
+    def tiles(self, grid): return list(range(6))
+    def tile_path(self, cache_dir, tile): return os.path.join(cache_dir, self.folder, f"{tile}.tif")
+    def tile_url(self, tile): return f"https://shared.example/{tile}"
+    def download_tile(self, tile, path):
+        with open(os.path.join(log, "fetched"), "a") as f:
+            f.write(f"{tile}\n")
+        time.sleep(0.3)
+        with open(path + ".part", "wb") as f:
+            f.write(b"x")
+        os.replace(path + ".part", path)
+        return src.Fetched(1, self.tile_url(tile))
+
+if mode == "hosts":
+    src.HOST_SLOTS_OF["slots.example"] = 2
+    def worker():
+        for _ in range(3):
+            with src.host_slot(cache_dir, "https://slots.example/x"):
+                busy()
+    threads = [threading.Thread(target=worker) for _ in range(3)]
+    for t in threads: t.start()
+    for t in threads: t.join()
+else:
+    os.makedirs(os.path.join(cache_dir, "fake", "shared"), exist_ok=True)
+    Tiles().download(None, cache_dir, None, "shared")
+'''
+
+
+def _two_processes(tmp_path, mode):
+    import subprocess
+    script, log = tmp_path / "child.py", tmp_path / "log"
+    script.write_text(_CHILD, encoding="utf-8")
+    (log / "busy").mkdir(parents=True)
+    repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    children = [subprocess.Popen([sys.executable, str(script), repo, str(tmp_path / "cache"), str(log), mode])
+                for _ in range(2)]
+    assert [c.wait(timeout=120) for c in children] == [0, 0]
+    return log
+
+
+def test_host_slots_across_threads_and_processes(tmp_path):
+    """At most HOST_SLOTS_OF[host] downloads from one host at once, over the threads of two processes."""
+    log = _two_processes(tmp_path, "hosts")
+    counts = [int(n) for n in (log / "counts").read_text().split()]
+    assert len(counts) == 18 and max(counts) == 2          # two at once: the limit, and used
+    assert len(os.listdir(tmp_path / "cache" / "locks" / "hosts")) <= 2
+
+
+def test_tile_downloaded_once_by_two_processes(tmp_path):
+    """Two searches over the same tiles: each tile is downloaded once, the other process waits and skips it."""
+    import cache
+    log = _two_processes(tmp_path, "tiles")
+    fetched = (log / "fetched").read_text().split()
+    assert sorted(fetched) == [str(t) for t in range(6)]
+    cache_dir = str(tmp_path / "cache")
+    assert {cache.state(cache_dir, os.path.join(cache_dir, "fake", "shared", f"{t}.tif")) for t in range(6)} == {"ok"}
+
+
+def test_new_index_opened_by_many_threads(tmp_path):
+    """Threads (or searches) opening a new index.sqlite at once all get it in WAL mode, none "locked"."""
+    import threading
+    import cache
+    for n in range(20):  # the old code failed in about one round of ten
+        cache_dir, errors = str(tmp_path / f"cache{n}"), []
+        start = threading.Barrier(12)
+
+        def look(i):
+            start.wait()
+            try:
+                cache.state(cache_dir, os.path.join(cache_dir, "fresh", f"{i}.tif"))
+            except Exception as e:  # noqa: BLE001
+                errors.append(e)
+        threads = [threading.Thread(target=look, args=(i,)) for i in range(12)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        assert not errors

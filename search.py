@@ -592,6 +592,19 @@ def estimate_search(plan: Plan) -> Estimate:
     return estimate
 
 
+def _water_mask(plan: Plan) -> bool:
+    """Whether the search needs the Copernicus water body mask."""
+    return plan.params.water == "fill" or (plan.params.fill_gaps == "on" and bool(plan.source.fallback))
+
+
+def _download_layers(plan: Plan):
+    """The tiles of the search's layers (terrain, surface, the water mask) in one pool."""
+    layers = list(zip(plan.layers, ("terrain", "surface")))
+    if _water_mask(plan):
+        layers.append((src.WATER_MASK, "water mask"))
+    src.download_layers(layers, plan.grid, plan.paths.cache, plan.params.update)
+
+
 def download_data(plan: Plan):
     """Download what the search area needs into the cache, without building grids.
 
@@ -601,10 +614,7 @@ def download_data(plan: Plan):
     """
     p, grid, cache_dir = plan.params, plan.grid, plan.paths.cache
     try:
-        for layer, label in zip(plan.layers, ("terrain", "surface")):
-            layer.download(grid, cache_dir, p.update, label)
-        if p.water == "fill" or (p.fill_gaps == "on" and plan.source.fallback):
-            src.WATER_MASK.download(grid, cache_dir, p.update, "water mask")
+        _download_layers(plan)
         if p.water == "fill" and p.coastline == "overpass" and coast.world_file(cache_dir) is None:
             try:
                 osm.theme("coastline", *coast._grid_bbox_wgs84(grid), cache_dir, p.update)
@@ -620,19 +630,20 @@ def prepare_data(plan: Plan) -> Data:
     cache_dir, work = plan.paths.cache, plan.paths.work
     _step(plan, 1, f"downloading elevation data ({source.name})")
     try:
+        _download_layers(plan)
         elevation_path = src.prepare_layer(source.nmt, grid, cache_dir,
-                                           os.path.join(work, "nmt.npy"), "terrain", p.update)
+                                           os.path.join(work, "nmt.npy"), "terrain", p.update, download=False)
         mask = plan.area.mask(grid)
         with_data = float(np.isfinite(np.load(elevation_path, mmap_mode="r")[mask]).mean()) if mask.any() else 0.0
         emit("info", f"Elevation data: {100 * with_data:.2f}% of the search area from {source.name}")
         surface_path = None
         if plan.nmpt:
             surface_path = src.prepare_layer(source.nmpt, grid, cache_dir,
-                                             os.path.join(work, "nmpt.npy"), "surface", p.update)
+                                             os.path.join(work, "nmpt.npy"), "surface", p.update, download=False)
         # Order matters: where the sea is, then gaps on land (outside the sea), then the water
         water_path = filled_path = sea_zone = None
         if p.water == "fill":
-            wbm = src.water_body_mask(grid, cache_dir, os.path.join(work, "wbm.npy"), p.update)
+            wbm = src.water_body_mask(grid, cache_dir, os.path.join(work, "wbm.npy"), p.update, download=False)
             sea, coast_source, warning = coast.sea_mask(grid, cache_dir, p.coastline, wbm == src.OCEAN, p.update)
             emit("info", f"Coastline: {coast_source}")
             if coast_source.startswith("OpenStreetMap"):
@@ -642,7 +653,7 @@ def prepare_data(plan: Plan) -> Data:
             sea_zone = src.near(sea, p.shore_buffer, grid.res)
         elif p.fill_gaps == "on" and source.fallback:
             # Without --water fill the sea stays without data; keep the gap filling off it too
-            wbm = src.water_body_mask(grid, cache_dir, os.path.join(work, "wbm.npy"), p.update)
+            wbm = src.water_body_mask(grid, cache_dir, os.path.join(work, "wbm.npy"), p.update, download=False)
             sea_zone = src.near(wbm == src.OCEAN, src.SHORE_BUFFER, grid.res)
         if p.fill_gaps == "on" and source.fallback:
             filled_path, filled = src.fill_gaps_chain(elevation_path, surface_path, grid,
