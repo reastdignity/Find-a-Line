@@ -6,6 +6,7 @@ import dataclasses
 import html
 import json
 import os
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -14,7 +15,7 @@ from pyproj import Transformer
 
 import cache
 from grid import Grid
-from helpers import HIGH_ABOVE, LEASH_FALL, SLOPE, Line
+from helpers import HIGH_ABOVE, LEASH_FALL, SLOPE, LineTable
 from progress import progress
 from runs import rounded
 from sag import Rigging
@@ -34,82 +35,95 @@ def pl1992_to_wgs84(easting: float, northing: float):
     return lat, lon
 
 
-def coordify(lines: List[Line], grid: Grid, nmpt_mode: Optional[str]) -> List[Dict]:
-    """Convert pixel coordinates of each line to GPS coordinates (lat, lon).
-
-    Returns:
-        One dict per line with anchor coordinates and line statistics
-    """
-    if not lines:
-        return []
-    rows = np.array([[line.a1[0], line.a2[0]] for line in lines]).ravel()
-    cols = np.array([[line.a1[1], line.a2[1]] for line in lines]).ravel()
-    easting, northing = grid.pixel_to_xy(rows, cols)
-    lon, lat = Transformer.from_crs(grid.crs, "EPSG:4326", always_xy=True).transform(easting, northing)
-
-    results = []
+def coordify(lines: LineTable, grid: Grid, nmpt_mode: Optional[str]) -> LineTable:
+    """Add the coordinates of the anchors to the lines (in place): "anchor1", "anchor2" (lat, lon),
+    "a1_xy", "a2_xy" (easting, northing in metres of the grid CRS, used for grouping) and
+    "over_obstacles" (the line passes over trees/buildings with --nmpt mark). Returns the lines."""
+    c = lines.columns
+    rows = np.column_stack([c["a1"][:, 0], c["a2"][:, 0]]).ravel()
+    cols = np.column_stack([c["a1"][:, 1], c["a2"][:, 1]]).ravel()
     progress.compute.start("coordinates", len(lines), unit="line")
-    for k, line in enumerate(lines):
-        if k % 50000 == 0 and k:
-            progress.compute.update(50000)
-        over_obstacles = (nmpt_mode == "mark" and line.clearance_nmpt is not None
-                          and line.clearance_nmpt <= 0)
-        results.append({
-            "anchor1": (float(lat[2 * k]), float(lon[2 * k])),
-            "anchor2": (float(lat[2 * k + 1]), float(lon[2 * k + 1])),
-            # (easting, northing) in metres in the grid CRS, used for grouping
-            "a1_xy": (float(easting[2 * k]), float(northing[2 * k])),
-            "a2_xy": (float(easting[2 * k + 1]), float(northing[2 * k + 1])),
-            "length": line.length,
-            "elev_a1": line.elev_a1,
-            "elev_a2": line.elev_a2,
-            "clearance": line.clearance,
-            "clearance_nmpt": line.clearance_nmpt,
-            "over_obstacles": over_obstacles,
-            "height_max": line.height_max,
-            "height_mean": line.height_mean,
-            "high_pct": line.high_pct,
-            "angle1": line.angle1,
-            "angle2": line.angle2,
-            "prom1": line.prom1, "prom2": line.prom2,
-            "drop1": line.drop1, "drop2": line.drop2,
-        })
+    if len(lines):
+        easting, northing = grid.pixel_to_xy(rows, cols)
+        lon, lat = Transformer.from_crs(grid.crs, "EPSG:4326", always_xy=True).transform(easting, northing)
+    else:
+        easting = northing = lon = lat = np.zeros(0)
+    pair = lambda a, b, first: np.column_stack([np.asarray(a, dtype=np.float64)[first::2],
+                                                np.asarray(b, dtype=np.float64)[first::2]])
+    c["anchor1"], c["anchor2"] = pair(lat, lon, 0), pair(lat, lon, 1)
+    c["a1_xy"], c["a2_xy"] = pair(easting, northing, 0), pair(easting, northing, 1)
+    c["over_obstacles"] = (c["clearance_nmpt"] <= 0) if nmpt_mode == "mark" else np.zeros(len(lines), dtype=bool)
     progress.compute.finish()
-    return results
+    return lines
 
 
-def _rank(by: str):
-    """Sort key: best representative first (with reverse=True)."""
+def first_anchor(lines: LineTable) -> np.ndarray:
+    """(x, y) of the first anchor of every line (the smaller x, then y): the one that decides
+    which tile of a large area a line belongs to."""
+    a1, a2 = lines.columns["a1_xy"], lines.columns["a2_xy"]
+    first = (a1[:, 0] < a2[:, 0]) | ((a1[:, 0] == a2[:, 0]) & (a1[:, 1] <= a2[:, 1]))  # min() of the tuples
+    return np.where(first[:, None], a1, a2)
+
+
+@dataclass
+class Groups:
+    """Groups of near-identical lines ("spots") of a LineTable, clear lines first and best first:
+    group g has the representative row rep[g] and the member rows members[start[g]:start[g + 1]]
+    (the representative among them)."""
+    rep: np.ndarray
+    members: np.ndarray
+    start: np.ndarray
+
+    def __len__(self) -> int:
+        return len(self.rep)
+
+    def of(self, g: int) -> np.ndarray:
+        return self.members[self.start[g]:self.start[g + 1]]
+
+    def sizes(self) -> np.ndarray:
+        return np.diff(self.start)
+
+    @classmethod
+    def each_alone(cls, n: int) -> "Groups":
+        """Every line a group of its own (--all-lines)."""
+        rows = np.arange(n, dtype=np.int64)
+        return cls(rows, rows, np.arange(n + 1, dtype=np.int64))
+
+
+def _rank(lines: LineTable, by: str) -> Tuple[np.ndarray, np.ndarray]:
+    """The columns that order the lines, best representative first (both descending)."""
+    c = lines.columns
     if by == "longest":
-        return lambda r: (r["length"], r["clearance"])
+        return c["length"], c["clearance"]
     if by == "height":
-        return lambda r: (r["height_max"], r["clearance"])
-    return lambda r: (r["clearance"], r["length"])
+        return c["height_max"], c["clearance"]
+    return c["clearance"], c["length"]
 
 
-def group_lines(results: List[Dict], distance: float, by: str = "clearance") -> List[Dict]:
+def group_lines(lines: LineTable, distance: float, by: str = "clearance") -> Groups:
     """Group near-identical lines (both anchors within `distance` metres).
 
     Greedy grouping around a representative: the best remaining line (by length
     or clearance) takes every remaining line whose anchors are close to its own,
     so no member is further than `distance` from the representative. Lines over
     trees/buildings are grouped separately from clear lines.
-    The same algorithm runs in the interactive map (viewer/src/grouping.ts).
-
-    Returns:
-        Groups, clear lines first and best first: {"rep": result, "members": [results]}
+    The same algorithm runs in the interactive map (viewer/src/grouping.ts); lines that
+    rank the same keep their order (a stable sort, as sorted(reverse=True) there).
     """
-    rank = _rank(by)
+    first, second = _rank(lines, by)
+    over_all = lines.columns["over_obstacles"]
     d2 = distance ** 2
-    groups = []
-    progress.compute.start("grouping lines", len(results), unit="line")
+    reps: List[int] = []
+    members: List[np.ndarray] = []
+    progress.compute.start("grouping lines", len(lines), unit="line")
     for over in (False, True):
-        lines = sorted((r for r in results if r["over_obstacles"] == over), key=rank, reverse=True)
-        if not lines:
+        rows = np.flatnonzero(over_all == over)
+        if not len(rows):
             continue
-        a1 = np.array([r["a1_xy"] for r in lines])
-        a2 = np.array([r["a2_xy"] for r in lines])
-        free = np.ones(len(lines), dtype=bool)
+        rows = rows[np.lexsort((-second[rows], -first[rows]))]
+        a1 = lines.columns["a1_xy"][rows]
+        a2 = lines.columns["a2_xy"][rows]
+        free = np.ones(len(rows), dtype=bool)
         # Lines by the cell (of size `distance`) of their first anchor: a member's first
         # anchor lies within `distance` of one of the representative's anchors, so in
         # one of the 3 x 3 cells around it
@@ -121,7 +135,7 @@ def group_lines(results: List[Dict], distance: float, by: str = "clearance") -> 
             cx, cy = (int(v) for v in np.floor(point / distance))
             return [k for dx in (-1, 0, 1) for dy in (-1, 0, 1) for k in cells.get((cx + dx, cy + dy), ())]
 
-        for i in range(len(lines)):
+        for i in range(len(rows)):
             if not free[i]:
                 continue
             candidates = np.unique(np.array(near(a1[i]) + near(a2[i]), dtype=np.int64))
@@ -129,14 +143,19 @@ def group_lines(results: List[Dict], distance: float, by: str = "clearance") -> 
             c1, c2 = a1[candidates], a2[candidates]
             same = (((c1 - a1[i]) ** 2).sum(1) <= d2) & (((c2 - a2[i]) ** 2).sum(1) <= d2)
             flipped = (((c1 - a2[i]) ** 2).sum(1) <= d2) & (((c2 - a1[i]) ** 2).sum(1) <= d2)
-            members = candidates[same | flipped]
-            free[members] = False
-            groups.append({"rep": lines[i], "members": [lines[k] for k in members]})
-            progress.compute.update(len(members), spots=len(groups))
-    progress.compute.finish(f"{len(groups)} spots")
+            found = candidates[same | flipped]
+            free[found] = False
+            reps.append(int(rows[i]))
+            members.append(rows[found])
+            progress.compute.update(len(found), spots=len(reps))
+    progress.compute.finish(f"{len(reps)} spots")
     # Clear lines first, then lines over trees/buildings; best first within each
-    groups.sort(key=lambda g: (not g["rep"]["over_obstacles"], rank(g["rep"])), reverse=True)
-    return groups
+    rep = np.array(reps, dtype=np.int64)
+    order = np.lexsort((-second[rep], -first[rep], over_all[rep])) if len(rep) else np.zeros(0, dtype=np.int64)
+    members = [members[g] for g in order.tolist()]
+    start = np.concatenate([[0], np.cumsum([len(m) for m in members], dtype=np.int64)]).astype(np.int64)
+    return Groups(rep[order], np.concatenate(members).astype(np.int64) if members else np.zeros(0, dtype=np.int64),
+                  start)
 
 
 def _search_area(area):
@@ -216,26 +235,36 @@ MAP_HTML = """<!doctype html>
 LINES_CHUNK = 10_000  # lines written between two progress updates
 
 
-def _write_js(path: str, target: str, value: Dict, on_lines=lambda n, file: None):
-    """A script that assigns a value (pages opened from disk cannot fetch JSON).
-
-    value["lines"], its last key, is written in chunks with on_lines(n, file) after each;
-    the text is the same as json.dump of the whole value.
-    """
+def _script_head(target: str, value: Dict) -> str:
+    """The start of a script that assigns value (pages opened from disk cannot fetch JSON) with
+    its last key "lines" still open: the text of json.dump of the whole value up to its first line."""
     assert list(value)[-1] == "lines"
-    lines, name = value["lines"], os.path.basename(path)
-    encoder = json.JSONEncoder(separators=(",", ":"))
-    head = encoder.encode({k: v for k, v in value.items() if k != "lines"})
-    with open(path, "w", encoding="utf-8") as f:
-        f.write(f"{target} = {head[:-1]},\"lines\":[")
-        for start in range(0, len(lines), LINES_CHUNK):
-            chunk = lines[start:start + LINES_CHUNK]
-            f.write(("," if start else "") + encoder.encode(chunk)[1:-1])
-            on_lines(len(chunk), name)
-        f.write("]};\n")
+    head = json.JSONEncoder(separators=(",", ":")).encode({k: v for k, v in value.items() if k != "lines"})
+    return f"{target} = {head[:-1]},\"lines\":["
 
 
-def save_map(results: List[Dict], area, run_path: str, runs_dir: str, run: Dict, crs: str,
+def map_rows(lines: LineTable, start: int, stop: int, profiles: bool) -> List[list]:
+    """The rows of data.js (with the profile last) or lines.js (without) of lines start..stop
+    (viewer/src/types.ts, toLine). Values used for grouping are not rounded, so the browser
+    groups exactly like group_lines()."""
+    c = {name: column[start:stop].tolist() for name, column in lines.columns.items()}
+    rows = []
+    for k, (lat1, lon1), (lat2, lon2), a1_xy, a2_xy, length, clearance, nmpt, e1, e2, over, water, filled,             height_max, height_mean, high_pct, angle1, angle2, prom1, prom2, drop1, drop2 in zip(
+            range(start, stop), c["anchor1"], c["anchor2"], c["a1_xy"], c["a2_xy"], c["length"], c["clearance"],
+            c["clearance_nmpt"], c["elev_a1"], c["elev_a2"], c["over_obstacles"], c["water_m"], c["filled_m"],
+            c["height_max"], c["height_mean"], c["high_pct"], c["angle1"], c["angle2"], c["prom1"], c["prom2"],
+            c["drop1"], c["drop2"]):
+        row = [round(lat1, 7), round(lon1, 7), round(lat2, 7), round(lon2, 7), *a1_xy, *a2_xy, length, clearance,
+               rounded(nmpt, 2), round(e1, 2), round(e2, 2), over, round(water, 1), round(filled, 1),
+               height_max, round(height_mean, 2), round(high_pct, 1), round(angle1, 1), round(angle2, 1),
+               rounded(prom1, 1), rounded(prom2, 1), rounded(drop1, 1), rounded(drop2, 1)]
+        if profiles:
+            row.append(lines.profiles.get(k))
+        rows.append(row)
+    return rows
+
+
+def save_map(lines: LineTable, area, run_path: str, runs_dir: str, run: Dict, crs: str,
              group_distance: float = 20, group_by: str = "clearance", ortho_cache: Optional[str] = None,
              ortho_service=None, model: str = "formula", rigging: Optional[Rigging] = None,
              on_lines=lambda n, file: None, high_above: float = HIGH_ABOVE) -> str:
@@ -248,25 +277,12 @@ def save_map(results: List[Dict], area, run_path: str, runs_dir: str, run: Dict,
     (window.FINDALINE_LINES[id]). Lines are grouped in the
     browser like group_lines. Orthophoto tiles are read from ortho_cache (a
     {z}/{x}/{y}.jpg folder) when present there, and from the WMS of ortho_service
-    (a sources.OrthoService) otherwise. on_lines(n, file) reports progress: three passes
-    over the lines (the rows, data.js, lines.js). Returns the path of map.html.
+    (a sources.OrthoService) otherwise. Both scripts are written together, LINES_CHUNK
+    lines at a time, never all rows at once; on_lines(n, file) reports progress after
+    each chunk. Returns the path of map.html.
     """
     install_viewer(runs_dir)
     path = os.path.join(run_path, "map.html")
-    # Values used for grouping are not rounded, so the browser groups exactly like group_lines()
-    rows = []
-    for start in range(0, len(results), LINES_CHUNK):
-        chunk = results[start:start + LINES_CHUNK]
-        rows += [[round(r["anchor1"][0], 7), round(r["anchor1"][1], 7),
-                  round(r["anchor2"][0], 7), round(r["anchor2"][1], 7),
-                  *r["a1_xy"], *r["a2_xy"], r["length"], r["clearance"],
-                  None if r["clearance_nmpt"] is None else round(r["clearance_nmpt"], 2),
-                  round(r["elev_a1"], 2), round(r["elev_a2"], 2), r["over_obstacles"],
-                  round(r.get("water_m", 0.0), 1), round(r.get("filled_m", 0.0), 1),
-                  r["height_max"], round(r["height_mean"], 2), round(r["high_pct"], 1),
-                  round(r["angle1"], 1), round(r["angle2"], 1),
-                  *(rounded(r[k], 1) for k in ("prom1", "prom2", "drop1", "drop2"))] for r in chunk]
-        on_lines(len(chunk), "data.js")
     data = {
         "run": {"id": run["id"], "name": run["name"], "created": run["created"],
                 "description": run.get("description", "")},
@@ -283,12 +299,21 @@ def save_map(results: List[Dict], area, run_path: str, runs_dir: str, run: Dict,
         "distance": group_distance, "by": group_by, "model": model,
         "rigging": dataclasses.asdict(rigging or Rigging()),
         "slope": SLOPE, "leash_fall": LEASH_FALL, "high_above": high_above, "max_zoom": MAX_ZOOM,
-        "lines": [row + [r.get("profile")] for row, r in zip(rows, results)],
+        "lines": None,
     }
-    _write_js(os.path.join(run_path, "data.js"), "window.FINDALINE_RUN", data, on_lines)
-    _write_js(os.path.join(run_path, "lines.js"),
-              f"(window.FINDALINE_LINES = window.FINDALINE_LINES || {{}})[{json.dumps(run['id'])}]",
-              {"crs": crs, "area": data["area"], "lines": rows}, on_lines)
+    encoder = json.JSONEncoder(separators=(",", ":"))
+    target = f"(window.FINDALINE_LINES = window.FINDALINE_LINES || {{}})[{json.dumps(run['id'])}]"
+    with open(os.path.join(run_path, "data.js"), "w", encoding="utf-8") as full,             open(os.path.join(run_path, "lines.js"), "w", encoding="utf-8") as short:
+        full.write(_script_head("window.FINDALINE_RUN", data))
+        short.write(_script_head(target, {"crs": crs, "area": data["area"], "lines": None}))
+        for start in range(0, len(lines), LINES_CHUNK):
+            stop = min(start + LINES_CHUNK, len(lines))
+            separator = "," if start else ""
+            full.write(separator + encoder.encode(map_rows(lines, start, stop, True))[1:-1])
+            short.write(separator + encoder.encode(map_rows(lines, start, stop, False))[1:-1])
+            on_lines(stop - start, "data.js, lines.js")
+        full.write("]};\n")
+        short.write("]};\n")
     with open(path, "w", encoding="utf-8") as f:
         f.write(MAP_HTML.format(title=html.escape(run["name"]), viewer=VIEWER_FOLDER))
     return path

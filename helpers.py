@@ -6,8 +6,8 @@ All rasters share one working grid (see geoportal.Grid). Pixel coordinates are
 [row, col]; distances and elevations are in metres.
 """
 
-from dataclasses import dataclass
-from typing import NamedTuple, Optional, Tuple
+from dataclasses import dataclass, field
+from typing import Dict, List, NamedTuple, Optional, Tuple
 
 import numpy as np
 
@@ -39,6 +39,83 @@ class Line(NamedTuple):
     drop2: float
 
 
+# The values of a line in a LineTable: Line's fields after the anchors, float64 each
+LINE_VALUES = Line._fields[2:]
+
+
+@dataclass
+class LineTable:
+    """Lines as numpy columns, one row per line: a few hundred bytes per line where a Line and
+    the dict of its coordinates took about 2.5 KB (docs/performance.md).
+
+    columns: "a1", "a2" ([row, col], int64, n x 2), the LINE_VALUES (float64; clearance_nmpt NaN
+    when the surface was not measured there), and after mapping.coordify "anchor1", "anchor2"
+    ([lat, lon]), "a1_xy", "a2_xy" ([easting, northing] in the grid CRS), "over_obstacles"
+    (bool), "water_m", "filled_m". profiles: the profile of a row (helpers.line_profile), only for
+    the rows that have one. row(k) gives a line as the dict the rest of the code knew.
+    """
+    columns: Dict[str, np.ndarray]
+    profiles: Dict[int, Dict] = field(default_factory=dict)
+
+    def __len__(self) -> int:
+        return len(next(iter(self.columns.values())))
+
+    @classmethod
+    def from_rows(cls, rows: List[Dict]) -> "LineTable":
+        """A table of lines given as dicts (as row() gives them; tests make lines this way)."""
+        names = [k for k in rows[0] if k != "profile"]
+        columns = {}
+        for name in names:
+            values = [r[name] for r in rows]
+            if name == "clearance_nmpt":
+                values = [np.nan if v is None else v for v in values]
+            columns[name] = np.array(values, dtype=bool if name == "over_obstacles" else
+                                     np.int64 if name in ("a1", "a2") else np.float64)
+        return cls(columns, {k: r["profile"] for k, r in enumerate(rows) if r.get("profile") is not None})
+
+    @classmethod
+    def empty(cls) -> "LineTable":
+        return cls({"a1": np.zeros((0, 2), dtype=np.int64), "a2": np.zeros((0, 2), dtype=np.int64),
+                    **{k: np.zeros(0) for k in LINE_VALUES}})
+
+    def take(self, index) -> "LineTable":
+        """The rows at index (an array of row numbers or a boolean mask), in that order."""
+        index = np.asarray(index)
+        if index.dtype == bool:
+            index = np.flatnonzero(index)
+        new = {int(old): k for k, old in enumerate(index.tolist()) if old in self.profiles}
+        return LineTable({name: column[index] for name, column in self.columns.items()},
+                         {k: self.profiles[old] for old, k in new.items()})
+
+    @classmethod
+    def concat(cls, tables: List["LineTable"]) -> "LineTable":
+        """The rows of several tables (with the same columns), one after another."""
+        tables = [t for t in tables if len(t)] or tables[:1] or [cls.empty()]
+        profiles, start = {}, 0
+        for t in tables:
+            profiles.update({start + k: p for k, p in t.profiles.items()})
+            start += len(t)
+        return cls({name: np.concatenate([t.columns[name] for t in tables]) for name in tables[0].columns},
+                   profiles)
+
+    def row(self, k: int) -> Dict:
+        """Row k as a dict of Python values: pairs as tuples, clearance_nmpt None when not measured."""
+        out = {}
+        for name, column in self.columns.items():
+            value = column[k].tolist()
+            out[name] = tuple(value) if isinstance(value, list) else value
+        if out["clearance_nmpt"] != out["clearance_nmpt"]:
+            out["clearance_nmpt"] = None
+        out["profile"] = self.profiles.get(k)
+        return out
+
+    def lines(self) -> List[Line]:
+        """The rows as Line tuples (tests compare them with helpers.evaluate_line)."""
+        values = [self.columns[k].tolist() for k in LINE_VALUES]
+        return [Line(tuple(a1), tuple(a2), *v[:4], None if v[4] != v[4] else v[4], *v[5:])
+                for a1, a2, *v in zip(self.columns["a1"].tolist(), self.columns["a2"].tolist(), *values)]
+
+
 @dataclass
 class LineLimits:
     """Search limits of the lines (None: no limit): the webbing heights above the terrain
@@ -55,13 +132,19 @@ class LineLimits:
         return any(v is not None for v in (self.min_height, self.min_mean_height, self.min_high_share,
                                            self.max_wall_angle))
 
-    def passes(self, height_max: float, height_mean: float, high_pct: float, angle1: float, angle2: float) -> bool:
-        ok = ((self.min_height is None or height_max >= self.min_height)
-              and (self.min_mean_height is None or height_mean >= self.min_mean_height)
-              and (self.min_high_share is None or high_pct >= self.min_high_share)
-              and (self.max_wall_angle is None or max(angle1, angle2) <= self.max_wall_angle))
-        if not ok:
-            self.left_out += 1
+    def passes(self, height_max: np.ndarray, height_mean: np.ndarray, high_pct: np.ndarray, angle1: np.ndarray,
+               angle2: np.ndarray, valid: np.ndarray) -> np.ndarray:
+        """Which of the valid lines (columns of their values) reach the limits; counts the others."""
+        ok = valid.copy()
+        if self.min_height is not None:
+            ok &= height_max >= self.min_height
+        if self.min_mean_height is not None:
+            ok &= height_mean >= self.min_mean_height
+        if self.min_high_share is not None:
+            ok &= high_pct >= self.min_high_share
+        if self.max_wall_angle is not None:
+            ok &= np.where(angle2 > angle1, angle2, angle1) <= self.max_wall_angle  # max() of Python
+        self.left_out += int(valid.sum() - ok.sum())
         return ok
 
     def describe(self) -> str:

@@ -295,7 +295,7 @@ def evaluate_lines(found: np.ndarray, anchors: np.ndarray, elevation: np.ndarray
                    surface: Optional[np.ndarray], sag_table, nmpt_mode: Optional[str],
                    high_above: float = sh.HIGH_ABOVE, limits: Optional[sh.LineLimits] = None,
                    down: Optional[np.ndarray] = None, anchor_values: Optional[np.ndarray] = None
-                   ) -> List[sh.Line]:
+                   ) -> sh.LineTable:
     """The lines among the pairs found (indices into anchors) that pass helpers.evaluate_line
     and helpers.is_valid: the same decision and values, computed in parallel. With limits,
     only the lines that reach them (sh.LineLimits.passes). down: helpers.downslope of the
@@ -305,7 +305,7 @@ def evaluate_lines(found: np.ndarray, anchors: np.ndarray, elevation: np.ndarray
         down = sh.downslope(elevation, anchors, res)
     if anchor_values is None:
         anchor_values = np.full((len(anchors), 2), np.nan)
-    values_of = np.asarray(anchor_values, dtype=np.float64).tolist()
+    anchor_values = np.asarray(anchor_values, dtype=np.float64)
     found = np.asarray(found, dtype=np.int64).reshape(-1, 2)
     angles = sh.wall_angles(anchors[found[:, 0]], anchors[found[:, 1]], down[found[:, 0]], down[found[:, 1]])
     out = np.zeros((len(found), 9))
@@ -325,15 +325,22 @@ def evaluate_lines(found: np.ndarray, anchors: np.ndarray, elevation: np.ndarray
         _evaluate(z, s, surface is not None, np.ascontiguousarray(anchors, dtype=np.int64),
                   np.ascontiguousarray(found, dtype=np.int64), float(res), sag_table is not None, log_spans,
                   span_index, ratios, ratio_index, sag, fractions, fall_zone, float(high_above), out)
-    lines = []
-    for (i, j), (e1, e2, length, clearance, nmpt, ok, *values), angle1, angle2 in zip(
-            found.tolist(), out.tolist(), angles[0].tolist(), angles[1].tolist()):
-        result = (e1, e2, length, clearance, None if nmpt != nmpt else nmpt) if ok else None
-        if sh.is_valid(result, nmpt_mode) and (limits is None or limits.passes(*values, angle1, angle2)):
-            (prom1, drop1), (prom2, drop2) = values_of[i], values_of[j]
-            lines.append(sh.Line(tuple(anchors[i].tolist()), tuple(anchors[j].tolist()), length, e1, e2,
-                                 clearance, result[4], *values, angle1, angle2, prom1, prom2, drop1, drop2))
-    return lines
+    # helpers.is_valid of every result, then the limits
+    clearance, nmpt = out[:, 3], out[:, 4]
+    keep = (out[:, 5] != 0) & (clearance > 0)
+    if nmpt_mode == "reject":
+        keep &= ~(nmpt <= 0)  # NaN: not measured, kept
+    if limits is not None:
+        keep = limits.passes(out[:, 6], out[:, 7], out[:, 8], angles[0], angles[1], keep)
+    found, out = found[keep], out[keep]
+    first, second = anchor_values[found[:, 0]], anchor_values[found[:, 1]]
+    columns = {"a1": np.asarray(anchors, dtype=np.int64)[found[:, 0]],
+               "a2": np.asarray(anchors, dtype=np.int64)[found[:, 1]]}
+    for name, value in zip(sh.LINE_VALUES, (out[:, 2], out[:, 0], out[:, 1], out[:, 3], out[:, 4], out[:, 6],
+                                            out[:, 7], out[:, 8], angles[0][keep], angles[1][keep], first[:, 0],
+                                            second[:, 0], first[:, 1], second[:, 1])):
+        columns[name] = np.ascontiguousarray(value, dtype=np.float64)
+    return sh.LineTable(columns)
 
 
 @njit(parallel=True, cache=True)
@@ -373,7 +380,7 @@ def find_valid_lines(elevation: np.ndarray, surface: Optional[np.ndarray], ancho
                      max_dh: float = np.inf, first: Optional[np.ndarray] = None,
                      high_above: float = sh.HIGH_ABOVE, limits: Optional[sh.LineLimits] = None,
                      anchor_values: Optional[np.ndarray] = None, strong: Optional[np.ndarray] = None
-                     ) -> List[sh.Line]:
+                     ) -> sh.LineTable:
     """Finds valid lines between anchors.
 
     Args:
@@ -459,12 +466,14 @@ def find_valid_lines(elevation: np.ndarray, surface: Optional[np.ndarray], ancho
 
     # Final decision and clearances, exactly as in the pixel-by-pixel search (evaluate_line)
     found = np.concatenate(pairs) if pairs else np.zeros((0, 2), dtype=np.int64)
-    valid_lines: List[sh.Line] = []
+    parts, valid = [], 0
     progress.compute.start("checking lines", len(found), unit="line")
     for part in np.array_split(found, max(1, min(CHUNKS, len(found) // 10000))):
-        valid_lines += evaluate_lines(part, anchors, elevation, res, surface, sag_table, nmpt_mode, high_above,
-                                      limits, down, anchor_values)
-        progress.compute.update(len(part), valid=len(valid_lines))
+        parts.append(evaluate_lines(part, anchors, elevation, res, surface, sag_table, nmpt_mode, high_above,
+                                    limits, down, anchor_values))
+        valid += len(parts[-1])
+        progress.compute.update(len(part), valid=valid)
+    valid_lines = sh.LineTable.concat(parts)
     progress.compute.finish(f"{len(valid_lines)} valid")
     print(f"\n{'=' * 60}")
     print(f"Completed in {time.time() - start_time:.2f} seconds")
@@ -475,5 +484,5 @@ def find_valid_lines(elevation: np.ndarray, surface: Optional[np.ndarray], ancho
     print(f"Found {len(valid_lines)} valid lines")
     print(f"{'=' * 60}")
 
-    valid_lines.sort(key=lambda line: line.length, reverse=True)
-    return valid_lines
+    # Longest first; lines of the same length keep their order (as sorted(reverse=True) did)
+    return valid_lines.take(np.argsort(-valid_lines.columns["length"], kind="stable"))

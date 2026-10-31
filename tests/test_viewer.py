@@ -16,6 +16,7 @@ import pytest
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 VIEWER = os.path.join(REPO, "viewer")
 sys.path.insert(0, REPO)
+import helpers  # noqa: E402
 import mapping  # noqa: E402
 import sag  # noqa: E402
 
@@ -74,8 +75,8 @@ def test_grouping_matches_python(tmp_path):
               "len": r["length"], "clr": r["clearance"], "over": r["over_obstacles"], "hmax": r["height_max"], "k": k}
              for k, r in enumerate(results)]
     for distance, by in ((20, "clearance"), (7, "longest"), (15, "height")):
-        groups = mapping.group_lines(results, distance, by)
-        python = [[results.index(g["rep"])] + [results.index(m) for m in g["members"]] for g in groups]
+        groups = mapping.group_lines(helpers.LineTable.from_rows(results), distance, by)
+        python = [[int(rep)] + groups.of(g).tolist() for g, rep in enumerate(groups.rep)]
         ts = run_ts(tmp_path, "grouping", f"""
 const lines = {json.dumps(lines)};
 console.log(JSON.stringify(m.groupLines(lines, {distance}, {json.dumps(by)})
@@ -169,9 +170,11 @@ def _key(row) -> str:
 
 def _python_groups(rows, distance, by, keep=lambda r: True):
     """mapping.group_lines over the data.js rows that `keep` passes, as lists of the members' keys."""
-    results = [{"a1_xy": (r[4], r[5]), "a2_xy": (r[6], r[7]), "length": r[8], "clearance": r[9],
-                "over_obstacles": r[13], "height_max": r[16], "key": _key(r)} for r in rows if keep(r)]
-    return [[m["key"] for m in g["members"]] for g in mapping.group_lines(results, distance, by)]
+    kept = [r for r in rows if keep(r)]
+    groups = mapping.group_lines(helpers.LineTable.from_rows([
+        {"a1_xy": (r[4], r[5]), "a2_xy": (r[6], r[7]), "length": r[8], "clearance": r[9], "over_obstacles": r[13],
+         "height_max": r[16]} for r in kept]), distance, by)
+    return [[_key(kept[k]) for k in groups.of(g).tolist()] for g in range(len(groups))]
 
 
 # Run with model.ts bundled as `m`: the model over a run's data (argv[2]) with a fake server

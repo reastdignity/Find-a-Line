@@ -4,7 +4,9 @@ Run by hand: how many cores a search keeps busy, stage by stage (docs/performanc
 Runs findaline.py in this process with the given options, follows the progress bars
 (progress.subscribe) and samples the CPU time and memory of the process every 0.1 s.
 Writes <out>/<name>.csv (the samples), <name>-stages.csv (per stage: wall time, CPU time,
-mean cores, peak memory), <name>.png (a timeline) and prints the table.
+mean cores, peak memory), <name>.png (a timeline) and prints the table. --tracemalloc adds
+the peak of Python's heap per stage (numpy arrays included, memory-mapped grids not): what
+the lines take, apart from the grids (slower).
 
     uv run tools/perf_profile.py --out <scratch> --name gozo -- --area coast --buffer 100 ...
 
@@ -19,6 +21,7 @@ import runpy
 import sys
 import threading
 import time
+import tracemalloc
 
 import psutil
 
@@ -39,6 +42,8 @@ class Recorder:
         self.events = []  # (t, label): the activity from then on
         self.step = ""
         self.stopped = threading.Event()
+        self.label = "Start: (between bars)"  # the stage running now
+        self.heap = {}  # label -> peak of the traced heap (--tracemalloc)
 
     def cpu(self) -> float:
         times = self.process.cpu_times()
@@ -51,16 +56,26 @@ class Recorder:
         while not self.stopped.wait(INTERVAL):
             self.sample()
 
+    def mark(self, label):
+        """A new stage starts (None: the end): the heap's peak of the one that ends."""
+        if tracemalloc.is_tracing():
+            peak = tracemalloc.get_traced_memory()[1]
+            tracemalloc.reset_peak()
+            self.heap[self.label] = max(self.heap.get(self.label, 0), peak)
+        self.label = label
+        if label is not None:
+            self.events.append((time.monotonic(), label))
+
     def listener(self, state):
         if state["bar"] == "":
             if state["step"] != self.step:
                 self.step = state["step"]
-                self.events.append((time.monotonic(), f"{self._short(self.step)}: (between bars)"))
+                self.mark(f"{self._short(self.step)}: (between bars)")
             return
         if state["count"] == 0 and not state["done"] and state["stage"]:
-            self.events.append((time.monotonic(), f"{self._short(state['step'])}: {state['bar']} {state['stage']}"))
+            self.mark(f"{self._short(state['step'])}: {state['bar']} {state['stage']}")
         elif state["done"]:
-            self.events.append((time.monotonic(), f"{self._short(state['step'])}: (between bars)"))
+            self.mark(f"{self._short(state['step'])}: (between bars)")
 
     def _short(self, step: str) -> str:
         """"Tile 3/15 · Step 3/5: evaluating anchor pairs" -> "Step 3"; tiles are summed up."""
@@ -131,6 +146,7 @@ def main():
     parser.add_argument("--name", required=True, help="name of the files")
     parser.add_argument("--cores", type=int, help="run on this many cores only (the CPU affinity, and "
                         "--threads for the line search), like a worker container with that many cpus")
+    parser.add_argument("--tracemalloc", action="store_true", help="also the peak of the Python heap per stage")
     parser.add_argument("args", nargs=argparse.REMAINDER, help="-- and the options of findaline.py")
     args = parser.parse_args()
     search_args = args.args[1:] if args.args[:1] == ["--"] else args.args
@@ -146,6 +162,8 @@ def main():
         cores = args.cores
 
     rec = Recorder()
+    if args.tracemalloc:
+        tracemalloc.start()
     progress.subscribe(rec.listener)
     rec.sample()
     sampler = threading.Thread(target=rec.run, daemon=True)
@@ -161,6 +179,7 @@ def main():
         rec.stopped.set()
         sampler.join()
         rec.sample()
+        rec.mark(None)
     wall = time.monotonic() - started
 
     with open(os.path.join(args.out, f"{args.name}.csv"), "w", newline="") as f:
@@ -173,17 +192,22 @@ def main():
     total_cpu = rec.samples[-1][1] - rec.samples[0][1]
     with open(os.path.join(args.out, f"{args.name}-stages.csv"), "w", newline="") as f:
         writer = csv.writer(f)
-        writer.writerow(["stage", "wall_s", "cpu_s", "cores", "share_of_wall", "peak_rss_mb"])
+        writer.writerow(["stage", "wall_s", "cpu_s", "cores", "share_of_wall", "peak_rss_mb", "peak_heap_mb"])
         for label, (w, c, peak) in table.items():
             writer.writerow([label, f"{w:.1f}", f"{c:.1f}", f"{c / w:.2f}" if w else "",
-                             f"{w / wall:.3f}", f"{peak / 2**20:.0f}"])
-    print(f"\n{'stage':62} {'wall s':>8} {'cpu s':>8} {'cores':>6} {'wall %':>7} {'peak MB':>8}")
+                             f"{w / wall:.3f}", f"{peak / 2**20:.0f}",
+                             f"{rec.heap[label] / 2**20:.0f}" if label in rec.heap else ""])
+    heap = lambda label: f"{rec.heap[label] / 2**20:8.0f}" if label in rec.heap else ""
+    print(f"\n{'stage':62} {'wall s':>8} {'cpu s':>8} {'cores':>6} {'wall %':>7} {'peak MB':>8}"
+          + (f" {'heap MB':>8}" if rec.heap else ""))
     for label, (w, c, peak) in sorted(table.items(), key=lambda kv: -kv[1][0]):
-        if w < 0.2:
+        if w < 0.2 and not rec.heap:
             continue
-        print(f"{label[:62]:62} {w:8.1f} {c:8.1f} {c / w:6.2f} {100 * w / wall:6.1f}% {peak / 2**20:8.0f}")
+        print(f"{label[:62]:62} {w:8.1f} {c:8.1f} {c / w:6.2f} {100 * w / wall:6.1f}% {peak / 2**20:8.0f} "
+              + heap(label))
     peak = max(s[2] for s in rec.samples)
-    print(f"{'total':62} {wall:8.1f} {total_cpu:8.1f} {total_cpu / wall:6.2f} {100:6.1f}% {peak / 2**20:8.0f}")
+    print(f"{'total':62} {wall:8.1f} {total_cpu:8.1f} {total_cpu / wall:6.2f} {100:6.1f}% {peak / 2**20:8.0f}"
+          + (f" {max(rec.heap.values()) / 2**20:8.0f}" if rec.heap else ""))
     plot(rec, os.path.join(args.out, f"{args.name}.png"),
          f"{args.name}: {wall:.0f} s, mean {total_cpu / wall:.1f} of {cores} cores", cores)
 

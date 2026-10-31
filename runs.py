@@ -30,6 +30,7 @@ from datetime import datetime
 from typing import Dict, Iterable, List, Optional
 from urllib.parse import quote
 
+import numpy as np
 import requests
 
 import cache
@@ -165,34 +166,52 @@ def rounded(value: float, digits: int):
     return None if value != value else round(value, digits)
 
 
-def _rows(groups: List[Dict]):
-    for number, group in enumerate(groups, 1):
-        members = [group["rep"]] + [m for m in group["members"] if m is not group["rep"]]
-        for r in members:
-            yield {
-                "group": number,
-                "representative": r is group["rep"],
-                "group_size": len(group["members"]),
-                "length_m": round(r["length"], 1),
-                "clearance_m": round(r["clearance"], 2),
-                "clearance_nmpt_m": None if r["clearance_nmpt"] is None else round(r["clearance_nmpt"], 2),
-                "over_trees_buildings": r["over_obstacles"],
-                "water_m": r.get("water_m", 0.0),
-                "filled_m": r.get("filled_m", 0.0),
-                "height_max_m": round(r["height_max"], 2),
-                "height_mean_m": round(r["height_mean"], 2),
-                "high_pct": round(r["high_pct"], 1),
-                "anchor1_lat": round(r["anchor1"][0], 7), "anchor1_lon": round(r["anchor1"][1], 7),
-                "anchor1_elev_m": round(r["elev_a1"], 2),
-                "anchor1_northing": round(r["a1_xy"][1], 2), "anchor1_easting": round(r["a1_xy"][0], 2),
-                "anchor1_wall_angle": round(r["angle1"], 1),
-                "anchor1_prominence_m": rounded(r["prom1"], 1), "anchor1_drop_m": rounded(r["drop1"], 1),
-                "anchor2_lat": round(r["anchor2"][0], 7), "anchor2_lon": round(r["anchor2"][1], 7),
-                "anchor2_elev_m": round(r["elev_a2"], 2),
-                "anchor2_northing": round(r["a2_xy"][1], 2), "anchor2_easting": round(r["a2_xy"][0], 2),
-                "anchor2_wall_angle": round(r["angle2"], 1),
-                "anchor2_prominence_m": rounded(r["prom2"], 1), "anchor2_drop_m": rounded(r["drop2"], 1),
-            }
+def row_order(groups) -> tuple:
+    """The rows of lines.csv: (line, its group's number, whether it represents the group, the
+    group's size) for every line, group by group, each representative first and then its members
+    (mapping.Groups)."""
+    sizes = groups.sizes()
+    is_rep = groups.members == np.repeat(groups.rep, sizes)
+    # The representative first, the others in their order: a stable sort of each group on "not it"
+    group = np.repeat(np.arange(len(groups), dtype=np.int64), sizes)
+    order = np.lexsort((~is_rep, group))
+    return groups.members[order], group[order] + 1, is_rep[order], sizes[group[order]]
+
+
+def _rows(lines, order: np.ndarray, number: np.ndarray, is_rep: np.ndarray, size: np.ndarray) -> List[Dict]:
+    """Rows of lines.csv of lines (a helpers.LineTable): a part of row_order."""
+    c = {name: column[order].tolist() for name, column in lines.columns.items()}
+    rows = []
+    for number, is_rep, size, (lat1, lon1), (lat2, lon2), (x1, y1), (x2, y2), length, clearance, nmpt,             over, water, filled, height_max, height_mean, high_pct, e1, e2, angle1, angle2, prom1, prom2,             drop1, drop2 in zip(
+            number.tolist(), is_rep.tolist(), size.tolist(), c["anchor1"], c["anchor2"], c["a1_xy"], c["a2_xy"],
+            c["length"], c["clearance"], c["clearance_nmpt"], c["over_obstacles"], c["water_m"], c["filled_m"],
+            c["height_max"], c["height_mean"], c["high_pct"], c["elev_a1"], c["elev_a2"], c["angle1"],
+            c["angle2"], c["prom1"], c["prom2"], c["drop1"], c["drop2"]):
+        rows.append({
+            "group": number,
+            "representative": is_rep,
+            "group_size": size,
+            "length_m": round(length, 1),
+            "clearance_m": round(clearance, 2),
+            "clearance_nmpt_m": rounded(nmpt, 2),
+            "over_trees_buildings": over,
+            "water_m": water,
+            "filled_m": filled,
+            "height_max_m": round(height_max, 2),
+            "height_mean_m": round(height_mean, 2),
+            "high_pct": round(high_pct, 1),
+            "anchor1_lat": round(lat1, 7), "anchor1_lon": round(lon1, 7),
+            "anchor1_elev_m": round(e1, 2),
+            "anchor1_northing": round(y1, 2), "anchor1_easting": round(x1, 2),
+            "anchor1_wall_angle": round(angle1, 1),
+            "anchor1_prominence_m": rounded(prom1, 1), "anchor1_drop_m": rounded(drop1, 1),
+            "anchor2_lat": round(lat2, 7), "anchor2_lon": round(lon2, 7),
+            "anchor2_elev_m": round(e2, 2),
+            "anchor2_northing": round(y2, 2), "anchor2_easting": round(x2, 2),
+            "anchor2_wall_angle": round(angle2, 1),
+            "anchor2_prominence_m": rounded(prom2, 1), "anchor2_drop_m": rounded(drop2, 1),
+        })
+    return rows
 
 
 LINES_CHUNK = 10_000  # lines written between two progress updates
@@ -218,40 +237,33 @@ def attribution_text(meta: Dict) -> str:
     return "\n".join(lines)
 
 
-def save_results(run_path: str, groups: List[Dict], meta: Dict, on_lines=lambda n, file: None):
-    """Write lines.csv, lines.geojson, ATTRIBUTION.txt and run.json for a run.
+def save_results(run_path: str, lines, groups, meta: Dict, on_lines=lambda n, file: None):
+    """Write lines.csv, lines.geojson, ATTRIBUTION.txt and run.json for a run: the lines (a
+    helpers.LineTable) group by group (mapping.Groups).
 
-    on_lines(n, file) reports progress: three passes over the lines (the rows, lines.csv,
-    lines.geojson), then run.json with n=0.
+    Both line files are written together, LINES_CHUNK rows at a time, never all rows at once;
+    on_lines(n, file) reports progress after each chunk, then run.json with n=0.
     """
-    rows = []
-    for row in _rows(groups):
-        rows.append(row)
-        if len(rows) % LINES_CHUNK == 0:
-            on_lines(LINES_CHUNK, "lines.csv")
-    on_lines(len(rows) % LINES_CHUNK, "lines.csv")
-    with open(os.path.join(run_path, "lines.csv"), "w", newline="", encoding="utf-8-sig") as f:
-        writer = csv.DictWriter(f, fieldnames=FIELDS)
-        writer.writeheader()
-        for start in range(0, len(rows), LINES_CHUNK):
-            writer.writerows(rows[start:start + LINES_CHUNK])
-            on_lines(len(rows[start:start + LINES_CHUNK]), "lines.csv")
-
-    # The same text as json.dump of the whole collection, written in chunks of features
+    # lines.geojson: the same text as json.dump of the whole collection, written in chunks of features
     encoder = json.JSONEncoder(ensure_ascii=False)
-    with open(os.path.join(run_path, "lines.geojson"), "w", encoding="utf-8") as f:
-        f.write('{"type": "FeatureCollection", "features": [')
-        for start in range(0, len(rows), LINES_CHUNK):
+    with open(os.path.join(run_path, "lines.csv"), "w", newline="", encoding="utf-8-sig") as table,             open(os.path.join(run_path, "lines.geojson"), "w", encoding="utf-8") as geojson:
+        writer = csv.DictWriter(table, fieldnames=FIELDS)
+        writer.writeheader()
+        geojson.write('{"type": "FeatureCollection", "features": [')
+        order = row_order(groups)
+        for start in range(0, len(lines), LINES_CHUNK):
+            rows = _rows(lines, *(column[start:start + LINES_CHUNK] for column in order))
+            writer.writerows(rows)
             features = [{
                 "type": "Feature",
                 "geometry": {"type": "LineString",
                              "coordinates": [[row["anchor1_lon"], row["anchor1_lat"]],
                                              [row["anchor2_lon"], row["anchor2_lat"]]]},
                 "properties": row,
-            } for row in rows[start:start + LINES_CHUNK]]
-            f.write((", " if start else "") + encoder.encode(features)[1:-1])
-            on_lines(len(features), "lines.geojson")
-        f.write('], "findaline": ' + encoder.encode(public_meta(meta)) + "}")
+            } for row in rows]
+            geojson.write((", " if start else "") + encoder.encode(features)[1:-1])
+            on_lines(len(rows), "lines.csv, lines.geojson")
+        geojson.write('], "findaline": ' + encoder.encode(public_meta(meta)) + "}")
 
     with open(os.path.join(run_path, "ATTRIBUTION.txt"), "w", encoding="utf-8") as f:
         f.write(attribution_text(meta))

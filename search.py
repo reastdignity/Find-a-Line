@@ -11,7 +11,7 @@ A search as a library: from SearchParams to a saved run, without terminal input.
 Large areas (--area) are computed in square tiles (search_lines): each tile is a grid
 with an overlap of --max-length around its core, and a line belongs to the tile whose
 core holds its first anchor (the one with the smaller x, then y), so no line is found
-twice. Each finished tile is saved in the run folder (tiles/<k>.pkl.gz); the same
+twice. Each finished tile is saved in the run folder (tiles/<k>.table.pkl.gz); the same
 command after an interruption finds the unfinished run and skips those tiles.
 
 Messages go to on_event(kind, text) with kind "info" or "warning"; progress goes
@@ -175,15 +175,15 @@ class Data:
 
 @dataclass
 class Lines:
-    """Steps 2-4 results: every valid line (with its profile) and the groups ("spots")."""
-    results: List[Dict]
-    spot_groups: List[Dict]
+    """Steps 2-4 results: every valid line (with the profiles it keeps) and the groups ("spots")."""
+    results: sh.LineTable
+    spot_groups: mp.Groups
 
 
 @dataclass
 class Result:
-    results: List[Dict]
-    spot_groups: List[Dict]
+    results: sh.LineTable
+    spot_groups: mp.Groups
     meta: Dict
     run: Dict
     map_path: Optional[str]
@@ -636,7 +636,7 @@ def find_lines(plan: Plan, data: Data) -> Lines:
     return Lines(results, groups)
 
 
-def _lines(plan: Plan, data: Data, core: Optional[tuple] = None, before: int = 0) -> Tuple[List[Dict], List[Dict]]:
+def _lines(plan: Plan, data: Data, core: Optional[tuple] = None, before: int = 0) -> Tuple[sh.LineTable, mp.Groups]:
     """Steps 2-4: the lines and their groups; with core (bounds), only lines whose first
     anchor (smaller x, then y) lies in it. before: the lines of the tiles done already, which
     count towards the limit of lines with these (held in memory together in step 4).
@@ -665,7 +665,7 @@ def _lines(plan: Plan, data: Data, core: Optional[tuple] = None, before: int = 0
                           n=len(anchors), max=plan.limits.anchors_max)
     if len(anchors) < 2:
         if core is not None:  # a tile of a large area: nothing here
-            return [], []
+            return sh.LineTable.empty(), mp.Groups.each_alone(0)
         raise SearchError("Not enough steep terrain. Try a lower --slope-threshold or a larger --radius.",
                           "no_steep_terrain")
 
@@ -687,7 +687,7 @@ def _lines(plan: Plan, data: Data, core: Optional[tuple] = None, before: int = 0
     strong = None if p.min_prominence is None else prom >= p.min_prominence
     if len(anchors) < 2 or (strong is not None and not strong.any()):
         if core is not None:
-            return [], []
+            return sh.LineTable.empty(), mp.Groups.each_alone(0)
         raise SearchError("No anchors stand out enough. Try a lower --min-prominence, --min-prominence-both "
                           "or --min-drop.", "no_prominent_anchors")
 
@@ -717,29 +717,21 @@ def _lines(plan: Plan, data: Data, core: Optional[tuple] = None, before: int = 0
     results = mp.coordify(valid_lines, grid, plan.nmpt)
     if core is not None:
         left, bottom, right, top = core
-        keep = [k for k, r in enumerate(results)
-                if left <= min(r["a1_xy"], r["a2_xy"])[0] < right and bottom <= min(r["a1_xy"], r["a2_xy"])[1] < top]
-        results, valid_lines = [results[k] for k in keep], [valid_lines[k] for k in keep]
-    a1 = np.array([line.a1 for line in valid_lines], dtype=np.int64).reshape(-1, 2)
-    a2 = np.array([line.a2 for line in valid_lines], dtype=np.int64).reshape(-1, 2)
+        x, y = mp.first_anchor(results).T
+        results = results.take((left <= x) & (x < right) & (bottom <= y) & (y < top))
+    a1, a2 = results.columns["a1"], results.columns["a2"]
     progress.compute.start("over water and filled gaps", 2, unit="mask")
-    water = ls.covered_metres(a1, a2, plan.resolution, data.water)
+    results.columns["water_m"] = np.array(ls.covered_metres(a1, a2, plan.resolution, data.water), dtype=np.float64)
     progress.compute.update(1)
-    filled = ls.covered_metres(a1, a2, plan.resolution, data.filled)
+    results.columns["filled_m"] = np.array(ls.covered_metres(a1, a2, plan.resolution, data.filled), dtype=np.float64)
     progress.compute.finish()
-    for r, w, g in zip(results, water, filled):
-        r["water_m"], r["filled_m"], r["profile"] = w, g, None
     groups = mp.group_lines(results, plan.group_distance, p.group_by)
-    if isinstance(plan.area, ar.Circle):
-        wanted = range(len(results))
-    else:
-        index = {id(r): k for k, r in enumerate(results)}
-        wanted = sorted(index[id(g["rep"])] for g in groups)
+    wanted = range(len(results)) if isinstance(plan.area, ar.Circle) else sorted(groups.rep.tolist())
     progress.compute.start("line profiles", len(wanted), unit="line")
     for k in wanted:
-        line = valid_lines[k]
-        results[k]["profile"] = sh.line_profile(line.a1, line.a2, data.elevation, plan.resolution, data.surface,
-                                                sag_table=sag_table, water=data.water, filled=data.filled)
+        results.profiles[k] = sh.line_profile(tuple(a1[k].tolist()), tuple(a2[k].tolist()), data.elevation,
+                                              plan.resolution, data.surface, sag_table=sag_table, water=data.water,
+                                              filled=data.filled)
         progress.compute.update(1)
     progress.compute.finish()
     return results, groups
@@ -793,7 +785,7 @@ def _open_run(plan: Plan) -> Dict:
             if state["tile_core"] != plan.tile_core:
                 plan.tile_core = state["tile_core"]
                 plan.tiles = _tiles(plan.grid, plan.params, plan.resolution, plan.source.grid_origin, plan.tile_core)
-            done = len(glob.glob(os.path.join(folder, "tiles", "*.pkl.gz")))
+            done = len(glob.glob(os.path.join(folder, "tiles", TILE_FILE.format("*"))))
             plan.emit("info", f"Resuming run {os.path.basename(folder)}: {done} of {len(plan.tiles)} tiles done")
             return {"id": os.path.basename(folder), "path": folder, "name": state["name"],
                     "created": datetime.fromisoformat(state["created"]), "search": key,
@@ -813,42 +805,27 @@ def _progress(run: Dict, status: str):
                    "name": run["name"], "created": run["created"].isoformat()}, f)
 
 
-TILE_CHUNK = 100_000  # lines per pickle in a tile file (one progress update each)
+TILE_FILE = "{}.table.pkl.gz"  # a finished tile's lines; "<k>.pkl.gz" of before held a dict per line
 
 
-def _save_tile(path: str, lines: List[Dict]):
-    """A finished tile's lines: their number, then pickles of TILE_CHUNK lines, gzipped.
+def _save_tile(path: str, lines: sh.LineTable):
+    """A finished tile's lines: the pickle of its LineTable (its columns and profiles), gzipped.
 
     Level 1: level 9 took 23 times as long for 21% less (the floats hardly compress),
-    11 minutes for a tile of 12.5 million lines.
+    11 minutes for a tile of 12.5 million lines (as dicts).
     """
     progress.compute.start("saving tile lines", len(lines), unit="line")
     with gzip.open(path + ".part", "wb", compresslevel=1) as f:
-        pickle.dump(len(lines), f, pickle.HIGHEST_PROTOCOL)
-        for start in range(0, len(lines), TILE_CHUNK):
-            chunk = lines[start:start + TILE_CHUNK]
-            pickle.dump(chunk, f, pickle.HIGHEST_PROTOCOL)
-            progress.compute.update(len(chunk))
+        pickle.dump(lines, f, pickle.HIGHEST_PROTOCOL)
     os.replace(path + ".part", path)
+    progress.compute.update(len(lines))
     progress.compute.finish()
 
 
-def _load_tile(path: str) -> List[Dict]:
+def _load_tile(path: str) -> sh.LineTable:
     """The lines of a tile saved by _save_tile."""
-    lines = []
     with gzip.open(path, "rb") as f:
-        total = pickle.load(f)
-        shown = total > TILE_CHUNK  # small tiles load at once: no bar for each
-        if shown:
-            progress.compute.start("loading tile lines", total, unit="line")
-        while len(lines) < total:
-            chunk = pickle.load(f)
-            lines += chunk
-            if shown:
-                progress.compute.update(len(chunk))
-    if shown:
-        progress.compute.finish()
-    return lines
+        return pickle.load(f)
 
 
 def search_lines(plan: Plan) -> Tuple[Lines, Optional[Dict]]:
@@ -863,9 +840,9 @@ def search_lines(plan: Plan) -> Tuple[Lines, Optional[Dict]]:
     run = _open_run(plan)
     folder = os.path.join(run["path"], "tiles")
     os.makedirs(folder, exist_ok=True)
-    results = []
+    tables, count = [], 0
     for k, (core, tile) in enumerate(plan.tiles):
-        path = os.path.join(folder, f"{k}.pkl.gz")
+        path = os.path.join(folder, TILE_FILE.format(k))
         if not os.path.exists(path):
             plan.emit("info", f"\n--- Tile {k + 1} of {len(plan.tiles)} ({tile.width} x {tile.height} px) ---")
             work = os.path.join(plan.paths.work, f"tile{k}")
@@ -873,7 +850,7 @@ def search_lines(plan: Plan) -> Tuple[Lines, Optional[Dict]]:
             tile_plan = dataclasses.replace(plan, grid=tile, paths=Paths(plan.paths.data, work), tiles=None,
                                             tile_label=f"Tile {k + 1}/{len(plan.tiles)} · ")
             data = prepare_data(tile_plan)
-            found, _ = _lines(tile_plan, data, core, before=len(results))
+            found, _ = _lines(tile_plan, data, core, before=count)
             del data
             gc.collect()  # close the memory-mapped grids before deleting them (Windows)
             shutil.rmtree(work, ignore_errors=True)
@@ -881,24 +858,28 @@ def search_lines(plan: Plan) -> Tuple[Lines, Optional[Dict]]:
             _save_tile(path, found)
             del found
         progress.set_step(f"Step 4/{STEPS}: loading tile {k + 1}/{len(plan.tiles)}")
-        results += _load_tile(path)
-        _check_lines(plan, len(results))
-    if not results:
+        tables.append(_load_tile(path))
+        count += len(tables[-1])
+        _check_lines(plan, count)
+    if not count:
         raise SearchError("No lines found matching elevation requirements.", "no_lines")
+    results = sh.LineTable.concat(tables)
+    del tables
     progress.set_step(f"Step 4/{STEPS}: groups of all tiles")
     groups = mp.group_lines(results, plan.group_distance, plan.params.group_by)
     # A line shown for a group is the best of its tile's group too, except near the edge of a
     # tile, where a group may join lines of two tiles: those get their profile now
-    missing = [g["rep"] for g in groups if g["rep"]["profile"] is None]
+    missing = [k for k in groups.rep.tolist() if k not in results.profiles]
     if missing:
         meta = {"params": _run_params(plan), "source": {"id": plan.source.id}, "center": {"crs": plan.crs},
                 "data": json.loads(json.dumps(src.used_data))}
         used = list(src.used_data)  # plan_search starts a new record of the data used
         progress.compute.start("profiles at tile edges", len(missing), unit="line")
-        for r in missing:
+        for k in missing:
             paths = Paths(plan.paths.data, os.path.join(plan.paths.work, "edge"))
             os.makedirs(paths.work, exist_ok=True)
-            r["profile"] = profile_of_line(meta, paths, r["anchor1"], r["anchor2"])
+            results.profiles[k] = profile_of_line(meta, paths, tuple(results.columns["anchor1"][k].tolist()),
+                                                  tuple(results.columns["anchor2"][k].tolist()))
             shutil.rmtree(paths.work, ignore_errors=True)
             progress.compute.update(1)
         progress.compute.finish()
@@ -994,25 +975,23 @@ def save_run(plan: Plan, lines: Lines, confirm: Optional[Confirm] = None, run: O
         "data": _merged_data(),  # folders, files and fetch times of the data used
         "params": _run_params(plan),
         "summary": {"lines": len(results), "spots": len(spot_groups),
-                    "clear_spots": sum(not g["rep"]["over_obstacles"] for g in spot_groups)},
+                    "clear_spots": int((~results.columns["over_obstacles"][spot_groups.rep]).sum())},
     }
     meta["description"] = rn.params_summary(meta)
     meta["attribution"] = _credits(plan, meta["data"])  # also ATTRIBUTION.txt and the map
     def on_lines(n: int, file: str):
         progress.compute.update(n, file=file)
 
-    progress.compute.start("saving results", 3 * len(results), unit="line")  # three passes, see save_results
-    rn.save_results(run["path"], spot_groups, meta, on_lines)
+    progress.compute.start("saving results", len(results), unit="line")
+    rn.save_results(run["path"], results, spot_groups, meta, on_lines)
     progress.compute.finish()
     if "search" in run:
         _progress(run, "done")
     emit("info", f"Run \"{name}\" saved to {os.path.abspath(run['path'])}")
     if not circle:
         # Large areas: only the group representatives carry a profile in the map
-        representatives = {id(g["rep"]) for g in spot_groups}
-        for r in results:
-            if id(r) not in representatives:
-                r["profile"] = None
+        representatives = set(spot_groups.rep.tolist())
+        results.profiles = {k: v for k, v in results.profiles.items() if k in representatives}
 
     map_path = None
     if not p.no_html:
@@ -1024,7 +1003,7 @@ def save_run(plan: Plan, lines: Lines, confirm: Optional[Confirm] = None, run: O
             detail = p.ortho_detail if p.ortho_detail is not None else source.ortho.detail
             if detail is None and not circle:
                 detail = ORTHO_DETAIL
-            spots = [g["rep"] for g in spot_groups][:detail]
+            spots = [results.row(k) for k in spot_groups.rep[:detail].tolist()]
             ortho_folder = ortho.cache_folder(plan.paths.cache, source.ortho)
             max_zoom = ortho.DETAIL_ZOOMS[-1] if source.ortho.url else source.ortho.base_max_zoom
             tiles = ortho.missing_tiles(ortho.tiles_to_cache(spots, plan.area, max_zoom), ortho_folder,
@@ -1037,7 +1016,7 @@ def save_run(plan: Plan, lines: Lines, confirm: Optional[Confirm] = None, run: O
                 tiles = []
             ortho.download(source.ortho, tiles, ortho_folder, plan.paths.cache)
             ortho_cache = ortho_folder
-        progress.compute.start("saving the map", 3 * len(results), unit="line")  # three passes, see save_map
+        progress.compute.start("saving the map", len(results), unit="line")
         map_path = mp.save_map(results, plan.area, run["path"], plan.paths.runs, meta, plan.crs, plan.group_distance,
                                p.group_by, ortho_cache, source.ortho, p.model, plan.rigging, on_lines,
                                p.high_above)

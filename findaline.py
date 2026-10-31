@@ -22,6 +22,7 @@ its own (`python findaline.py worker`, with `web --no-worker`) jobs.py.
 import gc
 import os
 import sys
+from typing import Dict, List
 
 import cache
 import mapping as mp
@@ -67,10 +68,11 @@ def confirmer(assume_yes: bool):
     return confirm
 
 
-def print_lines(lines: search.Lines, group_distance: float, group_by: str, all_lines: bool):
+def print_lines(lines: search.Lines, group_distance: float, group_by: str, all_lines: bool) -> List[Dict]:
+    """Print the spots (or every line); returns the lines shown, as dicts (helpers.LineTable.row)."""
     results = lines.results
     if all_lines:
-        groups = [{"rep": r, "members": [r]} for r in results]
+        groups = mp.Groups.each_alone(len(results))
         print(f"\nFound {len(results)} valid lines")
     else:
         groups = lines.spot_groups
@@ -79,8 +81,10 @@ def print_lines(lines: search.Lines, group_distance: float, group_by: str, all_l
               f"(lines with both anchors within {group_distance:g}m are grouped, "
               f"showing the one with the {shown}; use --all-lines to list every line)")
     print("GPS Coordinates (lat, lon):")
-    for n, g in enumerate(groups, 1):
-        r, members = g["rep"], g["members"]
+    rows = []
+    for n, (rep, members) in enumerate(zip(groups.rep.tolist(), map(groups.of, range(len(groups)))), 1):
+        r = results.row(rep)
+        rows.append(r)
         flag = "  [over trees/buildings]" if r["over_obstacles"] else ""
         label = "Line" if all_lines else "Spot"
         if r["water_m"]:
@@ -89,11 +93,11 @@ def print_lines(lines: search.Lines, group_distance: float, group_by: str, all_l
             flag += f"  [{r['filled_m']:.0f}m over filled gaps]"
         print(f"  {label} {n}: {r['length']:.0f}m, min. clearance {r['clearance']:.1f}m{flag}")
         if len(members) > 1:
-            lengths = [m["length"] for m in members]
+            lengths = results.columns["length"][members].tolist()
             print(f"    {len(members)} similar lines, {min(lengths):.0f}-{max(lengths):.0f}m")
         print(f"    Anchor 1: {r['anchor1'][0]:.6f}, {r['anchor1'][1]:.6f}")
         print(f"    Anchor 2: {r['anchor2'][0]:.6f}, {r['anchor2'][1]:.6f}")
-    return groups
+    return rows
 
 
 def main(params: pm.SearchParams, options: pm.CliOptions, paths: search.Paths):
@@ -105,7 +109,7 @@ def main(params: pm.SearchParams, options: pm.CliOptions, paths: search.Paths):
         if estimate.reasons:
             confirm("expensive", "\n".join(estimate.reasons))
         lines, run = search.search_lines(plan)
-        groups = print_lines(lines, plan.group_distance, params.group_by, options.all_lines)
+        shown = print_lines(lines, plan.group_distance, params.group_by, options.all_lines)
         result = search.save_run(plan, lines, confirm, run)
     except search.SearchError as e:
         sys.exit(str(e))
@@ -117,7 +121,7 @@ def main(params: pm.SearchParams, options: pm.CliOptions, paths: search.Paths):
         print(f"Open {os.path.abspath(html)} in a web browser to see the latest run")
     print(f"All runs: {os.path.abspath(os.path.join(paths.runs, 'index.html'))}")
     if not options.no_plot:
-        mp.mapify([g["rep"] for g in groups], plan.area)
+        mp.mapify(shown, plan.area)
 
     print("\n" + "=" * 60)
     print("Analysis complete!")

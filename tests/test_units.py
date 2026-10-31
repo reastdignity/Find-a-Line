@@ -172,7 +172,7 @@ def test_evaluate_lines_matches_evaluate_line(model):
     for mode, high_above in (("mark", sh.HIGH_ABOVE), ("reject", 35.0)):
         values = rng.random((len(anchors), 2)) * 50  # prominence, drop of the anchors
         fast = ls.evaluate_lines(found, anchors, terrain, 1.0, surface, table, mode, high_above,
-                                 anchor_values=values)
+                                 anchor_values=values).lines()
         down = sh.downslope(terrain, anchors, 1.0)
         angles = np.column_stack(sh.wall_angles(anchors[found[:, 0]], anchors[found[:, 1]],
                                                 down[found[:, 0]], down[found[:, 1]])).tolist()
@@ -289,46 +289,88 @@ def test_coast_within_osm_keeps_islets_and_the_sea_side(monkeypatch):
 
 
 def _fake_lines(n):
-    return [{"anchor1": (50 + k / 1e4, 19.1234567), "anchor2": (50.0001, 19 + k / 1e4), "a1_xy": (k * 0.5, 1.0),
-             "a2_xy": (2.0, k / 3), "length": 100 + k / 7, "clearance": k / 3, "clearance_nmpt": None if k % 2 else k / 9,
-             "over_obstacles": bool(k % 3), "elev_a1": 400 + k / 11, "elev_a2": 410.0, "water_m": 0.0, "filled_m": k / 13,
-             "height_max": 30 + k / 17, "height_mean": 20 + k / 19, "high_pct": k / 0.23, "angle1": k * 7.3,
-             "angle2": 90 - k / 3, "prom1": k / 1.7, "prom2": 4.0, "drop1": k * 2.1,
-             "drop2": 30.0, "profile": None}
-            for k in range(n)]
+    import helpers as sh
+    return sh.LineTable.from_rows([
+        {"a1": (k, 0), "a2": (k, 1), "anchor1": (50 + k / 1e4, 19.1234567), "anchor2": (50.0001, 19 + k / 1e4),
+         "a1_xy": (k * 0.5, 1.0), "a2_xy": (2.0, k / 3), "length": 100 + k / 7, "clearance": k / 3,
+         "clearance_nmpt": None if k % 2 else k / 9, "over_obstacles": bool(k % 3), "elev_a1": 400 + k / 11,
+         "elev_a2": 410.0, "water_m": 0.0, "filled_m": k / 13, "height_max": 30 + k / 17, "height_mean": 20 + k / 19,
+         "high_pct": k / 0.23, "angle1": k * 7.3, "angle2": 90 - k / 3, "prom1": np.nan if k % 4 else k / 1.7,
+         "prom2": 4.0, "drop1": k * 2.1, "drop2": 30.0,
+         "profile": {"d": [0, k], "z": [1.5, None]} if k in (0, 4) else None}
+        for k in range(n)])
 
 
 def test_chunked_writes_match_one_dump(tmp_path, monkeypatch):
     """Results, the map data and tile files written in chunks: the same text, the same lines."""
     import json
+    from shapely.geometry import Point
+    import helpers as sh
     import mapping as mp
     import runs as rn
     import search
+
+    class Area:
+        center = (50.0, 19.1)
+
+        @staticmethod
+        def shape_wgs84():
+            return Point(19.1, 50.0).buffer(0.01)
+
     lines = _fake_lines(10)
-    groups = [{"rep": lines[0], "members": lines[:4]}, {"rep": lines[4], "members": lines[4:]}]
+    groups = mp.Groups(np.array([4, 0]), np.array([4, 5, 6, 7, 8, 9, 3, 0, 1, 2]), np.array([0, 6, 10]))
     meta = {"name": "Żabi Koń", "summary": {"lines": 10}}
+    run = {"id": "r", "name": "Żabi Koń", "created": "2026-10-31T10:00:00+00:00"}
     for chunk, folder in ((3, tmp_path / "small"), (10_000, tmp_path / "one")):
         monkeypatch.setattr(rn, "LINES_CHUNK", chunk)
         monkeypatch.setattr(mp, "LINES_CHUNK", chunk)
         folder.mkdir()
         counts = []
-        rn.save_results(str(folder), groups, meta, lambda n, file: counts.append(n))
-        assert sum(counts) == 3 * len(lines)
-        value = {"crs": "EPSG:2180", "area": None, "lines": [[k, None, k / 3, "ł"] for k in range(10)]}
-        mp._write_js(str(folder / "lines.js"), "window.X", value)
-        assert (folder / "lines.js").read_text(encoding="utf-8") == \
-            "window.X = " + json.dumps(value, separators=(",", ":")) + ";\n"
-    for name in ("lines.csv", "lines.geojson", "run.json"):
+        rn.save_results(str(folder), lines, groups, meta, lambda n, file: counts.append(n))
+        assert sum(counts) == len(lines)
+        counts = []
+        mp.save_map(lines, Area, str(folder), str(tmp_path / "runs"), run, "EPSG:2180",
+                    on_lines=lambda n, file: counts.append(n))
+        assert sum(counts) == len(lines)
+    for name in ("lines.csv", "lines.geojson", "run.json", "data.js", "lines.js"):
         assert (tmp_path / "small" / name).read_bytes() == (tmp_path / "one" / name).read_bytes()
     text = (tmp_path / "small" / "lines.geojson").read_text(encoding="utf-8")
     assert text == json.dumps(json.loads(text), ensure_ascii=False)
+    # Group by group, each representative first; NaN and a missing clearance as empty cells
+    rows = (tmp_path / "small" / "lines.csv").read_text(encoding="utf-8-sig").splitlines()[1:]
+    assert [r.split(",")[:3] for r in rows][:3] == [["1", "True", "6"], ["1", "False", "6"], ["1", "False", "6"]]
+    assert [int(float(r.split(",")[3]) * 7 - 700 + 0.5) for r in rows] == [4, 5, 6, 7, 8, 9, 0, 3, 1, 2]
+    for name in ("data.js", "lines.js"):
+        text = (tmp_path / "small" / name).read_text(encoding="utf-8")
+        value = json.loads(text[text.index("= {") + 2:-2])
+        assert text.endswith("};\n") and len(value["lines"]) == 10
+    data = (tmp_path / "small" / "data.js").read_text(encoding="utf-8")
+    run_value = json.loads(data[data.index("= {") + 2:-2])
+    assert [row[-1] for row in run_value["lines"]][:5] == [{"d": [0, 0], "z": [1.5, None]}, None, None, None,
+                                                           {"d": [0, 4], "z": [1.5, None]}]
 
-    monkeypatch.setattr(search, "TILE_CHUNK", 3)
-    path = str(tmp_path / "0.pkl.gz")
+    path = str(tmp_path / "0.table.pkl.gz")
     search._save_tile(path, lines)
-    assert search._load_tile(path) == lines
-    search._save_tile(path, [])
-    assert search._load_tile(path) == []
+    loaded = search._load_tile(path)
+    assert loaded.profiles == lines.profiles and loaded.columns.keys() == lines.columns.keys()
+    assert all(np.array_equal(loaded.columns[k], lines.columns[k], equal_nan=True) for k in lines.columns)
+    search._save_tile(path, sh.LineTable.empty())
+    assert len(search._load_tile(path)) == 0
+
+
+def test_line_table():
+    """Rows taken and joined keep their profiles; a row as the dict of before."""
+    import helpers as sh
+    lines = _fake_lines(6)
+    taken = lines.take(np.array([4, 1, 0]))
+    assert taken.columns["length"].tolist() == [lines.columns["length"][k] for k in (4, 1, 0)]
+    assert taken.profiles == {0: lines.profiles[4], 2: lines.profiles[0]}
+    both = sh.LineTable.concat([taken, lines.take(lines.columns["over_obstacles"])])
+    assert len(both) == 3 + 4 and both.profiles == {0: lines.profiles[4], 2: lines.profiles[0], 5: lines.profiles[4]}
+    row = lines.row(1)
+    assert row["clearance_nmpt"] is None and row["anchor1"] == (50.0001, 19.1234567) and row["a1"] == (1, 0)
+    assert lines.row(0)["clearance_nmpt"] == 0.0 and row["over_obstacles"] is True and row["profile"] is None
+    assert len(sh.LineTable.concat([sh.LineTable.empty(), sh.LineTable.empty()])) == 0
 
 
 def _cgroup(folder, **files):
@@ -397,6 +439,8 @@ def test_run_ids_and_public_meta(tmp_path):
     import json
     import re
     from datetime import datetime
+    import helpers as sh
+    import mapping as mp
     import runs as rn
     created = datetime(2026, 10, 27, 12, 0, 0)
     first, second = (rn.new_run(str(tmp_path), "Żabi Koń", created) for _ in range(2))
@@ -404,7 +448,7 @@ def test_run_ids_and_public_meta(tmp_path):
     assert re.fullmatch(r"2026-10-27_120000_Zabi-Kon_[0-9a-f]{16}", first["id"]), first["id"]
     meta = {"name": "x", "summary": {"lines": 0},
             "data": [{"layer": "NMT", "folder": "poland/nmt", "files": 2, "paths": ["poland/nmt/a.tif", "b.tif"]}]}
-    rn.save_results(first["path"], [], meta)
+    rn.save_results(first["path"], sh.LineTable.empty(), mp.Groups.each_alone(0), meta)
     saved = json.loads(open(os.path.join(first["path"], "lines.geojson"), encoding="utf-8").read())["findaline"]
     assert saved["data"] == [{"layer": "NMT", "folder": "poland/nmt", "files": 2}]
     assert json.load(open(os.path.join(first["path"], "run.json"), encoding="utf-8")) == meta  # run.json keeps them
@@ -437,6 +481,8 @@ def test_run_credits(tmp_path):
     them to ATTRIBUTION.txt; runs.js leaves them out."""
     import json
     from datetime import datetime
+    import helpers as sh
+    import mapping as mp
     import runs as rn
     import search
     from types import SimpleNamespace
@@ -452,7 +498,7 @@ def test_run_credits(tmp_path):
     run = rn.new_run(str(tmp_path), "Gozo", datetime(2026, 10, 27, 12, 0, 0))
     meta = {"id": run["id"], "name": "Gozo", "created": "2026-10-27T12:00:00", "description": "",
             "summary": {"lines": 0}, "source": {"id": "europe"}, "data": data, "attribution": credits}
-    rn.save_results(run["path"], [], meta)
+    rn.save_results(run["path"], sh.LineTable.empty(), mp.Groups.each_alone(0), meta)
     with open(os.path.join(run["path"], "ATTRIBUTION.txt"), encoding="utf-8") as f:
         text = f.read()
     for credit in credits:
