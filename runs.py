@@ -18,7 +18,6 @@ A page opened from disk cannot list a folder, so runs.js and index.html are
 rewritten after every run.
 """
 
-import csv
 import html
 import json
 import math
@@ -166,6 +165,65 @@ def rounded(value: float, digits: int):
     return None if value != value else round(value, digits)
 
 
+def round_floats(values: np.ndarray, digits: int) -> np.ndarray:
+    """round(v, digits) of every value (as float64) exactly as Python's round() gives it, which
+    rounds the exact binary value correctly (2.675 -> 2.67) where np.round(2.675, 2) gives 2.68.
+
+    rint(x * 10**digits) / 10**digits is that value whenever x * 10**digits, rounded once, is
+    more than an ulp away from a half: the integer is then the right one, and dividing it by
+    the exact power of ten is correctly rounded like the conversion of round()'s decimal. The
+    others (halves, NaN, infinities, values beyond 2**52 that round() leaves as they are) go
+    through round() itself."""
+    assert 0 <= digits <= 22  # 10**digits exact
+    x = np.asarray(values, dtype=np.float64)
+    scale = 10.0 ** digits
+    with np.errstate(over="ignore", invalid="ignore"):
+        p = x * scale
+        y = np.rint(p) / scale
+        size = np.abs(p)
+        sure = (size < 2.0 ** 52) & (np.abs(np.abs(p - np.trunc(p)) - 0.5) > 2 * np.spacing(size))
+    other = np.flatnonzero(~sure)
+    if len(other):
+        y[other] = [round(v, digits) for v in x[other].tolist()]
+    return y
+
+
+_JSON = json.JSONEncoder(ensure_ascii=False)
+_SPECIAL_CSV = {"nan": "nan", "inf": "inf", "-inf": "-inf"}
+_SPECIAL_JSON = {"nan": "NaN", "inf": "Infinity", "-inf": "-Infinity"}
+
+
+def column_texts(values: np.ndarray, digits: Optional[int] = None, empty_nan: bool = False) -> tuple:
+    """The texts of a column's values in lines.csv (as csv.writer writes them) and in JSON (as
+    json.JSONEncoder does): (csv texts, JSON texts), the same list when they agree. digits: as
+    round(v, digits) (rounded() with empty_nan: NaN is an empty cell and null)."""
+    kind = values.dtype.kind
+    if kind == "b" and digits is None:
+        flags = values.tolist()
+        return ["True" if v else "False" for v in flags], ["true" if v else "false" for v in flags]
+    if kind in "iu":
+        texts = list(map(str, values.tolist()))  # round() leaves integers as they are
+        return texts, texts
+    if kind != "f":  # anything else value by value, as before (round(True, 1) is 1)
+        items = values.tolist()
+        if digits is not None:
+            items = [rounded(v, digits) if empty_nan else round(v, digits) for v in items]
+        return (["" if v is None else repr(v) if isinstance(v, float) else str(v) for v in items],
+                [_JSON.encode(v) for v in items])
+    floats = round_floats(values, digits) if digits is not None else values.astype(np.float64, copy=False)
+    texts = list(map(float.__repr__, floats.tolist()))
+    special = np.flatnonzero(~np.isfinite(floats)).tolist()
+    if not special:
+        return texts, texts
+    as_csv, as_json = texts, texts.copy()
+    for k in special:
+        if empty_nan and texts[k] == "nan":
+            as_csv[k], as_json[k] = "", "null"
+        else:
+            as_csv[k], as_json[k] = _SPECIAL_CSV[texts[k]], _SPECIAL_JSON[texts[k]]
+    return as_csv, as_json
+
+
 def row_order(groups) -> tuple:
     """The rows of lines.csv: (line, its group's number, whether it represents the group, the
     group's size) for every line, group by group, each representative first and then its members
@@ -178,40 +236,37 @@ def row_order(groups) -> tuple:
     return groups.members[order], group[order] + 1, is_rep[order], sizes[group[order]]
 
 
-def _rows(lines, order: np.ndarray, number: np.ndarray, is_rep: np.ndarray, size: np.ndarray) -> List[Dict]:
-    """Rows of lines.csv of lines (a helpers.LineTable): a part of row_order."""
-    c = {name: column[order].tolist() for name, column in lines.columns.items()}
-    rows = []
-    for number, is_rep, size, (lat1, lon1), (lat2, lon2), (x1, y1), (x2, y2), length, clearance, nmpt,             over, water, filled, height_max, height_mean, high_pct, e1, e2, angle1, angle2, prom1, prom2,             drop1, drop2 in zip(
-            number.tolist(), is_rep.tolist(), size.tolist(), c["anchor1"], c["anchor2"], c["a1_xy"], c["a2_xy"],
-            c["length"], c["clearance"], c["clearance_nmpt"], c["over_obstacles"], c["water_m"], c["filled_m"],
-            c["height_max"], c["height_mean"], c["high_pct"], c["elev_a1"], c["elev_a2"], c["angle1"],
-            c["angle2"], c["prom1"], c["prom2"], c["drop1"], c["drop2"]):
-        rows.append({
-            "group": number,
-            "representative": is_rep,
-            "group_size": size,
-            "length_m": round(length, 1),
-            "clearance_m": round(clearance, 2),
-            "clearance_nmpt_m": rounded(nmpt, 2),
-            "over_trees_buildings": over,
-            "water_m": water,
-            "filled_m": filled,
-            "height_max_m": round(height_max, 2),
-            "height_mean_m": round(height_mean, 2),
-            "high_pct": round(high_pct, 1),
-            "anchor1_lat": round(lat1, 7), "anchor1_lon": round(lon1, 7),
-            "anchor1_elev_m": round(e1, 2),
-            "anchor1_northing": round(y1, 2), "anchor1_easting": round(x1, 2),
-            "anchor1_wall_angle": round(angle1, 1),
-            "anchor1_prominence_m": rounded(prom1, 1), "anchor1_drop_m": rounded(drop1, 1),
-            "anchor2_lat": round(lat2, 7), "anchor2_lon": round(lon2, 7),
-            "anchor2_elev_m": round(e2, 2),
-            "anchor2_northing": round(y2, 2), "anchor2_easting": round(x2, 2),
-            "anchor2_wall_angle": round(angle2, 1),
-            "anchor2_prominence_m": rounded(prom2, 1), "anchor2_drop_m": rounded(drop2, 1),
-        })
-    return rows
+# A feature of lines.geojson as json.dumps(..., ensure_ascii=False) writes it, its values as %s
+FEATURE = ('{"type": "Feature", "geometry": {"type": "LineString", "coordinates": [[%s, %s], [%s, %s]]}, '
+           '"properties": {' + ", ".join(f"{json.dumps(name)}: %s" for name in FIELDS) + "}}")
+
+
+def _rows(lines, order: np.ndarray, number: np.ndarray, is_rep: np.ndarray, size: np.ndarray) -> tuple:
+    """The text of rows of lines.csv and of their features in lines.geojson (joined by ", ") of
+    lines (a helpers.LineTable): a part of row_order. The same text as csv.writer and json.dumps
+    of the rows as dicts of Python values (round() of each), built column by column."""
+    c = lines.columns
+    pick = lambda name, k=None: c[name][order] if k is None else c[name][order, k]
+    columns = [  # (csv, JSON) texts in the order of FIELDS
+        column_texts(number), column_texts(is_rep), column_texts(size),
+        column_texts(pick("length"), 1), column_texts(pick("clearance"), 2),
+        column_texts(pick("clearance_nmpt"), 2, empty_nan=True), column_texts(pick("over_obstacles")),
+        column_texts(pick("water_m")), column_texts(pick("filled_m")),
+        column_texts(pick("height_max"), 2), column_texts(pick("height_mean"), 2),
+        column_texts(pick("high_pct"), 1)]
+    for a, xy, elev, angle, prom, drop in (("anchor1", "a1_xy", "elev_a1", "angle1", "prom1", "drop1"),
+                                           ("anchor2", "a2_xy", "elev_a2", "angle2", "prom2", "drop2")):
+        columns += [column_texts(pick(a, 0), 7), column_texts(pick(a, 1), 7), column_texts(pick(elev), 2),
+                    column_texts(pick(xy, 1), 2), column_texts(pick(xy, 0), 2), column_texts(pick(angle), 1),
+                    column_texts(pick(prom), 1, empty_nan=True), column_texts(pick(drop), 1, empty_nan=True)]
+    if not len(order):
+        return "", ""
+    table = "\r\n".join(map(",".join, zip(*(t for t, _ in columns)))) + "\r\n"
+    values = [j for _, j in columns]
+    lat1, lon1, lat2, lon2 = (values[FIELDS.index(name)] for name in
+                              ("anchor1_lat", "anchor1_lon", "anchor2_lat", "anchor2_lon"))
+    features = ", ".join(FEATURE % row for row in zip(lon1, lat1, lon2, lat2, *values))
+    return table, features
 
 
 LINES_CHUNK = 10_000  # lines written between two progress updates
@@ -245,25 +300,18 @@ def save_results(run_path: str, lines, groups, meta: Dict, on_lines=lambda n, fi
     on_lines(n, file) reports progress after each chunk, then run.json with n=0.
     """
     # lines.geojson: the same text as json.dump of the whole collection, written in chunks of features
-    encoder = json.JSONEncoder(ensure_ascii=False)
-    with open(os.path.join(run_path, "lines.csv"), "w", newline="", encoding="utf-8-sig") as table,             open(os.path.join(run_path, "lines.geojson"), "w", encoding="utf-8") as geojson:
-        writer = csv.DictWriter(table, fieldnames=FIELDS)
-        writer.writeheader()
+    with open(os.path.join(run_path, "lines.csv"), "w", newline="", encoding="utf-8-sig") as table, \
+            open(os.path.join(run_path, "lines.geojson"), "w", encoding="utf-8") as geojson:
+        table.write(",".join(FIELDS) + "\r\n")  # csv.writer's header: no name needs quotes
         geojson.write('{"type": "FeatureCollection", "features": [')
         order = row_order(groups)
         for start in range(0, len(lines), LINES_CHUNK):
-            rows = _rows(lines, *(column[start:start + LINES_CHUNK] for column in order))
-            writer.writerows(rows)
-            features = [{
-                "type": "Feature",
-                "geometry": {"type": "LineString",
-                             "coordinates": [[row["anchor1_lon"], row["anchor1_lat"]],
-                                             [row["anchor2_lon"], row["anchor2_lat"]]]},
-                "properties": row,
-            } for row in rows]
-            geojson.write((", " if start else "") + encoder.encode(features)[1:-1])
-            on_lines(len(rows), "lines.csv, lines.geojson")
-        geojson.write('], "findaline": ' + encoder.encode(public_meta(meta)) + "}")
+            part = [column[start:start + LINES_CHUNK] for column in order]
+            rows, features = _rows(lines, *part)
+            table.write(rows)
+            geojson.write((", " if start else "") + features)
+            on_lines(len(part[0]), "lines.csv, lines.geojson")
+        geojson.write('], "findaline": ' + _JSON.encode(public_meta(meta)) + "}")
 
     with open(os.path.join(run_path, "ATTRIBUTION.txt"), "w", encoding="utf-8") as f:
         f.write(attribution_text(meta))

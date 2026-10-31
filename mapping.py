@@ -17,7 +17,7 @@ import cache
 from grid import Grid
 from helpers import HIGH_ABOVE, LEASH_FALL, SLOPE, LineTable
 from progress import progress
-from runs import rounded
+from runs import column_texts
 from sag import Rigging
 
 MAX_ZOOM = 21  # about 5 cm per pixel, the detail of the best geoportal orthophotos
@@ -243,25 +243,22 @@ def _script_head(target: str, value: Dict) -> str:
     return f"{target} = {head[:-1]},\"lines\":["
 
 
-def map_rows(lines: LineTable, start: int, stop: int, profiles: bool) -> List[list]:
-    """The rows of data.js (with the profile last) or lines.js (without) of lines start..stop
-    (viewer/src/types.ts, toLine). Values used for grouping are not rounded, so the browser
-    groups exactly like group_lines()."""
-    c = {name: column[start:stop].tolist() for name, column in lines.columns.items()}
-    rows = []
-    for k, (lat1, lon1), (lat2, lon2), a1_xy, a2_xy, length, clearance, nmpt, e1, e2, over, water, filled,             height_max, height_mean, high_pct, angle1, angle2, prom1, prom2, drop1, drop2 in zip(
-            range(start, stop), c["anchor1"], c["anchor2"], c["a1_xy"], c["a2_xy"], c["length"], c["clearance"],
-            c["clearance_nmpt"], c["elev_a1"], c["elev_a2"], c["over_obstacles"], c["water_m"], c["filled_m"],
-            c["height_max"], c["height_mean"], c["high_pct"], c["angle1"], c["angle2"], c["prom1"], c["prom2"],
-            c["drop1"], c["drop2"]):
-        row = [round(lat1, 7), round(lon1, 7), round(lat2, 7), round(lon2, 7), *a1_xy, *a2_xy, length, clearance,
-               rounded(nmpt, 2), round(e1, 2), round(e2, 2), over, round(water, 1), round(filled, 1),
-               height_max, round(height_mean, 2), round(high_pct, 1), round(angle1, 1), round(angle2, 1),
-               rounded(prom1, 1), rounded(prom2, 1), rounded(drop1, 1), rounded(drop2, 1)]
-        if profiles:
-            row.append(lines.profiles.get(k))
-        rows.append(row)
-    return rows
+def map_rows(lines: LineTable, start: int, stop: int) -> List[str]:
+    """The JSON texts of the rows of lines.js of lines start..stop (viewer/src/types.ts, toLine),
+    without the profile that data.js adds as its last value. The same text as json.dumps of the
+    row as a list of Python values (round() of each, rounded() for those that may be missing),
+    built column by column. Values used for grouping are not rounded, so the browser groups
+    exactly like group_lines()."""
+    c = {name: column[start:stop] for name, column in lines.columns.items()}
+    text = lambda values, digits=None, empty_nan=False: column_texts(values, digits, empty_nan)[1]
+    columns = [text(c["anchor1"][:, 0], 7), text(c["anchor1"][:, 1], 7), text(c["anchor2"][:, 0], 7),
+               text(c["anchor2"][:, 1], 7), text(c["a1_xy"][:, 0]), text(c["a1_xy"][:, 1]), text(c["a2_xy"][:, 0]),
+               text(c["a2_xy"][:, 1]), text(c["length"]), text(c["clearance"]), text(c["clearance_nmpt"], 2, True),
+               text(c["elev_a1"], 2), text(c["elev_a2"], 2), text(c["over_obstacles"]), text(c["water_m"], 1),
+               text(c["filled_m"], 1), text(c["height_max"]), text(c["height_mean"], 2), text(c["high_pct"], 1),
+               text(c["angle1"], 1), text(c["angle2"], 1), text(c["prom1"], 1, True), text(c["prom2"], 1, True),
+               text(c["drop1"], 1, True), text(c["drop2"], 1, True)]
+    return list(map(",".join, zip(*columns))) if stop > start else []
 
 
 def save_map(lines: LineTable, area, run_path: str, runs_dir: str, run: Dict, crs: str,
@@ -309,8 +306,12 @@ def save_map(lines: LineTable, area, run_path: str, runs_dir: str, run: Dict, cr
         for start in range(0, len(lines), LINES_CHUNK):
             stop = min(start + LINES_CHUNK, len(lines))
             separator = "," if start else ""
-            full.write(separator + encoder.encode(map_rows(lines, start, stop, True))[1:-1])
-            short.write(separator + encoder.encode(map_rows(lines, start, stop, False))[1:-1])
+            rows = map_rows(lines, start, stop)
+            profiles = lines.profiles
+            full.write(separator + ",".join(
+                f"[{row},{encoder.encode(profiles[k]) if k in profiles else 'null'}]"
+                for k, row in enumerate(rows, start)))
+            short.write(separator + ",".join(f"[{row}]" for row in rows))
             on_lines(stop - start, "data.js, lines.js")
         full.write("]};\n")
         short.write("]};\n")

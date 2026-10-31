@@ -677,3 +677,122 @@ def test_coded_errors():
                          lat=1.5, lon=2.5)
     assert str(note).endswith("--max-length") and note.web_text().startswith("3 parts of the coast are 200–400 m")
     assert messages.quantity("slope_threshold", 45.0) == "45°" and messages.quantity("ortho_detail", 5) == "5"
+
+
+HARD_FLOATS = [0.125, 0.375, 2.675, 1.005, 0.5, 1.5, 2.5, -0.5, -2.675, 0.0, -0.0, -0.004, -1e-9, 1e-300, 5e-324,
+               1e300, -1e300, 2.0 ** 52 + 1, 4.5e15 + 0.5, 1e16, 123456.78905, 50.12345675, 19.00000005,
+               float("nan"), float("inf"), float("-inf"), 0.1 + 0.2, 1 / 3, 1e22, 0.045, 0.055, 9.995]
+
+
+def test_round_floats_like_round():
+    """round_floats: Python's round() of every value, halfway cases, signs and specials too."""
+    import runs
+    rng = np.random.default_rng(1)
+    values = np.concatenate([HARD_FLOATS, [k / 1000 for k in range(-3000, 3000)], [k / 8 for k in range(-100, 100)],
+                             rng.normal(0, 1, 20000), rng.normal(0, 1, 20000) * 10.0 ** rng.integers(-12, 18, 20000),
+                             rng.integers(-10 ** 7, 10 ** 7, 20000) / 10 ** rng.integers(1, 9, 20000) + 0.5e-7])
+    for digits in (0, 1, 2, 3, 7, 12):
+        got = runs.round_floats(values, digits).tolist()
+        expected = [round(v, digits) for v in values.tolist()]
+        assert list(map(repr, got)) == list(map(repr, expected)), digits
+
+
+def _old_csv_and_features(lines, groups):
+    """lines.csv and the features of lines.geojson as the code before 2026-10-31 wrote them:
+    csv.DictWriter and json.dumps of dicts of round()ed Python values."""
+    import csv
+    import io
+    import json
+    import runs as rn
+    rows = []
+    for k, number, is_rep, size in zip(*(column.tolist() for column in rn.row_order(groups))):
+        r = lines.row(k)
+        (lat1, lon1), (lat2, lon2), (x1, y1), (x2, y2) = r["anchor1"], r["anchor2"], r["a1_xy"], r["a2_xy"]
+        nmpt = np.nan if r["clearance_nmpt"] is None else r["clearance_nmpt"]
+        rows.append({
+            "group": number, "representative": is_rep, "group_size": size, "length_m": round(r["length"], 1),
+            "clearance_m": round(r["clearance"], 2), "clearance_nmpt_m": rn.rounded(nmpt, 2),
+            "over_trees_buildings": r["over_obstacles"], "water_m": r["water_m"], "filled_m": r["filled_m"],
+            "height_max_m": round(r["height_max"], 2), "height_mean_m": round(r["height_mean"], 2),
+            "high_pct": round(r["high_pct"], 1),
+            "anchor1_lat": round(lat1, 7), "anchor1_lon": round(lon1, 7), "anchor1_elev_m": round(r["elev_a1"], 2),
+            "anchor1_northing": round(y1, 2), "anchor1_easting": round(x1, 2),
+            "anchor1_wall_angle": round(r["angle1"], 1),
+            "anchor1_prominence_m": rn.rounded(r["prom1"], 1), "anchor1_drop_m": rn.rounded(r["drop1"], 1),
+            "anchor2_lat": round(lat2, 7), "anchor2_lon": round(lon2, 7), "anchor2_elev_m": round(r["elev_a2"], 2),
+            "anchor2_northing": round(y2, 2), "anchor2_easting": round(x2, 2),
+            "anchor2_wall_angle": round(r["angle2"], 1),
+            "anchor2_prominence_m": rn.rounded(r["prom2"], 1), "anchor2_drop_m": rn.rounded(r["drop2"], 1)})
+    table = io.StringIO(newline="")
+    writer = csv.DictWriter(table, fieldnames=rn.FIELDS)
+    writer.writeheader()
+    writer.writerows(rows)
+    features = [{"type": "Feature", "geometry": {"type": "LineString", "coordinates": [
+        [r["anchor1_lon"], r["anchor1_lat"]], [r["anchor2_lon"], r["anchor2_lat"]]]}, "properties": r} for r in rows]
+    return table.getvalue(), json.dumps(features, ensure_ascii=False)[1:-1]
+
+
+def _old_map_rows(lines, profiles: bool):
+    import runs as rn
+    rows = []
+    for k in range(len(lines)):
+        r = lines.row(k)
+        (lat1, lon1), (lat2, lon2) = r["anchor1"], r["anchor2"]
+        nmpt = np.nan if r["clearance_nmpt"] is None else r["clearance_nmpt"]
+        row = [round(lat1, 7), round(lon1, 7), round(lat2, 7), round(lon2, 7), *r["a1_xy"], *r["a2_xy"], r["length"],
+               r["clearance"], rn.rounded(nmpt, 2), round(r["elev_a1"], 2), round(r["elev_a2"], 2),
+               r["over_obstacles"], round(r["water_m"], 1), round(r["filled_m"], 1), r["height_max"],
+               round(r["height_mean"], 2), round(r["high_pct"], 1), round(r["angle1"], 1), round(r["angle2"], 1),
+               rn.rounded(r["prom1"], 1), rn.rounded(r["prom2"], 1), rn.rounded(r["drop1"], 1),
+               rn.rounded(r["drop2"], 1)]
+        if profiles:
+            row.append(lines.profiles.get(k))
+        rows.append(row)
+    return rows
+
+
+def test_saved_text_as_before(tmp_path, monkeypatch):
+    """lines.csv, lines.geojson, data.js and lines.js built column by column: the same text as
+    csv.DictWriter and json.dumps of the rows of Python values wrote, for values hard to round
+    (halves, negative zero, NaN, infinities, very large and small), a missing clearance and
+    non-ASCII names."""
+    import json
+    from shapely.geometry import Point
+    import mapping as mp
+    import runs as rn
+
+    class Area:
+        center = (50.0, 19.1)
+
+        @staticmethod
+        def shape_wgs84():
+            return Point(19.1, 50.0).buffer(0.01)
+
+    n = len(HARD_FLOATS)
+    lines = _fake_lines(n)
+    hard = np.array(HARD_FLOATS)
+    for shift, name in enumerate(["length", "clearance", "clearance_nmpt", "water_m", "filled_m", "height_max",
+                                  "height_mean", "high_pct", "elev_a1", "elev_a2", "angle1", "angle2", "prom1",
+                                  "prom2", "drop1", "drop2"]):
+        lines.columns[name] = np.roll(hard, shift)
+    for shift, name in enumerate(["anchor1", "anchor2", "a1_xy", "a2_xy"]):
+        lines.columns[name] = np.column_stack([np.roll(hard, 3 * shift + 1), np.roll(hard, -3 * shift - 2)])
+    lines.profiles[2] = {"d": [0.0, -0.0, 1e300], "z": [float("nan"), None], "name": "Żabi"}
+    groups = mp.Groups(np.array([4, 0]), np.array([4, *range(5, n), 3, 0, 1, 2]), np.array([0, n - 4, n]))
+    meta = {"name": "Żabi Koń „ß”", "summary": {"lines": n}}
+    run = {"id": "r", "name": "Żabi Koń „ß”", "created": "2026-10-31T10:00:00+00:00"}
+    monkeypatch.setattr(rn, "LINES_CHUNK", 5)
+    monkeypatch.setattr(mp, "LINES_CHUNK", 5)
+    rn.save_results(str(tmp_path), lines, groups, meta)
+    mp.save_map(lines, Area, str(tmp_path), str(tmp_path / "runs"), run, "EPSG:2180")
+
+    table, features = _old_csv_and_features(lines, groups)
+    assert (tmp_path / "lines.csv").read_bytes() == table.encode("utf-8-sig")
+    geojson = (tmp_path / "lines.geojson").read_text(encoding="utf-8")
+    assert geojson == ('{"type": "FeatureCollection", "features": [' + features + '], "findaline": '
+                       + json.dumps(rn.public_meta(meta), ensure_ascii=False) + "}")
+    for name, profiles in (("data.js", True), ("lines.js", False)):
+        text = (tmp_path / name).read_text(encoding="utf-8")
+        expected = json.dumps(_old_map_rows(lines, profiles), separators=(",", ":"))
+        assert text[text.index('"lines":[') + len('"lines":'):] == expected + "};\n"
+    assert '"name":"\\u017babi Ko\\u0144' in (tmp_path / "data.js").read_text(encoding="utf-8")
