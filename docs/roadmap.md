@@ -124,7 +124,7 @@ Threat model: anonymous scanners; a malicious signed-in user (CPU, RAM and disk 
 | Nominatim 1/s, Overpass one at a time, across processes | `pyrate-limiter` (`SQLiteBucket`) and `filelock` | 6 |
 | off-site backups | `restic` (tool) | 7 |
 
-FastAPI and Starlette stay pinned in `uv.lock` and are raised deliberately (FastAPI is 0.x and releases often). Own code stays where libraries fit worse: sessions (must be revocable, which a signed cookie is not; FastAPI-Users is in maintenance mode and needs SQLAlchemy), CSRF (`starlette-csrf` has no release since 2023), the job queue, the Nominatim cache, migrations (`user_version`), the admin tab, the audit log, reading the cgroup.
+FastAPI and Starlette stay pinned in `uv.lock` and are raised deliberately (FastAPI is 0.x and releases often). Own code stays where libraries fit worse: sessions (must be revocable, which a signed cookie is not; FastAPI-Users is in maintenance mode and needs SQLAlchemy), CSRF (`starlette-csrf` has no release since 2023), the job queue, the Nominatim cache, migrations (`user_version`), the admin tab, the audit log, reading the cgroup, and rounding a column of floats exactly as Python's `round()` does (`runs.round_floats`, decided 2026-10-31 by the user: no maintained library does it vectorised; `np.round` differs in halfway cases such as 2.675, `decimal` is about 5 times slower than `round()`, `round()` itself 6 times slower than the numpy path, 1.8 s against 0.3 s for the 9.3 million values of the Gozo coast's files; checked against `round()` on about 70 000 hard values in tests/test_units.py).
 
 **Migrations of this stage** (each in its own commit):
 | Data | Change | Migration |
