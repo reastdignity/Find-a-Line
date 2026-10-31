@@ -133,8 +133,8 @@ New to the terminal? Follow the [step-by-step setup guide](setup-for-regular-fol
 Get the code and install the dependencies with [uv](https://docs.astral.sh/uv/) (it also installs Python 3.12 or newer if needed); `pyproject.toml` and `uv.lock` pin the tested versions:
 
 ```
-git clone https://github.com/reastdignity/Find-a-Line.git
-cd Find-a-Line
+git clone https://github.com/reastdignity/Find-a-Line-WebUI.git
+cd Find-a-Line-WebUI
 uv sync
 ```
 

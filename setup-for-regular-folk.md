@@ -28,11 +28,11 @@ You need two tools: **Git** downloads the project, **uv** installs Python and ev
 In PowerShell (Windows) or the Terminal (macOS):
 
 ```
-git clone https://github.com/reastdignity/Find-a-Line.git
-cd Find-a-Line
+git clone https://github.com/reastdignity/Find-a-Line-WebUI.git
+cd Find-a-Line-WebUI
 ```
 
-This creates a `Find-a-Line` folder in your user folder (for example `C:\Users\YourName\Find-a-Line` or `/Users/YourName/Find-a-Line`) and moves into it.
+This creates a `Find-a-Line-WebUI` folder in your user folder (for example `C:\Users\YourName\Find-a-Line-WebUI` or `/Users/YourName/Find-a-Line-WebUI`) and moves into it.
 
 ## 3. Install what the script needs (once)
 Still in the same window:
@@ -41,7 +41,7 @@ Still in the same window:
 uv sync
 ```
 
-uv downloads the right Python version and the libraries into a `.venv` folder inside `Find-a-Line`, exactly the versions the project was tested with. This takes a few minutes.
+uv downloads the right Python version and the libraries into a `.venv` folder inside `Find-a-Line-WebUI`, exactly the versions the project was tested with. This takes a few minutes.
 
 ## 4. Your first search
 1. Pick the centre of the area you want to search. The easiest way is Google Maps: right-click a spot and click the coordinates at the top of the menu to copy them (for example `50.15595, 19.75627`, which is the Żabi Koń rock in Dolina Kobylańska near Kraków).
@@ -58,7 +58,7 @@ uv downloads the right Python version and the libraries into a `.venv` folder in
 When it is done, the coordinates of the spots it found are printed (one line per spot; similar lines are grouped together), and a simple map opens in a separate window. Close that window to finish.
 
 ## 5. Look at the results
-Open the `Find-a-Line` folder (in File Explorer or Finder) and double-click **`findaline_map.html`**. It opens the map of your latest search in your web browser:
+Open the `Find-a-Line-WebUI` folder (in File Explorer or Finder) and double-click **`findaline_map.html`**. It opens the map of your latest search in your web browser:
 
 - **Pink lines** have enough clearance over the terrain and over the trees; **orange lines** clear the terrain but pass too close to trees or buildings.
 - The **list on the right** (on a phone: slide the sheet at the bottom up) shows the spots, the clearest first. The chips above it filter the lines (length, clearance, height); *More filters* has the rest, and the grouping of similar lines.
@@ -72,8 +72,8 @@ Every search is kept in the `runs` folder. Open `runs/index.html` for a list of 
 ## Searching in the browser instead
 Instead of typing commands, you can use Find-a-Line as a page in your web browser:
 
-- **Windows:** double-click **`start.bat`** in the `Find-a-Line` folder.
-- **macOS:** double-click **`start.command`** (the first time: right-click it, choose *Open* and confirm; if it does not start, run `chmod +x start.command` in the Terminal in the `Find-a-Line` folder once).
+- **Windows:** double-click **`start.bat`** in the `Find-a-Line-WebUI` folder.
+- **macOS:** double-click **`start.command`** (the first time: right-click it, choose *Open* and confirm; if it does not start, run `chmod +x start.command` in the Terminal in the `Find-a-Line-WebUI` folder once).
 - Or in the terminal: `uv run findaline.py web`.
 
 A window with the server stays open (closing it stops Find-a-Line) and the page opens in your browser. Press **New search**, click the map where you want to search (or type a place's name and press Enter, or draw an area); the size and the download are shown while you set it up. Press **Start search**: the home page shows its progress, and when it is done, a click on it shows the results in the app.
@@ -138,13 +138,13 @@ The key allows a limited number of downloads per day. Each request downloads one
 Open PowerShell or the Terminal and run:
 
 ```
-cd Find-a-Line
+cd Find-a-Line-WebUI
 uv run findaline.py --lat ... --lon ...
 ```
 
 ## Updating to a newer version
 ```
-cd Find-a-Line
+cd Find-a-Line-WebUI
 git pull
 ```
 

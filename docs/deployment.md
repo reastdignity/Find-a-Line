@@ -9,7 +9,7 @@ meant to be copied.
 Throughout, replace:
 - `findaline.example.org` with the address of the site (set `SITE=` once in the shell where it is
   used: section 4);
-- `/srv/find-a-line` with the folder of the checkout;
+- `/srv/find-a-line-webui` with the folder of the checkout;
 - `203.0.113.7` with a fixed address of your own (your home or office), where it is optional.
 
 What the site needs from the outside, and what stays closed:
@@ -30,7 +30,7 @@ Google (7), the restic repository (11) and the checks that need a browser or ano
 (12). After cloning the checkout (section 1):
 
 ```sh
-cd /srv/find-a-line
+cd /srv/find-a-line-webui
 sudo deploy/vps.sh setup --site findaline.example.org --email you@example.org --my-ip 203.0.113.7
 ```
 
@@ -118,8 +118,8 @@ timer, SSH, the free disk).
 - A domain whose DNS you manage (section 3).
 - An e-mail address or URL where the operators of Nominatim, Overpass and the data services can
   reach you (`FINDALINE_CONTACT`, sent in the User-Agent together with the site's address).
-- The checkout: `sudo git clone https://github.com/<you>/Find-a-Line.git /srv/find-a-line`
-  (or your own remote), owned by your user: `sudo chown -R $USER: /srv/find-a-line`.
+- The checkout: `sudo git clone https://github.com/<you>/Find-a-Line-WebUI.git /srv/find-a-line-webui`
+  (or your own remote), owned by your user: `sudo chown -R $USER: /srv/find-a-line-webui`.
 
 ## 2. SSH and the firewall
 A VPS is on the internet from its first minute: do this first.
@@ -176,8 +176,8 @@ the rules below.
 ```sh
 sudo cp /etc/ufw/after.rules /etc/ufw/after.rules.bak
 sudo cp /etc/ufw/before.rules /etc/ufw/before.rules.bak
-cat /srv/find-a-line/deploy/firewall/ufw-after.rules | sudo tee -a /etc/ufw/after.rules
-sudo sed -i '/^# ok icmp codes for INPUT/e cat /srv/find-a-line/deploy/firewall/ufw-before.rules' /etc/ufw/before.rules
+cat /srv/find-a-line-webui/deploy/firewall/ufw-after.rules | sudo tee -a /etc/ufw/after.rules
+sudo sed -i '/^# ok icmp codes for INPUT/e cat /srv/find-a-line-webui/deploy/firewall/ufw-before.rules' /etc/ufw/before.rules
 sudo grep -n -B3 -A1 'br-fal' /etc/ufw/before.rules
 sudo ufw insert 1 deny in on br-fal-web
 sudo ufw insert 1 deny in on br-fal-worker
@@ -216,7 +216,7 @@ is covered by `ufw` as above (it applies the same rules to IPv6 by default).
 **Test from inside the containers** (after section 9, while the site runs):
 
 ```sh
-cd /srv/find-a-line
+cd /srv/find-a-line-webui
 PUBLIC=$(curl -4s https://ifconfig.me)   # the server's public address
 for service in web worker; do docker compose exec -e PUBLIC=$PUBLIC $service python -c "
 import os, socket, urllib.request
@@ -276,7 +276,7 @@ The two site files name `findaline.example.org`; `sed` puts your name in while c
 ```sh
 sudo apt install nginx certbot
 SITE=findaline.example.org
-cd /srv/find-a-line
+cd /srv/find-a-line-webui
 sudo cp deploy/nginx/findaline-http.conf /etc/nginx/conf.d/
 sudo cp deploy/nginx/findaline-tls.conf /etc/nginx/snippets/
 sed "s/findaline\.example\.org/$SITE/g" deploy/nginx/findaline-acme.conf | sudo tee /etc/nginx/sites-available/findaline-acme >/dev/null
@@ -349,8 +349,8 @@ Ubuntu's logrotate rotates them daily and keeps 14, compressed):
 ## 5. fail2ban
 ```sh
 sudo apt install fail2ban
-sudo cp /srv/find-a-line/deploy/fail2ban/findaline.conf /etc/fail2ban/filter.d/
-sudo cp /srv/find-a-line/deploy/fail2ban/findaline.local /etc/fail2ban/jail.d/
+sudo cp /srv/find-a-line-webui/deploy/fail2ban/findaline.conf /etc/fail2ban/filter.d/
+sudo cp /srv/find-a-line-webui/deploy/fail2ban/findaline.local /etc/fail2ban/jail.d/
 sudo systemctl restart fail2ban
 sudo fail2ban-client status
 sudo fail2ban-client status findaline
@@ -412,7 +412,7 @@ The callback addresses must match exactly.
 
 ## 8. Settings and secrets
 ```sh
-cd /srv/find-a-line
+cd /srv/find-a-line-webui
 cp findaline.env.example findaline.env
 cp .env.example .env
 cp -n deploy/secrets.example/* secrets/
@@ -471,7 +471,7 @@ The first administrator also owns the runs from before the public mode.
 
 ## 9. Start
 ```sh
-cd /srv/find-a-line
+cd /srv/find-a-line-webui
 docker compose build --pull
 docker compose up -d
 docker compose ps
@@ -565,7 +565,7 @@ Keep a copy of the password outside the server (a password manager): without it 
 cannot be read. A first run by hand:
 
 ```sh
-sudo bash -c 'set -a; . /etc/findaline-backup.env; /srv/find-a-line/deploy/backup.sh'
+sudo bash -c 'set -a; . /etc/findaline-backup.env; /srv/find-a-line-webui/deploy/backup.sh'
 ```
 
 **Daily, with a systemd timer**, and a message when it fails: a backup that stops working is
@@ -593,7 +593,7 @@ OnFailure=notify-failure@%N.service
 [Service]
 Type=oneshot
 EnvironmentFile=/etc/findaline-backup.env
-ExecStart=/srv/find-a-line/deploy/backup.sh
+ExecStart=/srv/find-a-line-webui/deploy/backup.sh
 EOF
 sudo tee /etc/systemd/system/findaline-backup.timer >/dev/null <<'EOF'
 [Unit]
@@ -615,7 +615,7 @@ systemctl list-timers findaline-backup.timer
 
 `journalctl -u findaline-backup` shows each run. The same `OnFailure=` line fits any other unit
 of yours. (With cron instead: `30 3 * * * root set -a; . /etc/findaline-backup.env;
-/srv/find-a-line/deploy/backup.sh` in `/etc/cron.d/findaline-backup`; cron mails a failed run's
+/srv/find-a-line-webui/deploy/backup.sh` in `/etc/cron.d/findaline-backup`; cron mails a failed run's
 output to root only if the host can send mail.)
 
 **Test a restore** (once now, then every few months):
@@ -631,7 +631,7 @@ Each database must say `ok`, and `runs` must list the runs.
 **Restore for real** (the site stops meanwhile):
 
 ```sh
-cd /srv/find-a-line
+cd /srv/find-a-line-webui
 docker compose stop
 V=/var/lib/docker/volumes/findaline_data/_data
 A=/var/lib/docker/volumes/findaline_accounts/_data
@@ -716,7 +716,7 @@ settings changed. By hand:
    these files), on the repository's *Actions* page or `gh run list --limit 5`.
 2. Then:
    ```sh
-   cd /srv/find-a-line
+   cd /srv/find-a-line-webui
    git pull --ff-only
    docker compose build --pull
    docker compose up -d
@@ -732,6 +732,14 @@ settings changed. By hand:
    firewall files of section 2: restore the `.bak` copies and add the block and the rule again),
    to `findaline.env.example` and `.env.example` (new settings) and for migrations of stored data
    (they run automatically at start; each commit says so).
+
+**Moving the checkout** (e.g. after the repository was renamed): stop the services
+(`docker compose down`, the volumes stay), move the folder, point `git remote set-url origin` at
+the new address and run `sudo deploy/vps.sh setup` from the new place: it writes the backup's unit
+(`ExecStart` names the path of `backup.sh`) again and starts the services; a backup run by cron
+instead (section 11) needs its line in `/etc/cron.d/findaline-backup` changed by hand. Docker's
+project (`name: findaline` in compose.yaml), its volumes and the other files in `/etc` do not
+depend on the folder's name.
 
 ## 14. Troubleshooting
 - **502 Bad Gateway**: the web service is not running or does not answer on `127.0.0.1:8765`.
