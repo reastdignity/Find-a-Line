@@ -2,8 +2,10 @@
 
 Measured 2026-10-31 on the development PC (12 cores / 24 threads, Windows 11, NTFS, the cache on a
 local SSD). The public worker runs in a container with `WORKER_CPUS` (default 3) and
-`WORKER_MEMORY` (default 8g); "3 cores" below is this PC restricted to 3 physical cores (CPU
-affinity and `--threads 3`), which is what `search.line_threads` gives the worker there.
+`WORKER_MEMORY` (default 8g). The VPS of findaline.lukawski.org has 8 cores and 24 GB, so its
+worker gets 7 cores (`WORKER_CPUS`: the cores minus one) and about 20 GB. "3 cores" and "7 cores"
+below are this PC restricted to that many physical cores (CPU affinity and `--threads N`), which is
+what `search.line_threads` gives the worker in its container.
 
 The question: one worker runs one job downloading and one computing at a time
 (`jobs.Scheduler`, `running` keyed by phase), the quick lane beside them, and claims jobs first in,
@@ -23,11 +25,13 @@ spots, R9 85 671 / 3 972, Gozo 403 026 / 2 734 (the run of 2026-10-28).
 
 ## 1. Cores used by one job
 
-| Job | Size | 24 threads: wall | mean cores | 3 cores: wall | mean cores | peak memory |
-| --- | --- | ---: | ---: | ---: | ---: | ---: |
-| small: R13 Kasprowy Wierch | 5 m, r 500 m, 566 lines | 1.9 s | 3.5 | 1.7 s | 1.1 | 0.2 GB |
-| medium: R9 Montserrat | 5 m, r 1 km, 85 671 lines | 15.7 s | 2.3 | 16.8 s | 1.2 | 1.0 GB |
-| large: Gozo coast ±100 m, 1 m | 9.65 km², 6 tiles, 403 026 lines | 129-131 s | 2.3 | 134-135 s | 1.2 | 5.6 GB |
+| Job | Size | 24 threads | 7 cores (VPS) | 3 cores | peak memory |
+| --- | --- | ---: | ---: | ---: | ---: |
+| small: R13 Kasprowy Wierch | 5 m, r 500 m, 566 lines | 1.9 s, 3.5 cores | | 1.7 s, 1.1 cores | 0.2 GB |
+| medium: R9 Montserrat | 5 m, r 1 km, 85 671 lines | 15.7 s, 2.3 cores | 15.7 s, 1.5 cores | 16.8 s, 1.2 cores | 1.0 GB |
+| large: Gozo coast ±100 m, 1 m | 9.65 km², 6 tiles, 403 026 lines | 129-131 s, 2.3 cores | 125 s, 1.4 cores | 134-135 s, 1.2 cores | 5.6 GB |
+
+(Wall time and the mean number of cores busy.)
 
 (R4, the 1 m Dolina Będkowska, takes 3 s and behaves like R13.) Times are of the search alone; the
 worker adds a spawned process per phase (about 1 s of imports each).
@@ -35,8 +39,8 @@ worker adds a spawned process per phase (about 1 s of imports each).
 **The line search is not the problem.** It is the only parallel code (numba `prange` in
 `linesearch.py`) and uses the cores well (21-22 of 24, 3 of 3), but it is 6 % of the Gozo job on 24
 threads and 12 % on 3 cores; on R9 it takes 0.6 s of 16. Everything else runs on one core, so 24
-threads make the large job only 5 % faster than 3 cores. On 3 cores a job keeps 1.2 cores busy on
-average: **the worker's three cores are mostly idle while one job computes.**
+threads make the large job only 5 % faster than 3 cores. A job keeps 1.2 of 3 cores busy, 1.4 of
+the VPS's 7: **on the VPS about 80 % of the worker's cores are idle while one job computes.**
 
 ![Gozo on 24 threads](perf/gozo-24.png)
 
@@ -130,6 +134,24 @@ the quick lane `quick_claim` every 0.05 s, each page reads its events and `worke
 - The idle quick lane opens a write transaction (`BEGIN IMMEDIATE`) 20 times a second, the
   busiest writer when nothing happens; harmless now, but it competes with every other write.
 
+## The VPS: 8 cores, 24 GB
+
+The worker gets 7 cores and about 20 GB (24 GB less the web service's 1 GB, the system, nginx and
+the page cache that the memory-mapped grids rely on).
+
+- **Cores.** One job at a time uses 1.4 of 7. Four compute slots would keep about 5-6 cores busy
+  (each job 1.2-1.5, the line search of several jobs sharing the cores now and then), leaving
+  room for the download slots and the quick lane.
+- **Memory.** The public limits cut large areas into tiles of at most `grid_mpx_max` = 36 Mpx
+  (`settings.PUBLIC`); at about 85 bytes per pixel (measured on Gozo's 65 Mpx tiles, unlimited
+  locally) a tile peaks at about 3 GB. Four large jobs at once need about 12 GB, small ones a few
+  hundred MB. A slot admitted by an estimate of its largest tile keeps the worker within
+  `WORKER_MEMORY` even when several large jobs meet.
+- **Throughput.** With one slot, a Gozo-sized job (about 2 minutes on cached data) holds the
+  queue; with four slots and fair claiming, three other users' small jobs pass it meanwhile.
+  Jobs per hour grow about 3-4 times when the queue holds several jobs; one job alone is not
+  faster (that needs recommendations 1, 4 and 5).
+
 ## Conclusions
 
 1. **The worker wastes most of its cores.** A computing job keeps 1.2 of 3 cores busy, because only
@@ -147,7 +169,7 @@ the quick lane `quick_claim` every 0.05 s, each page reads its events and `worke
 | # | Change | Gain | Effort |
 | --- | --- | --- | --- |
 | 1 | `fill_gaps`: the median over the ring pixels only | ~15 % of a large job, less memory; identical results | a few lines |
-| 2 | Two compute slots (and two or three download slots) per worker, admitted by memory: a tile's peak is about 85 bytes per pixel (Gozo's 65 Mpx tile 5.6 GB), so a slot is taken only when the job's largest tile fits into what remains of `WORKER_MEMORY` | ~1.8× jobs per hour on 3 cores; small jobs no longer wait for a large one | `Scheduler.running` per slot, a memory estimate in `plan`; medium |
+| 2 | Compute slots per worker (four on the VPS's 7 cores, two on 3) and two or three download slots, admitted by memory: a tile's peak is about 85 bytes per pixel (Gozo's 65 Mpx tile 5.6 GB, a public 36 Mpx tile about 3 GB), so a slot is taken only when the job's largest tile fits into what remains of `WORKER_MEMORY` | ~3-4× jobs per hour on the VPS; small jobs no longer wait for a large one | `Scheduler.running` per slot, a memory estimate in `plan`; medium |
 | 3 | Fair claiming: the oldest job of the user with the fewest running jobs (round robin, already in docs/roadmap.md) | small jobs of other users are not stuck behind one user's queue | one SQL query; small |
 | 4 | The tiles of a large area in parallel processes (each tile is independent until the merge) | large jobs ~N× faster with N tiles in memory | medium (memory as in 2) |
 | 5 | Parallel single-core stages: `reproject(num_threads=...)`, the prominence's `argsort` (numba parallel or per band), profiles of a circle in numba `prange`, writing `lines.csv`/`lines.geojson`/`data.js` in parallel | 10-25 % each where they dominate | small to medium each |
@@ -155,4 +177,5 @@ the quick lane `quick_claim` every 0.05 s, each page reads its events and `worke
 | 7 | The web: one poller per process reading new events every 0.5 s and handing them to the open streams, instead of a query per page; the quick lane waits longer when idle | hundreds of open pages on one CPU | small |
 
 The measurements apply to this PC; the VPS's cores are slower or faster per core, but the shape
-(one busy core most of the time) does not depend on it.
+(one busy core most of the time) does not depend on it. Worth checking on the VPS itself: the
+`.env` there (`WORKER_CPUS`, `WORKER_MEMORY`) and one large search with `tools/perf_profile.py`.
