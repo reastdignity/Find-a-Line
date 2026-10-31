@@ -70,10 +70,17 @@ CONFIRM_DISK_GB = 4
 CONFIRM_MINUTES = 30
 ORTHO_SECONDS_PER_TILE = 0.3  # measured download rate with orthophoto.DOWNLOAD_THREADS
 ORTHO_DETAIL = 50  # groups of an area with detailed orthophoto, unless the service or --ortho-detail says
-# Tiles of large areas: the grids of one tile may use this share of the free memory,
-# counting this many bytes per pixel (terrain, surface, water, gaps, masks, temporaries)
+# The memory of a search (memory_needed): its grids, this many bytes per pixel (terrain,
+# surface, water, gaps, masks, temporaries), and its lines, this many bytes per line (a line of
+# step 4 with its coordinates, values and group, or one of a tile done already)
+PIXEL_BYTES = 100  # 64 of them, and the union-find of the anchor prominence (terrain.py)
+# Measured 2026-10-31 (tracemalloc, 300 000 lines): a line of step 4 about 2.6 KB at the peak
+# (its Line 0.8 KB, coordify's dict 1.7 KB, grouping), one of a tile done already 1.8 KB; the
+# worker killed on the VPS held 2.6 million lines of earlier tiles and 1.1 million of a tile
+LINE_BYTES = 2500
+# Tiles of large areas: the grids of one tile may use this share of the free memory (the rest
+# is for the lines of the tiles)
 TILE_MEMORY_SHARE = 0.25
-TILE_BYTES_PER_PIXEL = 100  # 64 of them, and the union-find of the anchor prominence (terrain.py)
 DOWNLOAD_MB_PER_S = 5  # for the time estimate of area searches
 MAX_MEASURED_PX = 6000  # the longest line measured on the map, in pixels (profile_of_line builds a square grid around it)
 CGROUP_ROOT = "/sys/fs/cgroup"  # cgroup v2 of this process inside a container (its own namespace)
@@ -137,6 +144,7 @@ class Plan:
     tile_core: Optional[float] = None
     tile_label: str = ""  # "Tile 3/15 · " while a tile of a large area is computed
     owner: Optional[int] = None  # the user of the web app's job (None: the local app, the command line)
+    memory: Optional[int] = None  # free memory when a search with limits was planned (_check_lines)
 
 
 STEPS = 5
@@ -296,7 +304,7 @@ def plan_search(params: SearchParams, paths: Paths, on_event: Optional[OnEvent] 
     for note in getattr(area, "notes", []):
         emit("warning", note)
     return Plan(params, paths, area, source, grid, resolution, group_distance, nmpt, rigging, layers,
-                emit, crs, (x, y), limits, tiles, core)
+                emit, crs, (x, y), limits, tiles, core, memory=available_memory() if limits else None)
 
 
 def _check_params(limits: Optional[Limits], params: SearchParams, resolution: Optional[float] = None):
@@ -431,6 +439,28 @@ def cgroup_limits(root: Optional[str] = None) -> CgroupLimits:
     return limits
 
 
+def memory_needed(pixels: float, lines: float) -> float:
+    """Bytes a search needs for grids of this many pixels and this many lines (the peak of step 4
+    of a tile: its grids, its lines and those of the tiles done already)."""
+    return pixels * PIXEL_BYTES + lines * LINE_BYTES
+
+
+def memory_warning(limits: Optional[Limits]) -> Optional[str]:
+    """A warning when the largest search the limits allow (a tile of grid_mpx_max pixels and
+    lines_max lines) needs more memory than is free now (the container's limit in the worker)."""
+    if not limits or not limits.lines_max:
+        return None
+    free = available_memory()
+    pixels = (limits.grid_mpx_max or 0) * 1e6
+    need = memory_needed(pixels, limits.lines_max)
+    if need <= free:
+        return None
+    fits = max(0, int((free - memory_needed(pixels, 0)) // LINE_BYTES))
+    return (f"WARNING: the largest search the limits allow ({limits.lines_max} lines, grids of "
+            f"{pixels / 1e6:g} million pixels) needs about {need / 2 ** 30:.1f} GiB, {free / 2 ** 30:.1f} GiB free: "
+            f"such searches are refused for memory; FINDALINE_LIMIT_LINES_MAX={fits} would fit")
+
+
 def available_memory() -> int:
     """Free memory in bytes: the machine's, or less when a container limits it."""
     free = psutil.virtual_memory().available
@@ -460,7 +490,7 @@ def tile_core_size(params: SearchParams, res: float, max_px: Optional[float] = N
     if params.tile_size:
         core = params.tile_size
     else:
-        side_px = math.sqrt(available_memory() * TILE_MEMORY_SHARE / TILE_BYTES_PER_PIXEL)
+        side_px = math.sqrt(available_memory() * TILE_MEMORY_SHARE / memory_needed(1, 0))
         if max_px:
             side_px = min(side_px, math.sqrt(max_px))
         core = max(500.0, math.floor((side_px * res - 2 * _overlap(params, res)) / 500) * 500)
@@ -678,7 +708,7 @@ def _lines(plan: Plan, data: Data, core: Optional[tuple] = None, before: int = 0
                                       p.high_above, sh.LineLimits(p.min_height, p.min_mean_height,
                                                                   p.min_high_share, p.max_wall_angle),
                                       np.column_stack([prom, drop]), strong)
-    _check_lines(plan, before + len(valid_lines))
+    _check_lines(plan, before + len(valid_lines), grid.width * grid.height)
     if not valid_lines and core is None:
         raise SearchError("No lines found matching elevation requirements.", "no_lines")
 
@@ -715,12 +745,18 @@ def _lines(plan: Plan, data: Data, core: Optional[tuple] = None, before: int = 0
     return results, groups
 
 
-def _check_lines(plan: Plan, count: int):
-    """Refuse more lines than plan.limits allows (before their profiles, groups and files)."""
+def _check_lines(plan: Plan, count: int, pixels: int = 0):
+    """Refuse more lines than plan.limits allows, or than fit with grids of this many pixels into
+    the memory free when the search started (before their coordinates, profiles, groups and files)."""
     if plan.limits and plan.limits.lines_max and count > plan.limits.lines_max:
         raise SearchError(f"{count} lines, at most {plan.limits.lines_max} on this site: a higher --min-prominence "
                           f"(or --min-height, --min-drop), a coarser --resolution or a smaller area", "too_many_lines",
                           n=count, max=plan.limits.lines_max)
+    if plan.memory is not None and memory_needed(pixels, count) > plan.memory:
+        fits = max(0, int((plan.memory - memory_needed(pixels, 0)) // LINE_BYTES))
+        raise SearchError(f"{count} lines, at most {fits} fit into the memory of this site: a higher --min-prominence "
+                          f"(or --min-height, --min-drop), a coarser --resolution or a smaller area",
+                          "too_many_lines_memory", n=count, max=fits)
 
 
 def _run_name(plan: Plan) -> str:

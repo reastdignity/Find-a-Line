@@ -2451,6 +2451,48 @@ def test_search_limits_of_anchors_and_lines(tmp_path):
         gc.collect()
 
 
+def test_lines_refused_for_memory(tmp_path, monkeypatch):
+    """Lines that would not fit with the grids into the memory free when the search started are
+    refused before their coordinates; the command line (no limits) never checks it."""
+    import mapping
+    import search
+    from settings import Limits
+    point = {"northing": 254608, "easting": 553966, "radius": 150}
+    plan = _plan(tmp_path, Limits(), **point)
+    assert plan.memory is not None and _plan(tmp_path, None, **point).memory is None
+    pixels = plan.grid.width * plan.grid.height
+    plan.memory = int(search.memory_needed(pixels, 4))  # the grids and 4 lines
+    monkeypatch.setattr(mapping, "coordify", lambda *a: pytest.fail("coordinates of lines over the memory"))
+    with pytest.raises(search.SearchError) as error:
+        search.find_lines(plan, search.prepare_data(plan))
+    assert error.value.code == "too_many_lines_memory" and error.value.params["max"] == 4, error.value
+    import gc
+    gc.collect()
+
+
+def test_memory_warning(monkeypatch):
+    """The worker warns at its start when the largest search the limits allow does not fit."""
+    import search
+    from settings import Limits
+    limits = Limits(grid_mpx_max=36, lines_max=3_000_000)
+    monkeypatch.setattr(search, "available_memory", lambda: 8 * 2 ** 30)
+    warning = search.memory_warning(limits)
+    fits = int((8 * 2 ** 30 - 36e6 * search.PIXEL_BYTES) // search.LINE_BYTES)
+    assert warning and f"FINDALINE_LIMIT_LINES_MAX={fits}" in warning, warning
+    assert search.memory_warning(Limits(grid_mpx_max=36, lines_max=fits)) is None
+    assert search.memory_warning(Limits()) is None and search.memory_warning(None) is None
+
+
+def test_public_limits_fit_the_worker_memory():
+    """The public limits of grids and lines fit into compose.yaml's default WORKER_MEMORY."""
+    import re
+    import search
+    from settings import PUBLIC
+    compose = open(os.path.join(REPO, "compose.yaml"), encoding="utf-8").read()
+    gib = int(re.search(r"mem_limit: \$\{WORKER_MEMORY:-(\d+)g\}", compose).group(1))
+    assert search.memory_needed(PUBLIC["grid_mpx_max"] * 1e6, PUBLIC["lines_max"]) <= gib * 2 ** 30
+
+
 def test_lines_limit_counts_earlier_tiles(tmp_path, monkeypatch):
     """The limit of lines of a tiled area counts the lines of the tiles done already with the new
     tile's, and refuses before that tile's coordinates (step 4 holds them all in memory)."""

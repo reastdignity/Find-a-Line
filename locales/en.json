@@ -262,6 +262,7 @@
   "error.no_steep_terrain": "No terrain here is steep enough for anchors. Decrease Anchor steepness or search a larger area.",
   "error.no_prominent_anchors": "No anchor stands out enough. Decrease Prominence of one anchor, Prominence of both anchors or Drop below both anchors.",
   "error.no_lines": "No line passes the settings. Use a wider Line length, a larger Anchor height difference, or lower limits of height, prominence and drop.",
+  "error.too_many_lines_memory": "{{n}} lines found, at most {{max}} fit into the memory of this site. Narrow the search: increase Prominence of one anchor, Highest point above the ground or Drop below both anchors, or use a smaller area.",
   "error.too_many_lines": "{{n}} lines found, limit {{max}}. Narrow the search: increase Prominence of one anchor, Highest point above the ground or Drop below both anchors, or use a smaller area.",
   "error.no_profiles": "This result has no profiles.",
   "error.profile_admin_only": "Profiles of results from {{source}} are for administrators only.",

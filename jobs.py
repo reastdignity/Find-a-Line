@@ -1389,9 +1389,13 @@ def main(argv: List[str]) -> int:
         os.environ["FINDALINE_PUBLIC_URL"], os.environ["FINDALINE_CONTACT"] = public.public_url, public.contact
     data = cache.data_dir(args.data_dir)
     cache.check_layout(os.path.join(data, "cache"))
+    scheduler = Scheduler(Jobs(data, public=args.public), public=args.public)
     if args.public:
         warn_without_cgroup()
-    scheduler = Scheduler(Jobs(data, public=args.public), public=args.public)
+        import search
+        warning = search.memory_warning(scheduler.limits)
+        if warning:
+            print(warning, file=sys.stderr, flush=True)
     # SIGTERM (docker stop, systemd) stops it like Ctrl+C: the running phases are killed and
     # their jobs marked interrupted (a tiled area resumes when it is started again)
     for name in ("SIGTERM", "SIGBREAK"):  # SIGBREAK: Ctrl+Break, or a service stopped on Windows
