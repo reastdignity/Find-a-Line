@@ -22,7 +22,8 @@ What is compared (expected values in regression.json):
 - "count_anchors_in": osm:<name> or S,W,N,E: the lines with an anchor in it (lines_in_region),
   e.g. the lines reaching an islet.
 Always checked, without expected values: the map data (data.js has every line, profiles
-for every line of a circle and for the line shown for each group of an area, lines.js
+for every line of a circle whose run.json says "profiles": "all", else for the line shown for
+each group, lines.js
 the same lines), and with "check_profiles" that profiles computed again from the cache
 (search.profile_of_line) equal the saved ones. A test more than twice as slow as its
 recorded time gets a warning. Tests of kind "osm" compare the theme tiles built from a
@@ -135,16 +136,19 @@ def check_map(run_dir: str, found: dict) -> list:
         return []
     folder = folders[0]
     with open(os.path.join(folder, "run.json"), encoding="utf-8") as f:
-        circle = json.load(f)["params"].get("radius") is not None
+        meta = json.load(f)
+    circle = meta["params"].get("radius") is not None
+    every = meta["summary"].get("profiles", "all" if circle else "representatives") == "all"
     rows = _script_value(os.path.join(folder, "data.js"))["lines"]
     others = _script_value(os.path.join(folder, "lines.js"))["lines"]
     problems = []
     if len(rows) != found.get("lines"):
         problems.append(f"data.js has {len(rows)} lines, lines.csv {found.get('lines')}")
     profiles = sum(1 for r in rows if r[-1])
-    wanted = found.get("lines") if circle else found.get("spots")
+    wanted = found.get("lines") if every else found.get("spots")
     if profiles != wanted:
-        problems.append(f"data.js has {profiles} profiles, expected {wanted} ({'circle' if circle else 'area'})")
+        problems.append(f"data.js has {profiles} profiles, expected {wanted} "
+                        f"({'circle' if circle else 'area'}, profiles of {'every line' if every else 'the spots'})")
     if [r[:-1] for r in rows] != others:  # lines.js: the rows without the profile
         problems.append("lines.js differs from data.js")
     return problems

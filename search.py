@@ -84,6 +84,10 @@ LINE_BYTES = 500
 # PROFILE_POINTS points (its max_points, the anchors and the smallest clearances): about 19 KB
 PROFILE_POINT_BYTES = 100
 PROFILE_POINTS = 203
+# A circle keeps the profile of every line (the map opened from disk shows each) while they take
+# at most this; above, only the representatives' as an area does (a map served by the app computes
+# the others when they are opened): about 26 000 lines of 1 m at most, R9's 85 671 at 5 m
+CIRCLE_PROFILES_BYTES = 500e6
 # Tiles of large areas: the grids of one tile may use this share of the free memory (the rest
 # is for the lines of the tiles)
 TILE_MEMORY_SHARE = 0.25
@@ -656,8 +660,9 @@ def _lines(plan: Plan, data: Data, core: Optional[tuple] = None, before: int = 0
     count towards the limit of lines with these (held in memory together in step 4).
 
     Every line gets its metres over water and over filled gaps. Circles keep the profile
-    of every line (the map shows each); areas only that of the line shown for each group,
-    as the profiles of millions of lines would take long and be thrown away.
+    of every line (the map shows each) while they fit into CIRCLE_PROFILES_BYTES; areas (and
+    larger circles) only that of the line shown for each group, as the profiles of millions
+    of lines would take long and fill the memory.
     """
     p, grid, emit = plan.params, plan.grid, plan.emit
 
@@ -722,8 +727,12 @@ def _lines(plan: Plan, data: Data, core: Optional[tuple] = None, before: int = 0
                                       p.high_above, sh.LineLimits(p.min_height, p.min_mean_height,
                                                                   p.min_high_share, p.max_wall_angle),
                                       np.column_stack([prom, drop]), strong)
-    _check_lines(plan, before + len(valid_lines), grid.width * grid.height,
-                 profile_points(valid_lines) if isinstance(plan.area, ar.Circle) else 0)
+    points = profile_points(valid_lines) if isinstance(plan.area, ar.Circle) else 0
+    every_profile = 0 < points * PROFILE_POINT_BYTES <= CIRCLE_PROFILES_BYTES
+    if points and not every_profile:
+        emit("info", f"Profiles of the line shown for each spot only: those of all {len(valid_lines)} lines "
+                     f"would take about {points * PROFILE_POINT_BYTES / 1e6:.0f} MB")
+    _check_lines(plan, before + len(valid_lines), grid.width * grid.height, points if every_profile else 0)
     if not valid_lines and core is None:
         raise SearchError("No lines found matching elevation requirements.", "no_lines")
 
@@ -741,7 +750,7 @@ def _lines(plan: Plan, data: Data, core: Optional[tuple] = None, before: int = 0
     results.columns["filled_m"] = np.array(ls.covered_metres(a1, a2, plan.resolution, data.filled), dtype=np.float64)
     progress.compute.finish()
     groups = mp.group_lines(results, plan.group_distance, p.group_by)
-    wanted = range(len(results)) if isinstance(plan.area, ar.Circle) else sorted(groups.rep.tolist())
+    wanted = range(len(results)) if every_profile else sorted(groups.rep.tolist())
     progress.compute.start("line profiles", len(wanted), unit="line")
     for k in wanted:
         results.profiles[k] = sh.line_profile(tuple(a1[k].tolist()), tuple(a2[k].tolist()), data.elevation,
@@ -992,7 +1001,9 @@ def save_run(plan: Plan, lines: Lines, confirm: Optional[Confirm] = None, run: O
         "data": _merged_data(),  # folders, files and fetch times of the data used
         "params": _run_params(plan),
         "summary": {"lines": len(results), "spots": len(spot_groups),
-                    "clear_spots": int((~results.columns["over_obstacles"][spot_groups.rep]).sum())},
+                    "clear_spots": int((~results.columns["over_obstacles"][spot_groups.rep]).sum()),
+                    # which lines have a profile in the map (runs before 2026-11: all of a circle's)
+                    "profiles": "all" if circle and len(results.profiles) == len(results) else "representatives"},
     }
     meta["description"] = rn.params_summary(meta)
     meta["attribution"] = _credits(plan, meta["data"])  # also ATTRIBUTION.txt and the map

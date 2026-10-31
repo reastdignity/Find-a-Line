@@ -2479,6 +2479,25 @@ def test_lines_refused_for_memory(tmp_path, monkeypatch):
     assert error.value.params["max"] == 5, error.value.params
 
 
+def test_large_circle_keeps_the_spots_profiles(tmp_path, monkeypatch):
+    """A circle keeps the profile of every line while they fit into CIRCLE_PROFILES_BYTES, else only
+    those of the lines shown for the spots (as an area), and its lines are then not refused for them."""
+    import search
+    from settings import Limits
+    point = {"northing": 254608, "easting": 553966, "radius": 150}
+    plan = _plan(tmp_path / "small", Limits(), **point)
+    every = search.find_lines(plan, search.prepare_data(plan))
+    assert len(every.results.profiles) == len(every.results) > len(every.spot_groups)
+    monkeypatch.setattr(search, "CIRCLE_PROFILES_BYTES", 1)
+    plan = _plan(tmp_path / "large", Limits(), **point)
+    plan.memory = int(search.memory_needed(plan.grid.width * plan.grid.height, len(every.results)))
+    spots = search.find_lines(plan, search.prepare_data(plan))
+    assert set(spots.results.profiles) == set(spots.spot_groups.rep.tolist())
+    assert spots.results.profiles[spots.spot_groups.rep[0]] == every.results.profiles[every.spot_groups.rep[0]]
+    import gc
+    gc.collect()
+
+
 def test_memory_warning(monkeypatch):
     """The worker warns at its start when the largest search the limits allow does not fit."""
     import search
