@@ -2,7 +2,8 @@
 # The nginx and fail2ban files of deploy/ on the packages of Ubuntu 26.04, installed by the
 # functions of deploy/vps.sh that setup and update run (docs/deployment.md, sections 4 and 5), in
 # front of the running web service of compose.yaml: nginx -t, then the answers through it (headers
-# once each, HTTP/2, gzip, Upgrade refused, http to https, unknown names refused, the masked log,
+# once each, HTTP/2, gzip, Upgrade refused, http to https, www to the site's name, unknown names
+# refused, the masked log,
 # the rate limits, the tiles' own) and fail2ban's filter on the log it wrote (not the tiles' 429);
 # also the script's edits of ufw's stock rules files (section 2). A self-signed certificate stands in for certbot's. Run it in a fresh
 # container on the network of the web service (CI: the docker job):
@@ -36,6 +37,7 @@ nginx -t
 # certbot's files
 mkdir -p "/etc/letsencrypt/live/$SITE"
 openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes -days 1 -subj "/CN=$SITE" \
+  -addext "subjectAltName=DNS:$SITE,DNS:www.$SITE" \
   -keyout "/etc/letsencrypt/live/$SITE/privkey.pem" -out "/etc/letsencrypt/live/$SITE/fullchain.pem" 2>/dev/null
 CHANGED=0; nginx_files
 { [ "$CHANGED" = 1 ] && [ -L /etc/nginx/sites-enabled/findaline ]; } || fail "the site of port 443 not enabled with its certificate"
@@ -68,7 +70,10 @@ icmp=$(grep -n '^# ok icmp codes for INPUT' /etc/ufw/before.rules | cut -d: -f1)
 cmp -s <(cat /tmp/after.rules.stock "$SRC/deploy/firewall/ufw-after.rules") /etc/ufw/after.rules \
   || fail "after.rules is not the stock file and the block"
 
-C=(curl -sS -k --resolve "$SITE:443:127.0.0.1" --resolve "$SITE:80:127.0.0.1" --max-time 20)
+cert_has_www || fail "cert_has_www does not see www.$SITE in the certificate"
+
+C=(curl -sS -k --resolve "$SITE:443:127.0.0.1" --resolve "$SITE:80:127.0.0.1" --resolve "www.$SITE:443:127.0.0.1"
+   --resolve "www.$SITE:80:127.0.0.1" --max-time 20)
 code() { "${C[@]}" -o /dev/null -w '%{http_code}' "$@"; }
 
 echo "== headers"
@@ -90,6 +95,11 @@ echo "== gzip, Upgrade, http, unknown names"
 "${C[@]}" -o /dev/null -D - "http://$SITE/app/?x=1" | grep -qi "^location: https://$SITE/app/?x=1" || fail "redirect target"
 [ "$(curl -sS --resolve "$SITE:80:127.0.0.1" "http://$SITE/.well-known/acme-challenge/probe")" = probe ] \
   || fail "ACME challenge"
+for url in "http://www.$SITE/app/?x=1" "https://www.$SITE/app/?x=1"; do
+  "${C[@]}" -o /dev/null -D - "$url" | grep -qi "^location: https://$SITE/app/?x=1" || fail "$url not sent to the site's name"
+done
+"${C[@]}" -o /dev/null -D - "https://www.$SITE/" | grep -qi '^strict-transport-security:' || fail "no HSTS on www"
+[ "$("${C[@]}" "http://www.$SITE/.well-known/acme-challenge/probe")" = probe ] || fail "ACME challenge of www"
 if curl -sk --resolve other.example.org:443:127.0.0.1 https://other.example.org/ -o /dev/null; then
   fail "TLS handshake for another name"
 fi

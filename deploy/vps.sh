@@ -384,6 +384,27 @@ dns_ready() {
     note "$SITE → $here"
 }
 
+# www.<site> has an A record pointing here (section 3: optional, so no record is no warning)
+www_ready() {
+    local here there
+    there=$(dig +short A "www.$SITE" @1.1.1.1 | grep -E '^[0-9.]+$' | sort | tr '\n' ' ')
+    [ -n "$there" ] || return 1
+    here=$(public_ip) || return 1
+    if [ "${there% }" != "$here" ]; then
+        warn "the A record of www.$SITE says '${there% }', the server is $here (section 3): www is left out of the certificate"
+        return 1
+    fi
+    dig +short AAAA "www.$SITE" @1.1.1.1 | grep -q : \
+        && warn "www.$SITE has an AAAA record: remove it (section 3, IPv4 only for now)"
+    note "www.$SITE → $here"
+}
+
+# The site's certificate holds www.<site>
+cert_has_www() {
+    { openssl x509 -noout -ext subjectAltName -in "/etc/letsencrypt/live/$SITE/fullchain.pem" 2>/dev/null; echo ,; } \
+        | tr -d ' \n' | grep -qF "DNS:www.$SITE,"
+}
+
 # The nginx files of deploy/nginx with the site's name, the upstream at WEB_PORT, the site of port
 # 443 enabled once its certificate exists; sets CHANGED=1 if anything changed
 nginx_files() {
@@ -423,17 +444,29 @@ nginx_and_certificate() {
     CHANGED=0
     nginx_files
     [ "$CHANGED" = 1 ] && nginx_reload
+    # The names: the site, and www.<site> once its A record points here; a certificate without www
+    # is issued again when the record appears (certbot's account exists then: no e-mail needed)
+    local names=(-d "$SITE") mail=()
     if [ -f "/etc/letsencrypt/live/$SITE/fullchain.pem" ]; then
         note "certificate: $(openssl x509 -noout -enddate -in "/etc/letsencrypt/live/$SITE/fullchain.pem")"
-        return
+        if cert_has_www || ! www_ready; then
+            return 0
+        fi
+        names+=(-d "www.$SITE")
+        note "the certificate is issued again with www.$SITE"
+    else
+        dns_ready || return 0
+        if [ -z "$EMAIL" ]; then
+            todo "the certificate: run setup again with --email <address> (Let's Encrypt's expiry notices)"
+            return
+        fi
+        mail=(-m "$EMAIL")
+        if www_ready; then
+            names+=(-d "www.$SITE")
+        fi
     fi
-    dns_ready || return 0
-    if [ -z "$EMAIL" ]; then
-        todo "the certificate: run setup again with --email <address> (Let's Encrypt's expiry notices)"
-        return
-    fi
-    certbot certonly --non-interactive --webroot -w /var/www/letsencrypt -d "$SITE" -m "$EMAIL" \
-        --agree-tos --no-eff-email --deploy-hook 'systemctl reload nginx'
+    certbot certonly --non-interactive --webroot -w /var/www/letsencrypt --cert-name "$SITE" \
+        "${names[@]}" "${mail[@]}" --agree-tos --no-eff-email --deploy-hook 'systemctl reload nginx'
     CHANGED=0
     nginx_files
     nginx_reload
@@ -667,6 +700,11 @@ check() {
     fi
     curl -sS --max-time 20 -o /dev/null -D - -H 'Accept-Encoding: gzip' "https://$SITE/app/app.js" 2>/dev/null \
         | grep -qi '^content-encoding: gzip' && ok "gzip" || bad "app.js not compressed"
+    if cert_has_www; then
+        headers=$(curl -sS --max-time 20 -o /dev/null -D - "https://www.$SITE/app/?x=1" 2>&1) || true
+        echo "$headers" | grep -qi "^location: https://$SITE/app/?x=1" \
+            && ok "https://www.$SITE/ sent to https://$SITE/" || bad "https://www.$SITE/: $(echo "$headers" | head -n 1)"
+    fi
 
     ufw status | grep -q '^Status: active' && ok "ufw active" || bad "ufw is not active"
     fail2ban-client status findaline >/dev/null 2>&1 && ok "the jail findaline" || bad "the jail findaline does not run"

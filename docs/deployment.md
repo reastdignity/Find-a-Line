@@ -248,7 +248,13 @@ AAAA record** (section 2, *IPv6 for the site later*). A CNAME to a name that has
 brings the AAAA along: use an A record then. Check: `dig +short A findaline.example.org` prints the
 server's address and `dig +short AAAA findaline.example.org` nothing.
 
-If your DNS provider proxies traffic (Cloudflare's orange cloud), turn the proxy off for this name:
+Optionally the same A record for `www.findaline.example.org` (again no AAAA): visitors who type
+the `www` are then sent to `https://findaline.example.org/`. The certificate holds the `www` name
+only while its record points at the server; `deploy/vps.sh setup` checks it and, when the record
+appears after the certificate was issued, issues the certificate again with both names. Without
+the record, the `www` name reaches nothing.
+
+If your DNS provider proxies traffic (Cloudflare's orange cloud), turn the proxy off for these names:
 otherwise every request reaches nginx from the provider's addresses, the per-address limits and
 fail2ban would hit everyone at once, and the provider would buffer the event stream.
 
@@ -260,9 +266,10 @@ The files are in `deploy/nginx/` of the checkout:
 - `findaline-tls.conf` → `/etc/nginx/snippets/`: the TLS settings (Mozilla's "intermediate":
   TLS 1.2 and 1.3);
 - `findaline-acme.conf` → `/etc/nginx/sites-available/findaline-acme`: port 80, certbot's
-  challenges and a redirect to https; works before the certificate exists;
-- `findaline.conf` → `/etc/nginx/sites-available/findaline`: the site on port 443, enabled once
-  the certificate exists.
+  challenges (also of the `www` name) and a redirect to https (`www` to the site's name); works
+  before the certificate exists;
+- `findaline.conf` → `/etc/nginx/sites-available/findaline`: the site on port 443, and the `www`
+  name's redirect to it, enabled once the certificate exists.
 
 The two site files name `findaline.example.org`; `sed` puts your name in while copying.
 
@@ -281,11 +288,12 @@ sudo nginx -t && sudo systemctl reload nginx
 ```
 
 `nginx -t` must say `syntax is ok` and `test is successful`. Then the certificate from Let's
-Encrypt (your e-mail for expiry notices), the site, and a test of the renewal:
+Encrypt (your e-mail for expiry notices; `-d www.$SITE` only with the `www` record of section 3),
+the site, and a test of the renewal:
 
 ```sh
-sudo certbot certonly --webroot -w /var/www/letsencrypt -d $SITE -m you@example.org --agree-tos \
-  --no-eff-email --deploy-hook 'systemctl reload nginx'
+sudo certbot certonly --webroot -w /var/www/letsencrypt --cert-name $SITE -d $SITE -d www.$SITE \
+  -m you@example.org --agree-tos --no-eff-email --deploy-hook 'systemctl reload nginx'
 sudo ln -s /etc/nginx/sites-available/findaline /etc/nginx/sites-enabled/
 sudo nginx -t && sudo systemctl reload nginx
 sudo certbot renew --dry-run
@@ -294,7 +302,9 @@ systemctl list-timers certbot.timer
 
 certbot keeps the settings (webroot, the deploy hook) in `/etc/letsencrypt/renewal/`, and its
 timer renews the certificate when it nears its end, then reloads nginx. Until the site runs
-(section 9), nginx answers 502 for it.
+(section 9), nginx answers 502 for it. To add the `www` name to an existing certificate later, run
+the `certbot certonly` line again with both `-d` (the same `--cert-name`; `-m` is not needed then)
+and reload nginx.
 
 What the configuration sets: `client_max_body_size 2m`; 10 s instead of nginx's 60 s for a slow
 client's request headers and body (in the `http` block, so for every server: the headers of an
@@ -305,7 +315,8 @@ connections (zooming a map asks for a few hundred tiles within seconds), 10 requ
 burst of 10 for `/login/` and `/auth/` (beyond them: 429); `/api/events` (the live event stream)
 without buffering and with a read timeout of an hour, other requests 620 s (an estimate may wait
 for the worker's quick lane); gzip for scripts, JSON, CSS and CSV (a run's `data.js` shrinks about
-4.7 times); HTTP/2; HSTS; no nginx version in the `Server` header. A request for another name (or
+4.7 times); HTTP/2; HSTS; no nginx version in the `Server` header; `www.` + the site's name sent
+to the site's name with 301 (on port 80 directly to https). A request for any other name (or
 for the bare address of the server) gets no answer: port 80 closes the connection, port 443
 refuses the TLS handshake, so scanners of the address never see the site's certificate.
 
