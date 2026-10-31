@@ -247,7 +247,7 @@ class Jobs:
             db.execute("INSERT INTO jobs (id, created, status, request, title, user_id, unlimited) "
                        "VALUES (?, ?, 'queued', ?, ?, ?, ?)",
                        (job_id, created, json.dumps(request), title, user_id, int(unlimited)))
-        self.event(job_id, "status", {"status": "queued", "title": title, "created": created})
+            self._insert_event(db, job_id, "status", {"status": "queued", "title": title, "created": created})
         return job_id
 
     def admission(self, user_id: Optional[int], limits: Optional[Limits], limited: bool) -> Callable:
@@ -418,10 +418,9 @@ class Jobs:
                 "WHERE j.status = ? AND j.cancel_requested = 0 ORDER BY (SELECT COUNT(*) FROM jobs r "
                 f"WHERE r.status IN {_in(ACTIVE)} AND r.user_id IS j.user_id), j.created, j.rowid LIMIT 1) "
                 "AND status = ? RETURNING *", (status, worker_id, waiting, *ACTIVE, waiting)).fetchall()
-        if not rows:
-            return None
-        self.event(rows[0]["id"], "status", {"status": status})
-        return dict(rows[0])
+            if rows:
+                self._insert_event(db, rows[0]["id"], "status", {"status": status})
+        return dict(rows[0]) if rows else None
 
     def set(self, job_id: str, status: str, when: Optional[Iterable[str]] = None, **fields) -> bool:
         """Set the status (and other columns) of a job; with `when` only if its status is one of
@@ -444,17 +443,23 @@ class Jobs:
         if when is not None:
             values = tuple(when)
             condition = f" AND status IN {_in(values)}"
-        with self._db() as db:
+        with self._write() as db:
             changed = db.execute(f"UPDATE jobs SET status = ?{names} WHERE id = ?{condition}",
                                  (status, *fields.values(), job_id, *values)).rowcount
-        if changed:
-            self.event(job_id, "status", _with_info({"status": status, **fields}))
+            if changed:
+                self._insert_event(db, job_id, "status", _with_info({"status": status, **fields}))
         return bool(changed)
 
     def event(self, job_id: str, kind: str, data):
         with self._db() as db:
-            db.execute("INSERT INTO events (job, kind, data) VALUES (?, ?, ?)",
-                       (job_id, kind, json.dumps(self.redact(data))))
+            self._insert_event(db, job_id, kind, data)
+
+    def _insert_event(self, db: sqlite3.Connection, job_id: str, kind: str, data):
+        """An event in the transaction of db: a status change writes its event in its own
+        transaction, so the events of a job come in the order of its changes (a download process
+        setting "ready" while the worker claims the job for computing wrote "computing" first)."""
+        db.execute("INSERT INTO events (job, kind, data) VALUES (?, ?, ?)",
+                   (job_id, kind, json.dumps(self.redact(data))))
 
     def job_events(self, job_id: str, limit: int = JOB_EVENTS_MAX) -> Dict:
         """The history of one job for its page: its newest `limit` events other than progress, and
@@ -917,10 +922,9 @@ class Jobs:
             finished = cache.now_iso()
             if now:
                 db.execute("UPDATE jobs SET status = 'cancelled', finished = ? WHERE id = ?", (finished, job_id))
+                self._insert_event(db, job_id, "status", {"status": "cancelled", "finished": finished})
             else:
                 db.execute("UPDATE jobs SET cancel_requested = 1 WHERE id = ?", (job_id,))
-        if now:
-            self.event(job_id, "status", {"status": "cancelled", "finished": finished})
         return True
 
     def cancel_requested(self, job_ids: Iterable[str]) -> Set[str]:

@@ -234,6 +234,34 @@ def _offline(monkeypatch):
         monkeypatch.setenv(key, value)
 
 
+def test_status_events_in_the_order_of_the_changes(tmp_path):
+    """A status change and its event are one transaction: a job set "ready" by its download process
+    while the scheduler claims it for computing never gets the events "computing" before "ready"
+    (the page would show "ready" while the job computes; CI on Windows, 2026-10-31)."""
+    import threading
+    jobs = Jobs(str(tmp_path))
+    ids = [jobs.add({"params": {}}, f"job {k}") for k in range(150)]
+    for job_id in ids:
+        jobs.set(job_id, "downloading", when=("queued",))
+    readied = threading.Event()
+
+    def claim():
+        while True:
+            if not jobs.claim("ready", "computing", "w") and readied.is_set():
+                return
+
+    claimer = threading.Thread(target=claim)
+    claimer.start()
+    for job_id in ids:
+        jobs.set(job_id, "ready", when=("downloading",))
+    readied.set()
+    claimer.join(timeout=60)
+    assert not claimer.is_alive()
+    for job_id in ids:
+        statuses = [e["data"]["status"] for e in jobs.events(0, job_id) if e["kind"] == "status"]
+        assert statuses == ["queued", "downloading", "ready", "computing"], (job_id, statuses)
+
+
 def test_job_through_the_queue(tmp_path, monkeypatch):
     """A job (added directly: local files are refused over the web) downloads, computes
     and saves a run in worker processes; a queued job can be cancelled."""
