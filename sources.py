@@ -2081,7 +2081,9 @@ def fill_gaps(elevation_path: str, surface_path: Optional[str], grid: Grid, fall
         ring = ndimage.grey_dilation(labels, size=(GAP_RING * 2 + 1,) * 2) * (both & (labels == 0))
         offsets = np.full(count + 1, overall)
         if ring.any():
-            local = ndimage.median(values - np.where(both, other, 0), ring, index=np.arange(1, count + 1))
+            # Only the ring pixels: scipy sorts every pixel it is given (10 s for a 58 Mpx tile)
+            near = ring > 0
+            local = ndimage.median(values[near] - other[near], ring[near], index=np.arange(1, count + 1))
             local = np.asarray(local, dtype=float)
             # A local offset far from the overall one comes from misaligned edges, not heights
             usable = np.isfinite(local) & (np.abs(local - overall) <= GAP_MAX_LOCAL_SHIFT)
