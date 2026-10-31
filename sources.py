@@ -67,6 +67,10 @@ from messages import ServiceError
 from progress import progress
 
 DOWNLOAD_THREADS = 8  # tiles of one download (all its layers) at a time; each connection is slow
+# Threads of GDAL's reprojection of a mosaic (the same values with any number: checked on FABDEM over
+# a 7600 px grid, 2.6 s on one thread, 0.8 s on 4, 0.5 s on 8): the cores numba may use
+# (NUMBA_NUM_THREADS, WORKER_CPUS in the container), at most 8
+WARP_THREADS = max(1, min(8, int(os.environ.get("NUMBA_NUM_THREADS") or os.cpu_count() or 1)))
 # Tile downloads from one host at a time across all processes of a data folder (several jobs
 # of the web worker download at once), through lock files in cache/locks/hosts (host_slot);
 # HOST_SLOTS_OF holds the hosts that need another number
@@ -2076,7 +2080,7 @@ def _place(src, grid: Grid, mosaic: np.ndarray, categorical: bool = False,
     band = src.read(1, window=window, masked=True).astype(np.float32).filled(np.nan)
     reproject(clean(band), values, src_transform=moved * src.window_transform(window), src_crs=src_crs,
               dst_transform=window_transform, dst_crs=grid.crs,
-              src_nodata=np.nan, dst_nodata=np.nan, resampling=resampling)
+              src_nodata=np.nan, dst_nodata=np.nan, resampling=resampling, num_threads=WARP_THREADS)
     target = mosaic[r0:r1, c0:c1]
     mosaic[r0:r1, c0:c1] = np.where(np.isnan(target), values, target)
 
