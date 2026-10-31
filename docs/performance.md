@@ -236,3 +236,18 @@ the page cache that the memory-mapped grids rely on).
 The measurements apply to this PC; the VPS's cores are slower or faster per core, but the shape
 (one busy core most of the time) does not depend on it. Worth checking on the VPS itself: the
 `.env` there (`WORKER_CPUS`, `WORKER_MEMORY`) and one large search with `tools/perf_profile.py`.
+
+## Done (2026-10-31)
+
+Recommendations 1, 2, 3, 6 and 7, with the lines as numpy columns (section 4); 4 and 5 stay open.
+
+| Branch | What | Measured |
+| --- | --- | --- |
+| `perf-concurrency` | lines as columns (`helpers.LineTable`, `mapping.Groups`), files written chunk by chunk, `LINE_BYTES` 500, a circle's profiles counted and kept only while they take at most `CIRCLE_PROFILES_BYTES` (500 MB) | section 4 |
+| `gap-median` | 1: the median of the ring pixels only | Gozo 125 → 105 s, peak 3.9 → 3.2 GB |
+| `compute-slots` | 2 and 3: `FINDALINE_LIMIT_COMPUTE_SLOTS` / `_DOWNLOAD_SLOTS` (default 1; the VPS: 3 and 2, docs/deployment.md), a memory budget per compute slot (`search.slot_memory`: the worker's memory less the quick lane's largest grid and 512 MiB per download slot, divided by the slots), `Jobs.claim` the oldest job of the user with the fewest running jobs | two jobs computing at once (tests) |
+| `download-pools` | 6: one pool of 8 threads for the layers (their indexes listed in parallel), at most 8 tiles at once per host across all processes (`sources.host_slot`, filelock), a lock per tile (`sources.tile_lock`), a new `index.sqlite` opened by many threads at once no longer fails | Gozo 15.0 → 13.0 s and Jura 193 → 109-150 s at 8 threads; two Jura areas at once 411/388 → 219-244/322-343 s; the same area by two jobs downloaded once. The geoportal sheet index (12-150 s a run) is now the most variable part |
+| `sse-poller` | 7: one event poller per web process (`web.EventHub`), the idle quick lane only reads | the web's CPU at 50 / 200 / 400 open streams 40 / 168 / 253 % → 3 / 12 / 32 %, the delay of an event bounded by TICK; idle quick lane 19 → 0 writes per second |
+
+All together on the Gozo coast (cached data, tiles of 5 km): 125 → 95 s on 24 threads, 134 → 102 s on
+3 cores, the peak memory of the job 3.9 → 2.7 GB; regression R1, R2, R4, R9, R10, R13-R16, R18, R19 ok.
