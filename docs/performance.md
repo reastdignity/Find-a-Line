@@ -267,3 +267,19 @@ The tiles of a large area in parallel processes are left for later:
 
 To reconsider if the site is mostly idle and large areas are common: lending free compute slots to
 the tiles of a running job.
+
+## Done, second wave (2026-10-31)
+
+Recommendation 5 without the circles' profiles (only circles would gain, at the cost of a numba copy
+of `line_profile` to keep in step):
+
+| Branch | What | Measured |
+| --- | --- | --- |
+| `warp-threads` | GDAL's reprojection of a mosaic on `WARP_THREADS` (the cores numba may use, at most 8; the same values with any number) | the Gozo coast's gap fill mosaics 10.6 → 3.4 s |
+| `terrain-speed` | the prominence only on the pixels within `span - 1` of an anchor (the union of their windows: equal values, `terrain.py`'s docstring has the reasoning), the drop a numba van Herk / Gil-Werman minimum evaluated at the anchors | the stage "anchor prominence and drop" 22.3 → 3.5 s, its peak memory 2.0 → 0.9 GB (the windows cover 17-32 % of Gozo's tiles) |
+| `faster-saving` | step 5's line files built as text column by column (`csv.writer`, the texts shared by the files, rows built once, `runs.round_floats`: Python's `round()` on whole columns) | step 5 of the Gozo coast 20.4 → 4.7 s, R9 5.7 → 3.0 s; the files the same byte for byte |
+
+All together on the Gozo coast (cached data, tiles of 5 km): 95 → 61 s on 24 threads, 102 → 74 s on
+3 cores (from 125 and 134 s before the first wave); the peak memory of the job stays 2.7 GB (the gap
+filling of step 1). R9 on 3 cores 16.8 → 14.9 s (its circle's profiles, one core). Regression R1,
+R2, R4, R9-R11, R13-R16, R18-R20 ok; the four files of the Gozo coast the same as before.
