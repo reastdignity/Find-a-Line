@@ -283,3 +283,14 @@ All together on the Gozo coast (cached data, tiles of 5 km): 95 → 61 s on 24 t
 3 cores (from 125 and 134 s before the first wave); the peak memory of the job stays 2.7 GB (the gap
 filling of step 1). R9 on 3 cores 16.8 → 14.9 s (its circle's profiles, one core). Regression R1,
 R2, R4, R9-R11, R13-R16, R18-R20 ok; the four files of the Gozo coast the same as before.
+
+## Still open (2026-10-31)
+
+- The VPS's `.env`: `WORKER_CPUS=7`, `WORKER_MEMORY=20g`, `WORKER_COMPUTE_SLOTS=3`,
+  `WORKER_DOWNLOAD_SLOTS=2` (docs/deployment.md), then one large search there with
+  `tools/perf_profile.py` to check these numbers on its cores.
+- The peak memory of a job is now the gap filling of step 1 (`sources.fill_gaps` and its mosaics).
+- A circle's profiles of every line are computed on one core (R9: 7 s of 15).
+- The geoportal sheet index is the most variable part of a download (12-150 s a run).
+- Four compute slots admitted by an estimate of each job's memory (three fixed slots now).
+- Recommendation 4, the tiles of a large area in parallel: deferred, see above.
