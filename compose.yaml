@@ -78,15 +78,17 @@ services:
   worker:
     <<: *image
     command: ["worker", "--public"]
-    # Most of the machine: set WORKER_CPUS to the number of cores minus one (it may not exceed
-    # them) and WORKER_MEMORY to what the host can spare; the search sizes its tiles and threads
-    # from these limits (search.cgroup_limits)
+    # Most of the machine: set WORKER_CPUS to the number of cores minus one (a whole number, it
+    # may not exceed them) and WORKER_MEMORY to what the host can spare; the search sizes its
+    # tiles and threads from these limits (search.cgroup_limits)
     mem_limit: ${WORKER_MEMORY:-8g}
     memswap_limit: ${WORKER_MEMORY:-8g}   # the same: no swap on top of the limit
     cpus: ${WORKER_CPUS:-3}
     pids_limit: 4096           # threads count: numba's per process, download pools
     environment:
       FINDALINE_MIRROR: /mirror
+      # numba's threads: the cores of the quota, not all the host's cores the container sees
+      NUMBA_NUM_THREADS: ${WORKER_CPUS:-3}
       # numba's compiled code (loaded by every phase's process), the home and matplotlib's
       # settings in the worker's own /tmp: compiled once per start of the container (a few
       # seconds), never from files the web service could have written

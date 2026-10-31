@@ -363,9 +363,17 @@ def test_cgroup_limits(tmp_path, monkeypatch):
     monkeypatch.delenv("NUMBA_NUM_THREADS", raising=False)
     assert search.line_threads(params) == 1
     assert search.line_threads(params.model_copy(update={"threads": 3})) == 3
+    # NUMBA_NUM_THREADS of compose.yaml (the quota's cores): all of them, never more than the quota
+    import numba
     monkeypatch.setenv("NUMBA_NUM_THREADS", "4")
-    assert search.line_threads(params) is None
+    assert search.line_threads(params) == 1
+    seven = _cgroup(tmp_path / "seven", memory_max="max", memory_current="0", cpu_max="700000 100000")
+    monkeypatch.setattr(search, "CGROUP_ROOT", seven)
+    monkeypatch.setattr(numba.config, "NUMBA_NUM_THREADS", 7)
+    monkeypatch.setattr(search.os, "sched_getaffinity", lambda pid: set(range(8)), raising=False)
+    assert search.line_threads(params) == 7
     monkeypatch.setattr(search, "CGROUP_ROOT", unlimited)
+    assert search.line_threads(params) is None
     monkeypatch.delenv("NUMBA_NUM_THREADS")
     assert search.line_threads(params) is None
     assert search.tile_core_size(params, 1.0) == 12000

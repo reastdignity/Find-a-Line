@@ -440,15 +440,17 @@ def available_memory() -> int:
 
 def line_threads(params: SearchParams) -> Optional[int]:
     """Threads of the line search: --threads, or at most the CPUs of a container's
-    quota (numba itself takes the affinity, and NUMBA_NUM_THREADS when it is set);
-    None leaves the default of find_valid_lines (CPU count - 1)."""
-    if params.threads or "NUMBA_NUM_THREADS" in os.environ:
+    quota (numba itself takes the affinity, and NUMBA_NUM_THREADS when it is set, as
+    compose.yaml sets it to the quota: then all of them); None leaves the default of
+    find_valid_lines (CPU count - 1)."""
+    if params.threads:
         return params.threads
     cpus = cgroup_limits().cpus
     if cpus is None:
         return None
     import numba
-    return max(1, min(cpus, numba.config.NUMBA_NUM_THREADS - 1))
+    spare = 0 if "NUMBA_NUM_THREADS" in os.environ else 1
+    return max(1, min(cpus, numba.config.NUMBA_NUM_THREADS - spare))
 
 
 def tile_core_size(params: SearchParams, res: float, max_px: Optional[float] = None) -> float:

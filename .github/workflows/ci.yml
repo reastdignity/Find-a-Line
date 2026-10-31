@@ -117,6 +117,8 @@ jobs:
           docker compose up --detach --wait --wait-timeout 120
           test "$(curl -s -o /dev/null -w '%{http_code}' -H 'Host: findaline.example.org' http://127.0.0.1:8765/)" = 200
           test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8765/)" = 400  # any other host
+          # numba's threads follow WORKER_CPUS, not the cores the container sees
+          test "$(docker compose exec -T worker python -c 'import numba; print(numba.config.NUMBA_NUM_THREADS)')" = 2
           docker compose stop worker
           docker compose ps --all
           test "$(docker inspect --format '{{.State.ExitCode}}' "$(docker compose ps --all --quiet worker)")" = 0

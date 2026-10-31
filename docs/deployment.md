@@ -434,7 +434,8 @@ python3 -c "import secrets; print(secrets.token_urlsafe(48))" > secrets/findalin
   `..._AREA_KM2_MAX=50`, `..._BBOX_KM_MAX=75`), searches, km² and MB a day per user
   (`..._DOWNLOAD_MB_DAY_MAX=10000`) and the request rates (`..._JOB_RATE=10/minute;60/hour`);
   README's table lists all of them.
-- `.env` (compose itself): `WORKER_CPUS` (the number of cores minus one; `nproc` tells them),
+- `.env` (compose itself): `WORKER_CPUS` (the number of cores minus one, a whole number: it is
+  also the worker's `NUMBA_NUM_THREADS`; `nproc` tells them),
   `WORKER_MEMORY`, `FINDALINE_MIRROR_DIR` (section 10), `CONTAINER_DNS_1`/`_2` (section 2),
   `WEB_PORT` (the host's port of the web service, 8765; the upstream in `findaline-http.conf`
   names it too).
